@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 環境変数（雛形の .env.example はコミットする）
+.env
+
+# OS / エディタ
+.DS_Store
+.idea/
+.vscode/

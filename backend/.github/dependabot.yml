@@ -1,0 +1,20 @@
+# Dependabot: minor/patch は週次 1 PR 集約、major は別 PR でレビュー必須。
+version: 2
+
+updates:
+  # Python dependencies (pyproject.toml / uv.lock)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule: { interval: "weekly", day: "monday", time: "09:00", timezone: "Asia/Tokyo" }
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "python"]
+    groups:
+      minor-and-patch: { patterns: ["*"], update-types: ["minor", "patch"] }
+      major: { patterns: ["*"], update-types: ["major"] }
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule: { interval: "weekly", day: "monday", time: "09:00", timezone: "Asia/Tokyo" }
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "github-actions"]

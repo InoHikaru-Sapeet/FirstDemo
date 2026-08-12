@@ -1,0 +1,10 @@
+# Sapeet標準 pnpm 設定
+packages:
+  - "."
+
+# サプライチェーン対策: 公開から2日(2880分)未満のパッケージはインストールしない
+minimumReleaseAge: 2880
+
+# 信頼できる自社パッケージ等を cooldown から除外する場合:
+# minimumReleaseAgeExclude:
+#   - "@sapeet/*"

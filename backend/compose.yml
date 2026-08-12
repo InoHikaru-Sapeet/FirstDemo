@@ -1,0 +1,14 @@
+services:
+  postgresql:
+    image: postgres:15.7
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: "ai_intelligence"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgresql-data:/var/lib/postgresql/data
+
+volumes:
+  postgresql-data: {}
