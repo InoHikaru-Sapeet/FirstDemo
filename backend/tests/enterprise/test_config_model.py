@@ -6,12 +6,13 @@
 
 クロスフィールド制約（Σweight==100 の強制・降順整合・参照整合）は T-05 の
 担当なので、ここでは **この層では弾かない** ことも併せて固定する。
+
+実データのフィクスチャ（`initial_raw` / `raw`）は `conftest.py` にある。
 """
 
 import copy
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -35,21 +36,7 @@ from enterprise.entities.config import (
     config_json_schema_text,
 )
 
-INITIAL_CONFIG_PATH = Path(__file__).parent / "data" / "config_initial.json"
-
 DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema"
-
-
-@pytest.fixture(scope="module")
-def initial_raw() -> dict[str, Any]:
-    """仕様書 §5.2 の確定 config（xlsx 実データより生成された初期値）。"""
-    return json.loads(INITIAL_CONFIG_PATH.read_text(encoding="utf-8"))
-
-
-@pytest.fixture
-def raw(initial_raw: dict[str, Any]) -> dict[str, Any]:
-    """テストごとに壊してよいコピー。"""
-    return copy.deepcopy(initial_raw)
 
 
 @pytest.fixture(scope="module")
