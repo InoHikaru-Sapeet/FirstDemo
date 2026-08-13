@@ -50,6 +50,6 @@ cd frontend && pnpm check && pnpm build && pnpm test
 ## 次のタスク
 
 1. インフラ（ホスティング環境）の決定 — 社内IT担当に確認の上、必要なら `terraform-infra-bootstrap` を実行
-2. 既存SSOとフロントエンド/バックエンドの認証連携方式の確認
+2. ~~既存SSOとフロントエンド/バックエンドの認証連携方式の確認~~ → **2026-08-13 方針変更**。SSO 連携はやらず、**ID/PW 認証を自前実装**する（[`TASKS.md`](./TASKS.md) §1.1「備考：SSO 前提からの差分」／実装は T-08・T-40〜T-43）。SSO は将来の選択肢として [`docs/future-roadmap.md`](./docs/future-roadmap.md) 構想3 へ
 3. ~~設計書 §15 の10項目・設計判断4項目をベースにした実装タスクへの分解~~ → [`TASKS.md`](./TASKS.md) に完了。将来構想は [`docs/future-roadmap.md`](./docs/future-roadmap.md)
 4. カテゴリ色マップの残り4色（設計書§7.2）についてブランド確認
