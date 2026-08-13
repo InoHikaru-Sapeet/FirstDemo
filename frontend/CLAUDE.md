@@ -19,8 +19,13 @@ config.json（判断基準）の編集・差分プレビュー・ドライラン
 - **フォーム**: react-hook-form + zod（`config.json` 編集フォームのバリデーションに使用。合計100・降順整合など§7.4の制約はzodスキーマで表現する）
 - **ルーティング**: react-router
 - **API型生成**: openapi-typescript（バックエンドのOpenAPIスキーマから型生成。`pnpm openapi-types` のようなscriptを別途用意する）
-- **テスト**: Vitest + Testing Library
-- **認証**: 未導入。既存SSOとの連携方式は導入前に社内IT担当へ確認すること（設計書§1.3・§4）
+- **テスト**: Vitest + Testing Library（`@testing-library/user-event` は未導入。`fireEvent` を使う）
+- **認証**: ID（メール）/ パスワードを自前実装。**SSO はやらない**（`../TASKS.md` §1.1「備考：SSO 前提からの差分」で方針変更済み）
+  - セッションは **HttpOnly Cookie（`sid`）**。**トークンを JS 側で保持しない**（`localStorage` に置かない）
+  - ログイン済みかどうかは `GET /auth/me` の成否だけで判断する（`hooks/useCurrentUser.ts`）
+  - **401 は未ログイン → ログイン画面へ誘導、403 は権限なし → 画面内で処理**。この2つを混同しない
+  - dev は **Vite proxy（`/api` → `:8000`）で同一オリジンにする**のが前提。直接 `:8000` を叩くと `SameSite=Lax` の Cookie が送られない
+  - **ログイン失敗の文言はサーバーが返したものをそのまま出す**。「このメールは未登録です」等に言い換えない（アカウント列挙の防止）
 
 ## ディレクトリ構成
 
@@ -28,11 +33,13 @@ config.json（判断基準）の編集・差分プレビュー・ドライラン
 src/
 ├── components/
 │   ├── common/     # 再利用可能な汎用コンポーネント
-│   └── pages/      # ページ単位のコンポーネント
+│   ├── pages/      # ページ単位のコンポーネント
+│   └── ui/         # shadcn/ui の生成物（手で書かず CLI で追加する）
 ├── hooks/          # カスタムフック
-├── api/            # APIクライアント
+├── api/            # APIクライアント・クエリキー規約
 ├── utils/          # ユーティリティ関数
 ├── types/          # 型定義
+├── test/           # テスト用のヘルパ（fetch のスタブ・Provider 付き render）
 └── styles/         # グローバルスタイル
 ```
 

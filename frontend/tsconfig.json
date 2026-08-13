@@ -3,5 +3,14 @@
 	"references": [
 		{ "path": "./tsconfig.app.json" },
 		{ "path": "./tsconfig.node.json" }
-	]
+	],
+	// 型チェックには使われない（`files: []` の solution 構成）。
+	// shadcn CLI が `@/` の解決先をこのファイルの paths から読むので置いてある。
+	// 無いと `pnpm dlx shadcn@latest add` が `frontend/@/components/...` という
+	// ディレクトリを作ってしまう（T-43 で実際に踏んだ）。
+	"compilerOptions": {
+		"paths": {
+			"@/*": ["./src/*"]
+		}
+	}
 }

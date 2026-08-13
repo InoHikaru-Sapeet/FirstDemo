@@ -757,7 +757,7 @@ flowchart TD
   - `as T` キャストを使わず型を通す（`frontend/CLAUDE.md` の規約）
   - `pnpm check` / `pnpm build` / `pnpm test` が通る
 
-#### - [ ] T-43: ログイン・ユーザー登録画面とセッション連携
+#### - [x] T-43: ログイン・ユーザー登録画面とセッション連携
 - **対応**: §5.1／§1.1「認証」「ログイン状態の保持」
 - **依存**: T-31, T-40
 - **成果物**: `frontend/vite.config.ts`（dev proxy）, `frontend/src/components/pages/LoginPage.tsx`, `frontend/src/components/pages/RegisterPage.tsx`, `frontend/src/hooks/useCurrentUser.ts`, `frontend/src/components/common/RequireAuth.tsx`, テスト
@@ -773,6 +773,27 @@ flowchart TD
 - **備考**: 2026-08-13 の方針変更（§1.1 備考）で追加されたタスク。**T-32 以降のフロント画面はログイン済みが前提**になるので、P10 の中で T-31 の次に置く。
   - **トークンを `localStorage` に置かない**。Cookie は HttpOnly なので JS からは読めず、それでよい（XSS でトークンを抜かれる面を作らない）。フロントは「ログイン済みかどうか」を `GET /auth/me` の成否だけで判断する。
   - 本番でフロントとバックを別オリジンに置く構成にする場合、この dev proxy 方式は成立しない（→ 要確認事項 #5 ホスティング環境）。
+  - **実績（2026-08-13）**: `pnpm check` / `pnpm build` / `pnpm test` すべて通過。テストは **43件**（T-43 で追加したのは 42件：fetch ラッパ 8 / 認証 API 7 / 戻り先の解決 5 / RequireAuth 3 / LoginPage 6 / RegisterPage 8 / QueryClient の 401 処理 2、加えて既存の `App.test.tsx` 1件をルート構成の変更に合わせて 4件へ書き換え）。
+  - ⚠️ **依存の T-31（API 型生成とクライアント基盤）が未着手のまま着手した。** T-31 は `GET /config`（T-12）・`POST /run`（T-27）に依存しており、それらが未実装で OpenAPI から config/reports の型を生成できない。認証画面には fetch ラッパが要るので、**T-31 の完了条件のうち今使う分だけを先取りした**：
+    - `src/api/client.ts`：全リクエストに `credentials: "include"`、401 / 403 / 409 / 422 を `ApiError` として区別（`isUnauthorized` / `isForbidden` / `isConflict` / `isValidationError`）。**T-31 でここを一般化するとき、401 と 403 の扱いを変えないこと。**
+    - `src/api/auth.ts`：レスポンスの型は**手書きの zod スキーマ**。T-31 で `openapi-typescript` の生成物へ寄せる。
+    - `src/api/query-keys.ts`：クエリキー規約を `authKeys` から開始。T-31・T-33 で `config` / `reports` を足す。
+  - **`as T` キャストを使わずに型を通した**（`frontend/CLAUDE.md` の規約）。レスポンスは必ず zod スキーマの `parse()` を通し、location state のような外部由来の値は型ガードで絞る（`utils/loginRedirect.ts`）。
+  - ⚠️ **`/api` を落とす rewrite が必須**。バックエンドのルーターは `/auth/...` のようにプレフィックス無しで生えている（`main.py` は `include_router` にプレフィックスを付けない）ので、proxy 側で `path.replace(/^\/api/, "")` しないと 404 になる。
+  - **戻り先（`from`）はアプリ内パスだけを許す。** `//evil.example` や `https://…` を弾かないと、ログイン画面が外部サイトへの踏み台になる（オープンリダイレクト）。`/login` `/register` 自身へも戻さない（往復になる）。テストで固定済み。
+  - **ログイン成功時は遷移の前に `GET /auth/me` を取り直す。** `['auth','me']` に未ログイン時の `null` が残ったまま認証必須ルートへ行くと `RequireAuth` に押し戻される（`staleTime: 30_000` があるため invalidate だけでは間に合わない）。
+  - **セッション失効の検出は `QueryClient` の `queryCache` / `mutationCache` の `onError` に置いた**（`api/query-client.ts`）。任意の API が 401 を返したら `['auth','me']` を `null` にする＝どの画面からでもログイン画面へ落ちる。⚠️ **403 では落とさない**（再ログインしても解決しないため。両方テストで固定）。テストが同じ挙動をまっさらな状態で得られるよう、シングルトンではなく `createQueryClient()` を公開している。
+  - **読み込み中はリダイレクトしない。** `GET /auth/me` の応答を待たずに判断すると、再読込のたびにログイン画面が一瞬見える。`RequireAuth` は `isPending` 中は「読み込み中…」を出す（テストで固定）。
+  - **パスワードのポリシー（12文字以上・UTF-8 で 72 バイト以内）をフォームにも置いた**。⚠️ **バイト長で検査する**（日本語は1文字3バイトで24文字が上限）。サーバーが最終権限であることは変わらないが、422 を待たずに手元で気づける。`test('bcrypt の 72 バイト上限を…')` で「文字数で見ていたら通ってしまう25文字」を固定。
+  - 登録フォームに**確認用パスワード欄**を足した（完了条件には無い）。CLI（T-41）が2回入力を求めるのと揃える。⚠️ **`password_confirmation` はサーバーへ送らない**（リクエストモデルが `extra="forbid"` なので 422 になる）。テストで送信ボディが `email` / `display_name` / `password` の3つだけであることを固定。
+  - **ロール選択 UI が無いことをテストで固定**（`combobox` / `radio` / 「権限」ラベルが存在しない）。§1.1「昇格は admin のみ」の実体はサーバー側（登録経路が `role` を受け取らない）だが、UI 側にも回帰の網を張った。
+  - **ルート構成を「ログイン不要」と「認証必須」に分けた**（`App.tsx`）。認証必須側は `RequireAuth` → `AppLayout` の下にまとめてあるので、T-32〜T-36 の画面はそこへ足すだけで保護される。⚠️ ここでの保護は**導線の整備であってアクセス制御ではない**（実体は未認証 401 / 権限なし 403）。
+  - **shadcn/ui の土台をここで入れた**（T-33 の前提）。`button` / `input` / `label` / `card` / `alert` を `pnpm dlx shadcn@latest add` で生成し、`src/styles/index.css` に**デザイントークン（base color: neutral）**を追加した。トークンが無いと生成物が参照する `bg-primary` / `text-muted-foreground` / `border-input` 等が解決されず、コンポーネントが無スタイルで出る。
+    - ⚠️ **CLI が `frontend/@/components/ui/` という実ディレクトリを作った。** ルートの `tsconfig.json` が solution 構成（`files: []`）で `paths` を持たず、`@` の解決先が分からなかったため。`tsconfig.json` に `compilerOptions.paths` を追記して解消済み（型チェックには使われない）。**次に `shadcn add` する人は生成先を確認すること。**
+    - ⚠️ **CLI は umbrella の `radix-ui`（+307 パッケージ）を依存に足そうとするが、外した。** この repo は既に `@radix-ui/react-slot` を持っているので `button.tsx` の import をそちらへ向け（単体パッケージは `Slot`、umbrella は `Slot.Root` である点に注意）、`label.tsx` は Radix ではなく素の `<label>` にした。代償は2つ：**Biome の `noLabelWithoutControl` を `label.tsx` 1箇所で抑止**していること（汎用プリミティブなので `htmlFor` は呼び出し側が渡す）と、`shadcn add` の生成物をそのまま使えないこと。
+    - ⚠️ **T-33 は `Select`（除外ルール強度の5値 enum）・`Switch`（有効/無効トグル）が要るので、そこで `radix-ui` を入れるかを決め直すことになる。** 素の HTML で代替できない挙動が要求されるため、そのときは umbrella を入れて `label.tsx` の抑止も外すのが素直。**この判断は T-43 では確定させていない。**
+  - `pnpm` はローカルに未インストールだったため `pnpm install` から実施（`radix-ui` を外した後に再 install してツリーを整えてある）。
+  - **主要な検証はミューテーションテストで実効性を確認済み**：`credentials` を `omit` に／戻り先を常に `/` に／失敗文言を「未登録です」に言い換え／確認欄をサーバーへ送る、の4つの改変でそれぞれ対応するテストが1件ずつ落ちることを実測した。
 
 #### - [ ] T-32: 管理専用サブ画面の到達導線
 - **対応**: §5.1／設計判断D
