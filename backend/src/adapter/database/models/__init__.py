@@ -2,3 +2,4 @@
 
 from adapter.database.models.audit_log import AuditEventType, AuditLog  # noqa: F401
 from adapter.database.models.config_revision import ConfigRevision  # noqa: F401
+from adapter.database.models.user import User, normalize_email  # noqa: F401

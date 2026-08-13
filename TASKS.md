@@ -296,7 +296,7 @@ flowchart TD
 > 旧 T-08（スタブ1枚）を **T-08 / T-40 / T-41 / T-42** に分割した（フロント側は T-43）。
 > 新 ID は既存 ID を再利用しない規則に従い T-40 以降を採番しているが、**実行順は上記のとおり P2 の中**（§2 の「着手順の要点」参照）。
 
-#### - [ ] T-08: ロール・ユーザーモデルとパスワードハッシュ（Passlib + bcrypt）
+#### - [x] T-08: ロール・ユーザーモデルとパスワードハッシュ（Passlib + bcrypt）
 - **対応**: §4.1（→ 仕様書 §2・§6.1）／§1.1「認証」
 - **依存**: T-01, T-03（DB 基盤・マイグレーション運用）
 - **成果物**: `backend/src/enterprise/entities/principal.py`, `backend/src/enterprise/services/password.py`, `backend/src/adapter/database/models/user.py`, `backend/src/adapter/http/fastapi/auth/backend.py`, `backend/migrations/versions/*.py`, `backend/tests/enterprise/test_password.py`, `backend/README.md`
@@ -313,6 +313,17 @@ flowchart TD
   - ⚠️ **Passlib 1.7.4 は最終リリースが 2020年で、新しい `bcrypt` パッケージとの組み合わせでバージョン検出に失敗する既知の事象がある**（`bcrypt` 4.1 以降で `AttributeError: module 'bcrypt' has no attribute '__about__'` の警告、5.x では影響が拡大しうる）。**着手時にまず `uv add "passlib[bcrypt]"` して実際に hash/verify が通るかを確認し、必要なら `bcrypt` にバージョン上限を張る**こと。ここで詰まる場合の代替は Passlib を外して `bcrypt` を直接使うことだが、**それは「自前でハッシュ処理を書かない」方針からの逸脱になるので、採用するなら §1.1 を先に更新する**。
   - `role` は DB 上は文字列。`system` は**ログイン可能なユーザーではない**（T-41 のサービストークン用）ので、`users` に `system` 行を作らない制約をテストで固定する。
   - 認証まわりのテーブルは `audit_log` / `config_revision` と同じく **DB 固有型を使わない**（§1 備考／T-03）。
+  - **実績（2026-08-13）**: `make lint` / `make type-check` / `make test`（408件）すべて通過。
+  - ⚠️ **上の bcrypt 懸念は現実のものだった。** `uv add "passlib[bcrypt]"` は **bcrypt 5.0.0** を引き、`CryptContext.hash()` が `ValueError: password cannot be longer than 72 bytes` で**必ず失敗**した。原因は passlib 側で、バックエンド初期化時の `detect_wrap_bug()` が 72 バイト超の probe を渡すのに対し、bcrypt 5.0 が切り詰めをやめて例外にするようになったため。**`bcrypt>=4.0,<5` に固定して解決**（実測 4.3.0 で正常）。この上限を外すと動かなくなるので、理由を `pyproject.toml` のコメントに残した。**Passlib は外していない**＝「自前でハッシュ処理を書かない」方針は維持（§1.1 の更新は不要だった）。
+  - bcrypt 4.x では passlib が起動時に `(trapped) error reading bcrypt version` の WARNING をトレースバック付きで1回吐く（`bcrypt.__about__` が 4.1 で消えたため）。動作に実害はないが本番ログで障害に見えるので、`_build_context()` で**バックエンドを先読みしてその1回だけ握る**（以降の passlib 警告は通常どおり出る）。
+  - ⚠️ **72 バイト超は切り詰めず拒否する**実装にした。`test_truncation_would_have_collapsed_distinct_passwords` で「拒否しなかった場合に何が起きるか」（先頭72バイトが同じ別パスワードで照合が通る）を実測で固定している。**日本語は1文字3バイトで24文字が上限**なので、文字数で検証すると踏む。
+  - 長さ検証の2つの違反（短すぎる／バイト超過）は**同時に起きない**（UTF-8 は1文字最大4バイト、11文字×4=44 < 72）。それでも `validate_password_policy` は早期 return せず全項目を評価する形にした（将来ポリシーが増えたときの前提崩れに備える）。この前提自体もテストで固定済み。
+  - `verify_password` は**ポリシー検証をしない**。照合時に見ると `MIN_PASSWORD_LENGTH` を引き上げた瞬間に既存利用者が一斉にログイン不能になるため。テストで境界を明示（`test_verify_does_not_enforce_the_policy`）。
+  - 壊れたハッシュ（DB 破損・移行ミス）は例外にせず `False` を返す。失敗理由を呼び出し元に区別させないため（T-40 のログイン失敗文言の統一と対）。
+  - `system` 行の禁止は **DB の CHECK 制約**（`ck_users_role_is_assignable`）で担保。アプリ層のバリデーションだけだと CLI や将来の直接投入経路をすり抜ける。
+  - メールは `normalize_email()`（trim + 小文字化）を通してから保存し、`unique` 制約と組み合わせて `Admin@…` / `admin@…` の二重登録を防ぐ。**すべての入口でこれを通すこと**（T-40・T-41）。
+  - 平文・ハッシュの非露出は3方向から固定：`User.__repr__` がハッシュを含まない／`PasswordPolicyError` のメッセージに平文が入らない／hash・verify 中の全ログに平文とハッシュが出ない（`caplog`）。
+  - Alembic の autogenerate は `UtcDateTime` を `adapter.database.types.UtcDateTime(...)` と描画するが、**マイグレーション側に `adapter` の import が無く NameError になる**。DDL は `sa.DateTime(timezone=True)` と同一（`UtcDateTime` は Python 側の TypeDecorator）なので、既存マイグレーション（T-03）と同じ表記へ手で直した。**次に `make migrate-create` する人も同じ修正が要る。**
 
 #### - [ ] T-40: セッション発行と認証エンドポイント（登録・ログイン・ログアウト）
 - **対応**: §4.1・§3.1（→ 仕様書 §2・§6.1）／§1.1「ログイン状態の保持」
@@ -324,7 +335,7 @@ flowchart TD
   - Cookie は `sid`、**`HttpOnly` / `SameSite=Lax` / `Path=/`**、`Secure` は設定で切替（`session_cookie_secure`、既定 true。http の localhost 用に false にできる）
   - 有効期限：**絶対期限 7日 ＋ アイドル期限 8時間**（いずれも設定値）。アクセスのたびに `last_seen_at` を更新し、アイドル期限を延長する（絶対期限は延ばさない）
   - `POST /auth/register`：`{email, display_name, password}` → **常に `viewer` で作成**。**リクエストに `role` を含められない**（含めたら 422）ことをテストで固定＝§1.1「昇格は admin のみ」の実体
-  - 登録可能なメールドメインを設定で制限できる（`auth_allowed_email_domains`、空なら無制限）。**→ 要確認事項 #6**
+  - 登録可能なメールドメインを設定で制限できる（`auth_allowed_email_domains`）。**既定値は `sapeet.com`**（2026-08-13 決定＝要確認事項 #6）。空にすれば無制限にできるが、**既定を無制限にしない**。許可外ドメインが 422 で弾かれることをテストで固定する
   - `POST /auth/login`：成功で セッション発行＋Cookie 付与。**失敗時のレスポンスは「メールアドレスまたはパスワードが違います」の1種類のみ**（アカウントの存在有無を区別させない）
   - **総当たり対策**：同一アカウントへの連続失敗を数え、N回（既定5）でM分（既定15）ロック。ロック中も**エラー文言は上と同一**にする
   - **存在しないアカウントへのログイン試行でも、ダミーハッシュに対して `verify()` を実行する**（応答時間差でアカウントの存在が漏れないようにする）
@@ -843,5 +854,5 @@ flowchart TD
 | 3 | **Anthropic API キーの発行と利用枠** — crawl / filter が Claude API に依存 | T-15, T-16, T-19 | | |
 | 4 | ~~**既存 SSO との連携方式** — 認証スタブの差し替え先。社内IT担当へ確認~~ → **2026-08-13 解消**。SSO 連携はやらず **ID/PW 認証を自前実装**する方針が確定（§1.1「備考：SSO 前提からの差分」）。**社内IT担当への確認は不要になった**。SSO は将来の選択肢として [future-roadmap.md](./docs/future-roadmap.md) 構想3 へ格下げ | — | — | 解消済 |
 | 5 | **ホスティング環境**（README「次のタスク 1」）— 外部 cron の登録方法、成果物ストレージ（ローカルFS or オブジェクトストレージ）に影響。**認証にも影響**：フロントとバックが別オリジンになる場合、Cookie の `SameSite` 設定と CSRF 対策の見直しが必要（T-40・T-43） | T-02, T-28, T-40, T-43 | | |
-| 6 | **自己登録を誰に開放するか** — 「登録直後は viewer」でも、**viewer はレポート HTML を閲覧できる**（§6.2）。アプリが社外から到達可能な場所に置かれる場合、誰でも登録して閲覧できてしまう。**メールドメイン許可リスト**（`auth_allowed_email_domains`、例 `sapeet.com`）で絞るか、admin 承認制にするかを決める。T-40 では**許可リストの仕組みだけ実装し、既定値は運用に合わせて設定**する | T-40 | | |
-| 7 | **仕様書 §1.3 / 設計書 §3.1 の改訂** — 現状 SSO 前提の記述が残っており、TASKS.md §1.1 と食い違っている。**「認証基盤の新規構築を含まない」というスコープ定義に対する差分**なので、工数増を含めて関係者の合意が要る | T-38 | | |
+| 6 | ~~**自己登録を誰に開放するか**~~ → **2026-08-13 決定**。**メールドメイン許可リストで `sapeet.com` に絞る**（`auth_allowed_email_domains` の既定値）。T-40 で許可リストの仕組みと既定値を実装し、**許可外ドメインからの登録が拒否されることをテストで固定**する | T-40 | | 決定済 |
+| 7 | ~~**仕様書 §1.3 / 設計書 §3.1 の改訂**~~ → **2026-08-13 合意済み**。SSO をやめて ID/PW 認証を自前実装する差分を、実装が固まった時点で仕様書・設計書へ反映する。**改訂そのものは T-38 で実施**（それまでの実装方針の正は §1.1） | T-38 | | 合意済 |
