@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from adapter.database.base import Base  # noqa: E402
+from adapter.database.database import prepare_sqlite_dir  # noqa: E402
 import adapter.database.models  # noqa: E402,F401  # モデルを読み込み metadata に登録する
 from config import get_settings  # noqa: E402
 
@@ -22,7 +23,9 @@ if config.config_file_name is not None:
 
 # alembic.ini は ConfigParser 経由なので、URL 中の `%`（パスワードの URL エンコード等）は
 # `%%` にエスケープしてから渡す（補間構文と誤認させない）。
-config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
+_database_url = get_settings().database_url
+prepare_sqlite_dir(_database_url)  # SQLite の置き場が無ければ作る（Docker 不要の手元運用）
+config.set_main_option("sqlalchemy.url", _database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 
 
@@ -38,7 +41,12 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    # SQLite は ALTER TABLE の制約が強いので batch モードで再作成させる。
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        render_as_batch=connection.dialect.name == "sqlite",
+    )
     with context.begin_transaction():
         context.run_migrations()
 

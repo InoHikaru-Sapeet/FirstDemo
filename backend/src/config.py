@@ -1,7 +1,10 @@
 """アプリ設定。環境変数 / .env から読み込む（pydantic-settings）。"""
 
 from functools import lru_cache
+from pathlib import Path
+from typing import Literal
 from urllib.parse import quote_plus
+from zoneinfo import ZoneInfo
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,19 +18,44 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     cors_allowed_origins: str = "*"
 
-    # データベース（--with-db で生成した場合のみ参照される）
+    # データベース。手元は SQLite（Docker 不要）、本番・検索機能の本格化時に
+    # PostgreSQL へ切り替える想定（TASKS.md §1・T-39）。切替は db_backend だけで行う。
+    db_backend: Literal["sqlite", "postgresql"] = "sqlite"
+
+    # SQLite（db_backend="sqlite" のときに参照される）
+    sqlite_path: Path = Path("var/ai_intelligence.db")
+
+    # PostgreSQL（db_backend="postgresql" のときに参照される）
     db_host: str = "localhost"
     db_port: int = 5432
     db_user: str = "postgres"
     db_password: str = "password"
     db_name: str = "ai_intelligence"
 
+    # AI（Claude API）。crawl / filter が利用する（設計書 §6・§9）。
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-opus-5"
+
+    # 成果物ストレージ。config.json / 中間xlsx / 生成HTML はファイルが正。
+    # 正規名は上書きし、旧版は履歴へ退避する（設計書 §11 設計判断B）。
+    # ドライラン結果は scratch へ隔離し TTL で掃除する（同 設計判断C）。
+    artifact_root: Path = Path("artifacts")
+    history_max_generations: int = 10
+    scratch_ttl_hours: int = 24
+
+    # タイムゾーン。入出力は Asia/Tokyo 基準、ISO週は月曜始まり（設計書 §0・§14）。
+    timezone: str = "Asia/Tokyo"
+
     @property
     def database_url(self) -> str:
-        """SQLAlchemy(asyncpg) 用の接続 URL。
+        """SQLAlchemy 用の非同期接続 URL。db_backend で切り替わる。
 
-        user / password は予約文字（@ : / %）を含みうるので URL エンコードする。
+        PostgreSQL では user / password が予約文字（@ : / %）を含みうるので
+        URL エンコードする。
         """
+        if self.db_backend == "sqlite":
+            return f"sqlite+aiosqlite:///{self.sqlite_path}"
+
         user = quote_plus(self.db_user)
         password = quote_plus(self.db_password)
         return (
@@ -38,6 +66,21 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
+
+    @property
+    def tzinfo(self) -> ZoneInfo:
+        """アプリ共通のタイムゾーン。日時の生成・整形は必ずこれを経由する。"""
+        return ZoneInfo(self.timezone)
+
+    @property
+    def scratch_root(self) -> Path:
+        """ドライラン等の一時成果物を置く隔離パス（正規の成果物と混ぜない）。"""
+        return self.artifact_root / "scratch"
+
+    @property
+    def history_root(self) -> Path:
+        """上書き前の正規成果物を退避する世代スナップショットの置き場。"""
+        return self.artifact_root / "_history"
 
 
 @lru_cache

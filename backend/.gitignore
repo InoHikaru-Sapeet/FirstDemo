@@ -8,6 +8,11 @@ __pycache__/
 .coverage
 htmlcov/
 
+# ローカル DB（SQLite）
+var/
+*.db
+*.sqlite3
+
 # 環境変数（雛形の .env.example はコミットする）
 .env
 

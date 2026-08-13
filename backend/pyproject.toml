@@ -11,8 +11,12 @@ dependencies = [
     "pydantic-settings>=2.7",
     "python-dotenv>=1.0",
     "sqlalchemy>=2.0",
+    # 手元の既定 DB は SQLite（Docker 不要）。asyncpg は将来の PostgreSQL 移行用に残す。
+    "aiosqlite>=0.20",
     "asyncpg>=0.30",
     "greenlet>=3.1",
+    "anthropic>=0.116",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

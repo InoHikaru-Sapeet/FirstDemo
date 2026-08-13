@@ -44,24 +44,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    services:
-      postgresql:
-        image: postgres:15.7
-        ports:
-          - "5432:5432"
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: "ai_intelligence"
-        options: >-
-          --health-cmd "pg_isready -U postgres -d ai_intelligence"
-          --health-interval 5s --health-timeout 5s --health-retries 10
+    # DB は SQLite（既定）。postgres サービスは不要。
+    # PostgreSQL へ戻す場合は services: postgresql と DB_BACKEND=postgresql を復活させる。
     env:
-      DB_HOST: localhost
-      DB_PORT: "5432"
-      DB_USER: postgres
-      DB_PASSWORD: password
-      DB_NAME: "ai_intelligence"
+      DB_BACKEND: sqlite
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7

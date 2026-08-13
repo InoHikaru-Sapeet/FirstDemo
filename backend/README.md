@@ -12,9 +12,13 @@
 ```bash
 cp .env.example .env
 make sync          # 依存を同期
+make migrate-all   # DB(SQLite) を作成してマイグレーション適用
 make dev           # http://localhost:8000 で起動
 curl http://localhost:8000/healthz   # {"status":"ok"}
+curl http://localhost:8000/readyz    # {"status":"ready"}
 ```
+
+**Docker は不要です。** 既定の DB は SQLite（`var/ai_intelligence.db`）で、`make up` を実行する必要はありません。
 
 ## よく使うコマンド
 
@@ -26,7 +30,31 @@ make test          # pytest
 make test-ci       # カバレッジ付き pytest
 ```
 
-DB を同梱した場合は `make help` の後ろに `db-*` / `migrate-*` が出る（`Makefile.db.mk`）。
+`make help` の後ろに `migrate-*` / `up` / `down` / `db-init` が出る（`Makefile.db.mk`）。
+
+## データベース
+
+手元は **SQLite**（Docker 不要）。本番運用時、および全文検索・ベクトル検索
+（[`../docs/future-roadmap.md`](../docs/future-roadmap.md) 構想1）を実装する際に
+**PostgreSQL へ移行**する想定。
+
+| | SQLite（既定） | PostgreSQL |
+|---|---|---|
+| 設定 | `DB_BACKEND=sqlite` | `DB_BACKEND=postgresql` |
+| 保存先 | `SQLITE_PATH`（既定 `var/ai_intelligence.db`） | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` |
+| Docker | 不要 | 必要（`make up`） |
+
+PostgreSQL へ切り替える手順:
+
+```bash
+make up                                   # postgres を起動（Docker 必要）
+DB_BACKEND=postgresql make migrate-all
+DB_BACKEND=postgresql make dev
+```
+
+> **移行の道を塞がないための制約**: モデル定義は SQLAlchemy に閉じ込め、
+> DB 固有機能（`JSONB`・配列型・`tsvector`・pgvector 等）を使わない。
+> JSON カラムは汎用 `JSON` 型を使う。
 
 ## レイヤ構成
 

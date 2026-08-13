@@ -1,3 +1,17 @@
+# PostgreSQL（将来の移行用）。
+#
+# ⚠️ 手元での開発・動作確認には不要です。
+#    既定の DB は SQLite（Docker 不要）なので、`make up` を実行せずに
+#    `make migrate-all` → `make dev` だけで動きます。
+#
+# このファイルを使うのは、本番相当の構成を試すときや、
+# 全文検索・ベクトル検索（docs/future-roadmap.md 構想1）の検証で
+# PostgreSQL が必要になったときです。
+#
+# 使い方:
+#   make up
+#   DB_BACKEND=postgresql make migrate-all
+#   DB_BACKEND=postgresql make dev
 services:
   postgresql:
     image: postgres:15.7
