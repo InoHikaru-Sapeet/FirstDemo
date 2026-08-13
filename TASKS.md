@@ -361,10 +361,10 @@ flowchart TD
   - `_now()` を1箇所に集約し、テストは `monkeypatch` で時間を進める。有効期限・ロック解除の検証に実時間の待機を使わない。
   - **`.env.example` はガードレールにより AI が編集できない**（T-01 備考）。追記ブロックを提示済み。反映されるまで既定値で動く（`SESSION_COOKIE_SECURE=true` のため、**http の手元動作では `false` の設定が必要**）。
 
-#### - [ ] T-41: 初期 admin ブートストラップ CLI とサービストークン
+#### - [x] T-41: 初期 admin ブートストラップ CLI とサービストークン
 - **対応**: §4.1／§1.1「ユーザー登録とロール付与」
 - **依存**: T-08
-- **成果物**: `backend/src/adapter/cli/create_admin.py`, `backend/Makefile`（ターゲット追加）, `backend/README.md`, テスト
+- **成果物**: `backend/src/adapter/cli/create_admin.py`, `backend/src/adapter/cli/create_service_token.py`, `backend/src/application/usecases/bootstrap_admin.py`, `backend/src/enterprise/services/service_token.py`, `backend/src/adapter/http/fastapi/auth/service_token.py`, `backend/src/adapter/http/fastapi/auth/chain.py`, `backend/src/config.py`, `backend/src/adapter/database/models/audit_log.py`, `backend/Makefile`（ターゲット追加）, `backend/README.md`, テスト
 - **完了条件**:
   - `make create-admin`（`uv run python -m adapter.cli.create_admin`）で **`admin` ロールのユーザーを DB へ直接作成**できる
   - **パスワードは対話プロンプト（`getpass`）で受け取り、エコーしない**。コマンドライン引数・環境変数で平文パスワードを渡す経路を**用意しない**（`ps` / シェル履歴 / CI ログに残るため）
@@ -377,6 +377,20 @@ flowchart TD
   - 環境変数で初期 admin を作る方式（`INITIAL_ADMIN_EMAIL` / `..._PASSWORD`）は、**平文パスワードが `.env` に残り続ける**ため採らない。加えて `.env*` は Claude Code のガードレールで AI が編集できない（T-01 備考）ので、手順としても回りくどくなる。
   - ⚠️ `system` は「ログインするユーザー」ではなく**呼び出し元の種別**。`users` テーブルに行を作らず、サービストークンから直接 `Principal(role="system")` を組み立てる（T-08 備考と対）。
   - `service_token` は `.env.example` への追記が必要だが **AI が直接編集できない**（T-01 備考）。追記ブロックを提示して手動反映してもらう。
+  - **実績（2026-08-13）**: `make lint` / `make type-check` / `make test` すべて通過。テストは **570件**（T-41 で追加したのは 97件：ブートストラップ・ユースケース 30 / CLI 22 / サービストークン照合 16 / 認証バックエンドと合成 23 / トークン発行 CLI 4 / 設定 2）。
+  - ⚠️ **サービストークンは設定に「ハッシュ」を置く形にした（完了条件の文面からの差分）。** 完了条件は「トークンは設定（`service_token`）から読み」としていたが、**設定値を `SERVICE_TOKEN_HASH`（生トークンの SHA-256・16進64桁）に変更**した。理由は「平文でトークンを保存しない」を設定ファイルにも適用するため（`.env` が漏れても**そのままでは system を騙れない**）。**`secrets.compare_digest` による定数時間比較は完了条件どおり**で、比較対象がハッシュになっただけ（bcrypt は使っていない。生トークンは 256 ビットの乱数で辞書攻撃の対象にならず、検証が cron の全リクエストで走るため。理由は T-40 の `hash_session_token()` と同じ）。生トークンは `make service-token` が1回だけ表示し、cron 側の秘密情報として渡す。
+  - **未設定なら system 経路そのものが無効**（`ServiceTokenAuthenticationBackend.is_enabled` が false）。「空のハッシュは何にでも一致」にならないことをテストで固定（`test_an_unset_hash_disables_the_system_path`。ユニットと DI の両方）。⚠️ ここが逆になると §6.2 の認可が根本から崩れる。
+  - ⚠️ **最も起きやすい運用ミス（`SERVICE_TOKEN_HASH` に生トークンを貼る）を警告して無効化する。** 照合は必ず失敗する（安全側）が、原因不明の 401 で止まるため。`looks_like_service_token_hash()`（64桁の16進か）で検出し WARNING を出す。**設定値そのものはログに出さない**。
+  - **認証方式の合成を足した**（`auth/chain.py`）。`get_authentication_backend()` の**差し替え口は1箇所のまま**で、中身が「サービストークン → Cookie セッション」の2段になった。⚠️ **順序を入れ替えないこと**：Cookie を先に試すと、Bearer を提示したリクエストが Cookie の人のロールで通りうる（`test_a_cookie_session_cannot_override_a_service_token` で固定）。実アプリ（TestClient + 一時ルート）でも `Bearer` → `system:cron` / 不正トークン → 401 / 資格情報なし → 401 を実測確認済み。
+  - **パスワードは `getpass` の2回入力のみ。** 引数・環境変数の経路は**作っていない**。`--password` が argparse に存在しないこと・モジュールのソースに `environ` / `getenv` が現れないこと・`DEFAULT_PROMPTER.read_secret is getpass.getpass` の3方向でテスト固定した（環境変数に置いても採用されないことも実測テスト）。TASKS.md の指示どおり環境変数方式は採らなかった（`.env` に平文が残り続けるため）。
+  - **拒否が確定しているときはパスワードを聞かない**（`ensure_can_create_initial_admin()` を先に呼ぶ）。admin が既に居る場合に長いパスワードを2回入力させてから断るのを避けるため。`test_it_does_not_ask_for_a_password_it_will_not_use` で固定。
+  - **既に admin が居る場合の挙動（要検討事項の決定）**: 新規作成は**拒否（終了コード1）**し `--promote <email>` を案内する。`--promote` は admin が居ても**拒否しない**（admin 全員がログイン不能になったときの**復旧手段**でもあるため）。既に admin のユーザーへの `--promote` は**何も書かずに 0**（べき等。監査ログも増やさない＝変えていないものを記録しない）。同一メールが既存なら**新規作成せず 1**（既存行のロール・パスワードを黙って書き換えない）。⚠️ **停止中（`is_active=false`）の admin も「居る」と数える**：除外すると admin を停止するだけで2人目を作れてしまう。
+  - **終了コードで理由を区別する**: 0=成功/何もしなかった、1=業務規則による拒否（admin 既存・対象不在・メール既存）、2=入力不備（メール形式・表示名空・パスワードポリシー・確認不一致・中断）。cron やセットアップスクリプトから判定できるようにするため。
+  - **業務規則は `application/usecases/bootstrap_admin.py` に置き、CLI は入出力だけ**にした（成果物リストは CLI 1ファイルだったが、`adapter → application → enterprise` の依存の向きを保つため分けた）。DB を触るテストがユースケース側でそのまま書けるという実利もある。
+  - ⚠️ **`AuditEventType.USER_ROLE_CHANGE` を追加した**（設計書 §4.4 の enum への差分）。`event_type` は文字列カラムなのでマイグレーションは不要。**§4.4 の表の更新が必要（→ T-38）**。`user_registered` は T-10 の担当。`tests/adapter/test_models.py::test_event_types_match_the_design` の期待値も更新済み。
+  - ⚠️ **監査ログの書き込みは T-10 が未着手のためモデルへ直接積んでいる。** T-10 で監査サービスを作ったら `_record_role_change()` をそちらへ寄せること。`actor` は完了条件どおり `cli:create-admin`、`diff` は `{"role": {"before": <前のロール or null>, "after": "admin"}, "email": ...}`、`target` は `user_id`。`before: null` は「このコマンドが作成した」の意。**平文・ハッシュを書かないことをテストで固定**（`test_the_audit_log_contains_no_password_material`）。
+  - メール形式の判定を `is_valid_email_format()` / `email_domain()` として `models/user.py` へ切り出し、**自己登録（T-40）と CLI（T-41）で同じ判定**にした（挙動は変えていない）。CLI は**ドメイン許可リスト（`auth_allowed_email_domains`）を課さない**：ブートストラップは運用者の判断で行う経路で、社内ドメイン外の管理者を作る余地を残す（自己登録は従来どおり制限される）。
+  - `.env.example` は**ガードレールにより AI が編集できない**（T-01 備考）。`SERVICE_TOKEN_HASH` の追記ブロックを提示済み。未設定のままでも動く（system 経路が無効なだけ）。
 
 #### - [ ] T-09: RBAC ミドルウェアと権限マトリクス
 - **対応**: §4.2・§3.1（→ 仕様書 §6.2）

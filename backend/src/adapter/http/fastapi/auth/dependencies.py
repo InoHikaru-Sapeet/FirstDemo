@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from adapter.database.database import db_manager
 from adapter.http.fastapi.auth.backend import AuthenticationBackend
+from adapter.http.fastapi.auth.chain import ChainedAuthenticationBackend
+from adapter.http.fastapi.auth.service_token import ServiceTokenAuthenticationBackend
 from adapter.http.fastapi.auth.session_backend import (
     SESSION_COOKIE_NAME,
     SessionAuthenticationBackend,
@@ -65,12 +67,21 @@ def get_authentication_backend(
 
     別方式（SSO 等）を足す場合は、`AuthenticationBackend` を実装した
     クラスを返すよう、この関数の戻り値だけを変える。
+
+    現在は2方式の合成（`chain.py` 参照）:
+
+    1. サービストークン（`Authorization: Bearer`）— cron（`system`）。
+       `SERVICE_TOKEN_HASH` 未設定なら無効
+    2. Cookie セッション（`sid`）— 人（admin / editor / viewer）
     """
     settings = get_settings()
-    return SessionAuthenticationBackend(
-        db=db,
-        session_policy=build_session_policy(settings),
-        login_policy=build_login_policy(settings),
+    return ChainedAuthenticationBackend(
+        ServiceTokenAuthenticationBackend(expected_hash=settings.service_token_hash),
+        SessionAuthenticationBackend(
+            db=db,
+            session_policy=build_session_policy(settings),
+            login_policy=build_login_policy(settings),
+        ),
     )
 
 

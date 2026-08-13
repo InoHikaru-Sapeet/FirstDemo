@@ -39,6 +39,25 @@ def normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
+def is_valid_email_format(normalized_email: str) -> bool:
+    """メールアドレスの形（`local@domain.tld`）を満たすか。
+
+    ⚠️ **厳密な RFC 検証はしない。** 打ち間違いを弾くための最低限の形式検査で、
+    到達性は「そのアドレスでログインできるか」で確かめる運用。正規表現で
+    RFC 5322 を追うと、正しいアドレスを誤って弾く事故のほうが増える。
+
+    入口が2つ（自己登録 T-40 / ブートストラップ CLI T-41）あるので、
+    判定はここ1箇所に置く。**`normalize_email()` を通した値**を渡すこと。
+    """
+    local, separator, domain = normalized_email.partition("@")
+    return bool(separator and local and domain and "." in domain)
+
+
+def email_domain(normalized_email: str) -> str:
+    """メールアドレスのドメイン部（許可リスト判定用）。"""
+    return normalized_email.partition("@")[2]
+
+
 class User(Base):
     """利用者1人。
 

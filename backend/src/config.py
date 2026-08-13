@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     login_max_failed_attempts: int = 5
     login_lockout_minutes: int = 15
 
+    # cron（`system` ロール）用サービストークンの**ハッシュ**（T-41）。
+    # ⚠️ ここに入れるのは `make service-token` が出力する SHA-256（64桁の16進）で、
+    # **生トークンではない**。生トークンは cron 側の秘密情報として渡す
+    # （設定ファイルが漏れてもそのままでは system を騙れないようにするため）。
+    # **空なら system 経路そのものが無効**（未設定を「誰でも system」にしない）。
+    service_token_hash: str = ""
+
     @property
     def database_url(self) -> str:
         """SQLAlchemy 用の非同期接続 URL。db_backend で切り替わる。

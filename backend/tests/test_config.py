@@ -25,6 +25,7 @@ ENV_KEYS = (
     "DB_USER",
     "DB_PASSWORD",
     "DB_NAME",
+    "SERVICE_TOKEN_HASH",
 )
 
 
@@ -106,3 +107,20 @@ def test_unknown_db_backend_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("DB_BACKEND", "mysql")
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+def test_the_service_token_path_is_disabled_by_default(settings: Settings) -> None:
+    """⚠️ 既定で system 経路を有効にしない（T-41）。
+
+    空文字は「未設定＝system 経路そのものが無い」を意味する。既定値を入れると
+    「配布物に共通のトークンが埋まっている」状態になり、cron を騙れてしまう。
+    """
+    assert settings.service_token_hash == ""
+
+
+def test_the_service_token_hash_is_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """設定に入れるのは**ハッシュ**（生トークンではない）。"""
+    monkeypatch.setenv("SERVICE_TOKEN_HASH", "a" * 64)
+    assert Settings(_env_file=None).service_token_hash == "a" * 64

@@ -6,6 +6,7 @@ PORT ?= 8000
 
 .PHONY: help sync lint format type-check test test-ci dev
 .PHONY: config-schema config-schema-check
+.PHONY: create-admin service-token
 
 help:
 	@echo ""
@@ -19,6 +20,9 @@ help:
 	@echo ""
 	@echo "  config-schema        - config.json の JSON Schema を生成する"
 	@echo "  config-schema-check  - 生成済み JSON Schema が最新かを検査する"
+	@echo ""
+	@echo "  create-admin   - 最初の admin を作る（対話。ARGS='--promote a@b.com' も可）"
+	@echo "  service-token  - cron 用サービストークンを発行する"
 	@echo ""
 
 # === 開発 ===
@@ -49,6 +53,19 @@ config-schema:
 
 config-schema-check:
 	PYTHONPATH=src uv run python -m adapter.cli.export_config_schema --check
+
+# === 初期セットアップ（認証。T-41）===
+# 自己登録は必ず viewer なので、最初の admin だけは API では作れない。
+# ⚠️ パスワードは対話プロンプトで入力する。引数・環境変数で渡す経路は無い
+#    （ps / シェル履歴 / .env に平文が残るため）。
+
+create-admin:
+	PYTHONPATH=src uv run python -m adapter.cli.create_admin $(ARGS)
+
+# cron（system ロール）用のトークンを発行する。.env に入れるのは**ハッシュ**で、
+# 生トークンは cron 側にだけ渡す。
+service-token:
+	PYTHONPATH=src uv run python -m adapter.cli.create_service_token
 
 # === テスト ===
 

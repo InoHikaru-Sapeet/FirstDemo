@@ -30,7 +30,12 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from adapter.database.models.session import Session
-from adapter.database.models.user import User, normalize_email
+from adapter.database.models.user import (
+    User,
+    email_domain,
+    is_valid_email_format,
+    normalize_email,
+)
 from enterprise.entities.principal import (
     DEFAULT_SELF_REGISTERED_ROLE,
     Principal,
@@ -209,13 +214,13 @@ class AuthUsecase:
 
     def _ensure_email_is_acceptable(self, normalized_email: str) -> None:
         """形式とドメイン許可リストを検査する。"""
-        local, separator, domain = normalized_email.partition("@")
-        if not separator or not local or not domain or "." not in domain:
+        if not is_valid_email_format(normalized_email):
             raise AuthError(
                 AuthErrorCode.EMAIL_INVALID,
                 "メールアドレスの形式が正しくありません。",
             )
 
+        domain = email_domain(normalized_email)
         # 空リスト＝無制限。既定は `sapeet.com`（要確認事項 #6 の決定）。
         if self._allowed_email_domains and domain not in self._allowed_email_domains:
             allowed = " / ".join(self._allowed_email_domains)

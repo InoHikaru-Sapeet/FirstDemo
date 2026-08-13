@@ -13,12 +13,26 @@
 cp .env.example .env
 make sync          # 依存を同期
 make migrate-all   # DB(SQLite) を作成してマイグレーション適用
+make create-admin  # 最初の admin を作る（対話。パスワードは表示されない）
 make dev           # http://localhost:8000 で起動
 curl http://localhost:8000/healthz   # {"status":"ok"}
 curl http://localhost:8000/readyz    # {"status":"ready"}
 ```
 
 **Docker は不要です。** 既定の DB は SQLite（`var/ai_intelligence.db`）で、`make up` を実行する必要はありません。
+
+`make create-admin` は**初回だけ**必要です（詳細は下の「最初の admin を作る」）。
+手元で http を使う場合は `.env` に `SESSION_COOKIE_SECURE=false` を入れてください
+（既定は true ＝ HTTPS 前提のため、http ではログイン Cookie が保持されません）。
+
+ログインの確認:
+
+```bash
+curl -c cookie.txt -X POST http://localhost:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@sapeet.com","password":"..."}'
+curl -b cookie.txt http://localhost:8000/auth/me   # role が admin になっている
+```
 
 ## よく使うコマンド
 
@@ -31,6 +45,9 @@ make test-ci       # カバレッジ付き pytest
 
 make config-schema        # config.json の JSON Schema を生成
 make config-schema-check  # 生成済みスキーマが最新かを検査
+
+make create-admin         # 最初の admin を作る（T-41）
+make service-token        # cron 用サービストークンを発行（T-41）
 ```
 
 `make help` の後ろに `migrate-*` / `up` / `down` / `db-init` が出る（`Makefile.db.mk`）。
@@ -76,10 +93,71 @@ make config-schema-check  # 生成済みスキーマが最新かを検査
 `admin` / `editor` / `viewer` / `system`（[`src/enterprise/entities/principal.py`](src/enterprise/entities/principal.py)）。
 
 - **自己登録すると必ず `viewer`。** 登録 API はロールを受け取らない
-- `editor` / `admin` への昇格は **admin のみ**（T-42）。**最初の admin は CLI で作る**（T-41）
+- `editor` / `admin` への昇格は **admin のみ**（T-42）。**最初の admin は CLI で作る**
+  （`make create-admin`。下の「最初の admin を作る」）
 - ロールは**リクエストごとに `users` 行から解決する**（セッションに焼き込まない）。
   そのため昇格・降格が**再ログインなしで次のリクエストから効く**
-- `system` は**ログインする利用者ではない**。cron 用の呼び出し元種別で、`users` に行を持てない（DB の CHECK 制約）
+- `system` は**ログインする利用者ではない**。cron 用の呼び出し元種別で、`users` に行を持てない
+  （DB の CHECK 制約）。経路はサービストークンのみ（下の「cron 用サービストークン」）
+
+### 最初の admin を作る（`make create-admin`）
+
+自己登録は**必ず `viewer`**、昇格できるのは **admin だけ**。つまり**最初の1人は
+API では作れない**（昇格させる admin がまだ居ない）。そこで DB へ直接書ける経路を
+**この CLI 1本に限って**正式化している（[`src/adapter/cli/create_admin.py`](src/adapter/cli/create_admin.py)）。
+
+```bash
+make create-admin                                 # メール・表示名・パスワードを対話で入力
+make create-admin ARGS="--email you@sapeet.com"   # 一部だけ引数で渡す
+make create-admin ARGS="--promote you@sapeet.com" # 既存ユーザーを admin へ昇格
+```
+
+> ⚠️ **パスワードは対話プロンプト（`getpass`）だけで受け取る。**
+> `--password` のような引数も、環境変数も**用意していない**（足さないこと）。
+> 引数は `ps` で他ユーザーに見え、シェル履歴と CI ログに残る。環境変数は `.env` に
+> 平文が残り続ける。確認のため2回入力し、不一致なら何も書かずに終了する。
+
+| 状況 | 挙動 | 終了コード |
+|---|---|---|
+| admin が居ない・メール未登録 | 作成する | 0 |
+| **admin が既に居る** | **拒否**し、`--promote` を案内する（CLI を常用させない） | 1 |
+| 同じメールが既に登録済み | **何もしない**。`--promote` を案内する（黙って書き換えない） | 1 |
+| `--promote` で対象が viewer/editor | admin へ昇格（パスワードは変更しない） | 0 |
+| `--promote` で対象が既に admin | 何もしない（**べき等**） | 0 |
+| `--promote` で対象が存在しない | 拒否 | 1 |
+| メール形式・パスワードポリシー違反・確認不一致 | 拒否（何も書かない） | 2 |
+
+- 停止中（`is_active=false`）の admin も「居る」と数える。停止するだけで2人目を作れては困るため
+- ロール変更は監査ログに残る（`user_role_change` / actor `cli:create-admin`）
+- 通常の昇格・降格は admin としてログインして `PATCH /users/{user_id}/role`（T-42）。
+  `--promote` は**ブートストラップと復旧**のための手段
+
+### cron 用サービストークン（`make service-token`）
+
+`system` は**ログインする利用者ではなく呼び出し元の種別**なので Cookie を持てない。
+cron は `Authorization: Bearer <token>` を提示する。
+
+```bash
+make service-token     # 生トークンと、.env に入れるハッシュを表示する
+```
+
+```bash
+# cron 側
+curl -X POST http://localhost:8000/run/weekly -H "Authorization: Bearer <生トークン>"
+```
+
+> ⚠️ **`.env` に入れるのはハッシュ（`SERVICE_TOKEN_HASH`）で、生トークンではない。**
+> アプリが保存するのは SHA-256 ハッシュだけなので、**設定ファイルが漏れても
+> そのままでは system を騙れない**（生トークンはハッシュから復元できない）。
+> 生トークンは cron 側の秘密情報として渡す（systemd の `EnvironmentFile` 等）。
+>
+> ⚠️ **生トークンは発行時の1回しか表示されない。** 失くしたら再発行する。
+>
+> ⚠️ **`SERVICE_TOKEN_HASH` が未設定なら system 経路そのものが無効。**
+> 「未設定なら誰でも system」にはならない（そうなると §6.2 の認可が崩れる）。
+
+照合は `secrets.compare_digest`（定数時間）で行う。`==` に変えると、応答時間の差から
+トークンを1バイトずつ復元できる。
 
 ### 認証バックエンドの差し替え口
 
@@ -91,6 +169,16 @@ make config-schema-check  # 生成済みスキーマが最新かを検査
 | **実装するメソッド** | `async def resolve(request) -> Principal \| None` |
 | **差し替え箇所** | `get_authentication_backend()`（`src/adapter/http/fastapi/auth/dependencies.py`。T-40 で作成）の戻り値1箇所 |
 | **テストでの差し替え** | `app.dependency_overrides[get_authentication_backend]` |
+
+現在の実装は2方式の合成（[`chain.py`](src/adapter/http/fastapi/auth/chain.py)）で、**順に試して最初に解決したもので確定する**。
+
+| 順 | 方式 | 対象 | 無効化の条件 |
+|---|---|---|---|
+| 1 | サービストークン（`Authorization: Bearer`） | cron（`system`） | `SERVICE_TOKEN_HASH` 未設定 |
+| 2 | Cookie セッション（`sid`） | 人（admin / editor / viewer） | — |
+
+> ⚠️ **この順序を入れ替えないこと。** Cookie を先にすると、Bearer を提示した
+> リクエストが Cookie の人のロールで通りうる。
 
 認可（T-09）は `Principal` しか見ないので、認証方式を変えても
 §6.2 の権限マトリクスに手を入れずに済む。
@@ -137,7 +225,8 @@ src/
 │   ├── entities/             # エンティティ・値オブジェクト
 │   └── services/             # ドメインサービス（パスワードハッシュ等）
 ├── application/              # ユースケース（業務手順）
-└── adapter/                  # 入出力（HTTP / DB など）
+└── adapter/                  # 入出力（HTTP / DB / CLI など）
+    ├── cli/                  # 運用コマンド（create-admin / service-token 等）
     └── http/fastapi/
         ├── routers/          # FastAPI のルーター
         └── auth/             # 認証（差し替え口は上記「認証・認可」を参照）

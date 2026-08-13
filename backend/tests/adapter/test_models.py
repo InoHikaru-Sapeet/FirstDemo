@@ -90,11 +90,19 @@ async def test_run_event_round_trips(session: AsyncSession) -> None:
 
 
 def test_event_types_match_the_design() -> None:
+    """設計書 §4.4 の4種 ＋ 方針変更で増えた認証系。
+
+    ⚠️ `user_role_change` は **§4.4 の enum に対する追加分**（T-41 で追加）。
+    自前の ID/PW 認証（TASKS.md §1.1）でロール昇格がアプリの操作になったため。
+    `event_type` は文字列カラムなのでマイグレーションは不要だが、§4.4 の表の
+    更新が必要（→ T-38）。`user_registered` は T-10 が足す。
+    """
     assert {e.value for e in AuditEventType} == {
         "config_update",
         "run_start",
         "run_finish",
         "artifact_created",
+        "user_role_change",
     }
 
 
