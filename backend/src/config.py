@@ -46,6 +46,26 @@ class Settings(BaseSettings):
     # タイムゾーン。入出力は Asia/Tokyo 基準、ISO週は月曜始まり（設計書 §0・§14）。
     timezone: str = "Asia/Tokyo"
 
+    # 認証（TASKS.md §1.1「認証」「ログイン状態の保持」／T-40）。
+    # ログイン保持は DB 永続セッション + HttpOnly Cookie。JWT は使わない。
+
+    # ⚠️ 本番では必ず true（HTTPS 前提）。http の localhost で試すときだけ false。
+    session_cookie_secure: bool = True
+    # 絶対期限。ログインからこの日数で必ず切れる（アクセスしていても延長しない）。
+    session_absolute_lifetime_days: int = 7
+    # アイドル期限。最終アクセスからこの時間で切れる（アクセスのたびに延長する）。
+    session_idle_timeout_hours: int = 8
+
+    # 自己登録を許すメールドメイン（カンマ区切り）。2026-08-13 決定＝要確認事項 #6。
+    # ⚠️ 空にすると**誰でも登録でき、viewer としてレポートを閲覧できる**。
+    # 既定を無制限にしないこと。
+    auth_allowed_email_domains: str = "sapeet.com"
+
+    # ログインの総当たり対策。同一アカウントへの連続失敗がこの回数に達したら
+    # 一定時間ロックする。ロック中でもエラー文言は変えない（存在を漏らさない）。
+    login_max_failed_attempts: int = 5
+    login_lockout_minutes: int = 15
+
     @property
     def database_url(self) -> str:
         """SQLAlchemy 用の非同期接続 URL。db_backend で切り替わる。
@@ -66,6 +86,15 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
+
+    @property
+    def allowed_email_domains(self) -> list[str]:
+        """自己登録を許すメールドメイン。空リストなら無制限（既定ではない）。"""
+        return [
+            d.strip().lower()
+            for d in self.auth_allowed_email_domains.split(",")
+            if d.strip()
+        ]
 
     @property
     def tzinfo(self) -> ZoneInfo:

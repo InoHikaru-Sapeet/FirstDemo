@@ -310,7 +310,7 @@ flowchart TD
   - **`AuthenticationBackend` プロトコル**を維持（`resolve(request) -> Principal | None`）。差し替えは DI 1箇所で完結する。**旧スタブ実装は削除する**
   - 平文パスワード・ハッシュが**ログ・例外メッセージ・`repr()` に出ない**ことをテストで固定
 - **備考**: 旧タスクは「開発用スタブ＋SSO 差し替え口」だった。**SSO をやらない方針の確定（§1.1 備考）**によりスタブを廃止し、実ユーザーモデルに置き換えた。`AuthenticationBackend` プロトコルだけは残すが、目的は「将来 SSO を足せる余地」であって SSO 対応済みという意味ではない。
-  - ⚠️ **Passlib 1.7.4 は最終リリースが 2020年で、新しい `bcrypt` パッケージとの組み合わせでバージョン検出に失敗する既知の事象がある**（`bcrypt` 4.1 以降で `AttributeError: module 'bcrypt' has no attribute '__about__'` の警告、5.x では影響が拡大しうる）。**着手時にまず `uv add "passlib[bcrypt]"` して実際に hash/verify が通るかを確認し、必要なら `bcrypt` にバージョン上限を張る**こと。ここで詰まる場合の代替は Passlib を外して `bcrypt` を直接使うことだが、**それは「自前でハッシュ処理を書かない」方針からの逸脱になるので、採用するなら §1.1 を先に更新する**。
+  - ⚠️ **Passlib は更新が止まっており、新しい `bcrypt` パッケージとの組み合わせで問題が起きうる**（バージョン検出の失敗・バックエンド初期化の失敗）。**着手時にまず `uv add "passlib[bcrypt]"` して実際に hash/verify が通るかを確認し、必要なら `bcrypt` にバージョン上限を張る**こと。ここで詰まる場合の代替は Passlib を外して `bcrypt` を直接使うことだが、**それは「自前でハッシュ処理を書かない」方針からの逸脱になるので、採用するなら §1.1 を先に更新する**。
   - `role` は DB 上は文字列。`system` は**ログイン可能なユーザーではない**（T-41 のサービストークン用）ので、`users` に `system` 行を作らない制約をテストで固定する。
   - 認証まわりのテーブルは `audit_log` / `config_revision` と同じく **DB 固有型を使わない**（§1 備考／T-03）。
   - **実績（2026-08-13）**: `make lint` / `make type-check` / `make test`（408件）すべて通過。
@@ -325,7 +325,7 @@ flowchart TD
   - 平文・ハッシュの非露出は3方向から固定：`User.__repr__` がハッシュを含まない／`PasswordPolicyError` のメッセージに平文が入らない／hash・verify 中の全ログに平文とハッシュが出ない（`caplog`）。
   - Alembic の autogenerate は `UtcDateTime` を `adapter.database.types.UtcDateTime(...)` と描画するが、**マイグレーション側に `adapter` の import が無く NameError になる**。DDL は `sa.DateTime(timezone=True)` と同一（`UtcDateTime` は Python 側の TypeDecorator）なので、既存マイグレーション（T-03）と同じ表記へ手で直した。**次に `make migrate-create` する人も同じ修正が要る。**
 
-#### - [ ] T-40: セッション発行と認証エンドポイント（登録・ログイン・ログアウト）
+#### - [x] T-40: セッション発行と認証エンドポイント（登録・ログイン・ログアウト）
 - **対応**: §4.1・§3.1（→ 仕様書 §2・§6.1）／§1.1「ログイン状態の保持」
 - **依存**: T-08
 - **成果物**: `backend/src/adapter/database/models/session.py`, `backend/src/application/usecases/auth.py`, `backend/src/adapter/http/fastapi/auth/session_backend.py`, `backend/src/adapter/http/fastapi/routers/auth.py`（`all_routers` へ登録）, `backend/migrations/versions/*.py`, テスト
@@ -349,6 +349,17 @@ flowchart TD
 - **備考**: **JWT を選ばなかった理由は §1.1「ログイン状態の保持」の根拠列のとおり**（admin による降格が有効期限まで効かないため）。この判断をモジュール冒頭のコメントにも残すこと。
   - ⚠️ **開発時、フロント（Vite `:5173`）とバックエンド（`:8000`）はオリジンが異なるため、`SameSite=Lax` の Cookie が送信されない。** 対策として **Vite の dev proxy（`/api` → `http://localhost:8000`）を入れて同一オリジンにする**（T-43 の成果物に含める）。`SameSite=None` + CORS credentials は HTTPS 必須になり手元完結の方針に反するので採らない。
   - 期限切れセッション行の掃除（起動時 or ログイン時のついで削除）を入れる。テーブルが単調増加しない形にすること。
+  - **実績（2026-08-13）**: `make lint` / `make type-check` / `make test` すべて通過。テストは **473件**（T-40 で追加したのは 65件：ユースケース 36 / ルーター 24 / モデル 5）。
+  - **セッション ID のハッシュに bcrypt を使っていない**（SHA-256）。パスワードと違い生トークンは 256 ビットの乱数で辞書攻撃の対象にならず、かつ**検証が全リクエストで走る**ため 1回0.2秒の bcrypt は使えない。「DB が漏れても生トークンを逆算できない」という目的には SHA-256 で足りる。理由は `hash_session_token()` の docstring に記載。
+  - **ロックの実装場所**: 連続失敗の回数は `users.failed_login_attempts` / `users.locked_until` として**T-08 の users テーブルに列を追加**した（T-40 の完了条件は `sessions` しか挙げていなかったが、失敗回数はセッションではなくアカウントに紐づくため）。マイグレーション `49982b99a593` で追加。
+  - ⚠️ **autogenerate が NOT NULL 列を `server_default` 無しで生成した。** 既存行があると `add_column` が失敗するので手で `server_default="0"` を補った。`UtcDateTime` の描画問題（T-08 の備考）も同じく再発したので、両方とも手で直している。**次に `make migrate-create` する人も確認すること。**
+  - **ロック中は「ロックされました」と伝えない。** 存在しないアカウント・パスワード違い・ロック中・停止済みの4つすべてで `LOGIN_FAILED_MESSAGE` の1種類だけを返す。存在しないアカウントに対しても**ダミーハッシュへの `verify()` を実行**して応答時間を揃えており、`test_login_verifies_a_hash_even_for_an_unknown_account` で呼び出しを固定した。
+  - ⚠️ **登録（`POST /auth/register`）だけはアカウントの存在を明かす**（重複時 409）。ログインと非対称だが、「既に登録済み」を伝えないと利用者が次の行動を取れないため意図的にそうした。**メールドメインが `sapeet.com` に限定されている**ので列挙の被害範囲は社内アドレスに限られる。無制限運用に切り替える場合はここを再検討すること。
+  - **CSRF は `SameSite=Lax` ＋ `Origin` 検証の二段**。⚠️ ただし `cors_allowed_origins` の既定は `*` で、**その場合 Origin 検証は素通りする**（`SameSite=Lax` の1枚だけになる）。本番では実オリジンを設定すること。`Origin` ヘッダが無いリクエストは通す（cron 等の非ブラウザクライアント。T-41 のサービストークン経由を塞がないため）。
+  - **昇格の即時反映をテストで固定済み**（`test_a_role_change_takes_effect_without_re_login`）。viewer でログイン中のセッションが、`users.role` の変更後に再ログインなしで editor として解決される。§1.1 で JWT を採らなかった理由そのもの。
+  - 絶対期限が延長されないことも固定（`test_the_absolute_lifetime_is_not_extended_by_activity`）。アイドル期限内に触り続けても7日で切れる。
+  - `_now()` を1箇所に集約し、テストは `monkeypatch` で時間を進める。有効期限・ロック解除の検証に実時間の待機を使わない。
+  - **`.env.example` はガードレールにより AI が編集できない**（T-01 備考）。追記ブロックを提示済み。反映されるまで既定値で動く（`SESSION_COOKIE_SECURE=true` のため、**http の手元動作では `false` の設定が必要**）。
 
 #### - [ ] T-41: 初期 admin ブートストラップ CLI とサービストークン
 - **対応**: §4.1／§1.1「ユーザー登録とロール付与」

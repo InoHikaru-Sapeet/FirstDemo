@@ -170,6 +170,11 @@ def test_schema_compiles_for_both_backends(table_name: str) -> None:
 
 
 def test_no_leftover_scaffold_tables() -> None:
-    # users は T-08（ID/PW 認証の自前実装）で追加。
-    # テストは tests/adapter/test_user_model.py。
-    assert set(Base.metadata.tables) == {"audit_logs", "config_revisions", "users"}
+    # users は T-08（ID/PW 認証）、sessions は T-40（ログイン保持）で追加。
+    # テストは tests/adapter/test_user_model.py / test_session_model.py。
+    assert set(Base.metadata.tables) == {
+        "audit_logs",
+        "config_revisions",
+        "users",
+        "sessions",
+    }

@@ -15,14 +15,14 @@ TASKS.md §1.1「備考：SSO 前提からの差分」）に伴い、ID の発�
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, String
+from sqlalchemy import Boolean, CheckConstraint, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from adapter.database.base import Base
 from adapter.database.types import UtcDateTime
 from enterprise.entities.principal import ASSIGNABLE_ROLES, Role
 
-# メールアドレスの最大長。RFC 5321 の実務上の上限に合わせる。
+# メールアドレスの最大長。慣例的に使われる上限値。
 EMAIL_MAX_LENGTH = 254
 
 
@@ -73,6 +73,15 @@ class User(Base):
     # パスワード変更時刻。変更時に**他セッションを全失効**させる（T-40）ため、
     # 「このセッションはパスワード変更より前に発行されたか」を判定できるようにする。
     password_updated_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+
+    # 総当たり対策（T-40）。連続失敗を数え、閾値に達したら `locked_until` まで
+    # ログインを拒否する。成功したら 0 に戻す。
+    # ⚠️ ロック中であることを**利用者に伝えない**（エラー文言は常に同一）。
+    # 「ロックされました」と返すと、そのアドレスが実在することを教えてしまう。
+    failed_login_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
 
     __table_args__ = (
         # ⚠️ `system` は**ログインするユーザーではない**。cron 等の非対話クライアント

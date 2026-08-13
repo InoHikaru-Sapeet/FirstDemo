@@ -1,0 +1,107 @@
+"""認証の DI（T-40）。**差し替えはこのファイルの1箇所で完結する。**
+
+将来 SSO 等へ差し替える場合は `get_authentication_backend()` の戻り値を
+変えるだけでよい（`backend.py` の説明どおり）。テストでは
+`app.dependency_overrides[get_authentication_backend]` で差し替えられる。
+
+⚠️ **未認証は 401、認証済みだが権限なしは 403。** ここが返すのは 401 だけで、
+403 は認可（T-09）の担当。両者を混ぜると、フロントが「ログインへ誘導すべきか」
+「権限不足を表示すべきか」を判断できなくなる（T-43）。
+"""
+
+from collections.abc import AsyncIterator
+from datetime import timedelta
+from typing import Annotated
+
+from fastapi import Cookie, Depends, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from adapter.database.database import db_manager
+from adapter.http.fastapi.auth.backend import AuthenticationBackend
+from adapter.http.fastapi.auth.session_backend import (
+    SESSION_COOKIE_NAME,
+    SessionAuthenticationBackend,
+)
+from application.usecases.auth import AuthUsecase, LoginPolicy, SessionPolicy
+from config import Settings, get_settings
+from enterprise.entities.principal import Principal
+
+
+async def get_db_session() -> AsyncIterator[AsyncSession]:
+    async with db_manager.session() as session:
+        yield session
+
+
+def build_session_policy(settings: Settings) -> SessionPolicy:
+    return SessionPolicy(
+        absolute_lifetime=timedelta(days=settings.session_absolute_lifetime_days),
+        idle_timeout=timedelta(hours=settings.session_idle_timeout_hours),
+    )
+
+
+def build_login_policy(settings: Settings) -> LoginPolicy:
+    return LoginPolicy(
+        max_failed_attempts=settings.login_max_failed_attempts,
+        lockout_duration=timedelta(minutes=settings.login_lockout_minutes),
+    )
+
+
+def get_auth_usecase(
+    db: Annotated[AsyncSession, Depends(get_db_session)],
+) -> AuthUsecase:
+    settings = get_settings()
+    return AuthUsecase(
+        db=db,
+        session_policy=build_session_policy(settings),
+        login_policy=build_login_policy(settings),
+        allowed_email_domains=settings.allowed_email_domains,
+    )
+
+
+def get_authentication_backend(
+    db: Annotated[AsyncSession, Depends(get_db_session)],
+) -> AuthenticationBackend:
+    """⚠️ **認証方式の差し替え口はここ1箇所。**
+
+    別方式（SSO 等）を足す場合は、`AuthenticationBackend` を実装した
+    クラスを返すよう、この関数の戻り値だけを変える。
+    """
+    settings = get_settings()
+    return SessionAuthenticationBackend(
+        db=db,
+        session_policy=build_session_policy(settings),
+        login_policy=build_login_policy(settings),
+    )
+
+
+async def get_current_principal(
+    request: Request,
+    backend: Annotated[AuthenticationBackend, Depends(get_authentication_backend)],
+) -> Principal | None:
+    """認証済みなら `Principal`、未認証なら `None`（**例外にしない**）。
+
+    「ログインしていれば出し分けるが、していなくても見せる」画面のための入口。
+    """
+    return await backend.resolve(request)
+
+
+async def require_principal(
+    principal: Annotated[Principal | None, Depends(get_current_principal)],
+) -> Principal:
+    """認証必須の入口。未認証は **401**。
+
+    権限（ロール）は見ない。ロール判定は T-09 の RBAC が行う。
+    """
+    if principal is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="ログインが必要です。",
+        )
+    return principal
+
+
+def get_session_token(
+    sid: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
+) -> str | None:
+    """Cookie の生トークン。ログアウトが自分のセッションを特定するために使う。"""
+    return sid

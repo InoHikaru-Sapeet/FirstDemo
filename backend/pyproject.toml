@@ -19,11 +19,11 @@ dependencies = [
     "openpyxl>=3.1",
     # パスワードハッシュ（TASKS.md §1.1「認証」／T-08）。自前でハッシュ処理を書かない。
     "passlib[bcrypt]>=1.7.4",
-    # ⚠️ bcrypt の上限 <5 を外さないこと。passlib 1.7.4（最終リリース 2020年）は
-    # bcrypt バックエンドの初期化時に 72 バイト超の probe を渡して挙動を検査するが、
-    # bcrypt 5.0 はこれを黙って切り詰めず ValueError にするため、
-    # **CryptContext.hash() が必ず失敗する**（T-08 で実測）。
-    # 上げる場合は passlib の後継（passlib のメンテ再開 or pwdlib 等）へ移行してから。
+    # ⚠️ bcrypt の上限 <5 を外さないこと。passlib 1.7.4 は bcrypt バックエンドの
+    # 初期化時に 72 バイト超の probe を渡して挙動を検査するが、bcrypt 5.0.0 は
+    # これを黙って切り詰めず ValueError にするため、
+    # **CryptContext.hash() が必ず失敗する**（T-08 で 5.0.0 / 4.3.0 を実測）。
+    # 上げる場合は、まず実際に hash/verify が通るかを確認すること。
     "bcrypt>=4.0,<5",
 ]
 
