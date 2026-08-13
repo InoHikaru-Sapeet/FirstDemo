@@ -1,0 +1,145 @@
+{
+  "schema_version": "1.0",
+  "meta": {
+    "config_name": "ai_intelligence_requirements",
+    "source_of_truth_xlsx": "weekly_ai_intelligence_requirements.xlsx",
+    "editable_by": ["admin"],
+    "visible_to": ["admin"],
+    "updated_at": "2026-08-12T00:00:00+09:00",
+    "updated_by": null,
+    "revision": 1
+  },
+
+  "information_categories": [
+    { "id": "ai_major_company_model", "label": "主要AI企業・モデル動向", "priority": "mid_high",
+      "description": "主要企業、基盤モデル、生成AIプロダクト、AI基盤技術に関する重要な発表・変更" },
+    { "id": "ai_agent_automation", "label": "AIエージェント・業務自動化", "priority": "high",
+      "description": "AIエージェント、自律型AI、業務プロセス自動化、ワークフロー自動化に関する情報" },
+    { "id": "ai_governance_risk", "label": "AIガバナンス・法規制・リスク", "priority": "high",
+      "description": "AI利用ルール、法規制、セキュリティ、著作権、個人情報、リスク管理に関する情報" },
+    { "id": "enterprise_ai_case", "label": "企業AI活用事例", "priority": "high",
+      "description": "国内外企業によるAI導入・活用・業務改善・社内展開の具体事例" },
+    { "id": "industry_ai_trend", "label": "業界別AI動向", "priority": "high",
+      "description": "特定業界におけるAI活用、導入傾向、競争環境、業界課題との接続に関する情報" },
+    { "id": "ai_training_org_change", "label": "AI人材育成・組織変革", "priority": "mid",
+      "description": "AI研修、リスキリング、AI推進組織、CoE、社内展開、チェンジマネジメントに関する情報" },
+    { "id": "ai_implementation_ops", "label": "AI導入・運用ノウハウ", "priority": "mid",
+      "description": "AI導入、PoC、本番運用、評価、ROI、品質管理、定着化、内製化に関する実務情報" }
+  ],
+
+  "required_tags": [
+    { "id": "information_category", "label": "情報カテゴリ", "type": "single", "required": true,
+      "purpose": "レポート全体の分類軸", "value_source": "information_categories.id" },
+    { "id": "ai_theme", "label": "AIテーマ", "type": "multi", "required": true,
+      "purpose": "検索・絞り込みの中心", "value_source": "free_controlled" },
+    { "id": "industry", "label": "業界", "type": "multi", "required": true,
+      "purpose": "顧客別最適化に必須", "value_source": "enums.industry" },
+    { "id": "business_area", "label": "業務領域", "type": "multi", "required": true,
+      "purpose": "顧客の実務テーマと接続", "value_source": "enums.business_area" },
+    { "id": "info_type", "label": "情報種別", "type": "single", "required": true,
+      "purpose": "信頼性評価に必要", "value_source": "enums.info_type" },
+    { "id": "region", "label": "地域", "type": "multi", "required": true,
+      "purpose": "日本/海外/グローバルの区別", "value_source": "enums.region" },
+    { "id": "reliability", "label": "信頼性", "type": "enum", "required": true,
+      "purpose": "顧客向け掲載可否に影響", "value_source": "enums.reliability" },
+    { "id": "customer_relevance", "label": "顧客関連度", "type": "enum", "required": true,
+      "purpose": "顧客別レポートの中核", "value_source": "enums.customer_relevance" },
+    { "id": "practical_usability", "label": "実務活用可能性", "type": "enum", "required": true,
+      "purpose": "ニュースを示唆に変える", "value_source": "enums.practical_usability" },
+    { "id": "adoption_class", "label": "レポート採用区分", "type": "enum", "required": true,
+      "purpose": "3出力形式への振り分け", "value_source": "enums.adoption_class" }
+  ],
+
+  "scoring_axes": [
+    { "id": "customer_relevance", "label": "顧客関連度", "weight": 25,
+      "criterion": "対象企業の業界・業務・関心テーマにどれだけ関係するか",
+      "bands": ["21-25:直接関係","16-20:近く応用可能","11-15:テーマ一部参考","6-10:一般参考","0-5:関連なし"] },
+    { "id": "practical_usability", "label": "実務活用可能性", "weight": 20,
+      "criterion": "顧客のAI推進・業務変革・ガバナンスに活用できるか",
+      "bands": ["17-20:すぐ活用","13-16:具体例参考","9-12:追加解釈必要","5-8:一般的","0-4:見込み薄い"] },
+    { "id": "market_impact", "label": "AI業界・市場インパクト", "weight": 20,
+      "criterion": "AI業界全体、技術進化、企業活用に与える影響が大きいか",
+      "bands": ["17-20:主要企業・技術進化","13-16:法人利用に影響","9-12:一定注目度","5-8:実務影響限定","0-4:不明確"] },
+    { "id": "advisory_usability", "label": "アドバイザリー活用度", "weight": 15,
+      "criterion": "定例会、提案、研修、議論テーマに使えるか",
+      "bands": ["13-15:次回定例提案","10-12:共有・議論のきっかけ","7-9:補足情報","4-6:弱い","0-3:難しい"] },
+    { "id": "reliability", "label": "信頼性", "weight": 10,
+      "criterion": "情報源・内容の信頼性が高いか",
+      "bands": ["9-10:公式/政府一次情報","7-8:主要媒体・専門媒体","5-6:ブログ・PR要確認","3-4:個人SNS二次情報","0-2:真偽不明"] },
+    { "id": "urgency_freshness", "label": "緊急性・鮮度", "weight": 10,
+      "criterion": "早めに共有・確認・対応すべき情報か",
+      "bands": ["8-10:今週共有すべき重大情報","6-7:期限接近","3-5:参考","0-2:新規性低い"] }
+  ],
+  "scoring_total": 100,
+
+  "exclusion_rules": [
+    { "no": 1, "severity": "full_exclude", "enabled": true, "name": "真偽不明の噂・リーク・SNS単独情報",
+      "examples": "X/Reddit/個人ブログのみ、公式確認なし、関係者によると、未発表機能の憶測" },
+    { "no": 2, "severity": "full_exclude", "enabled": true, "name": "投資煽り・株価・銘柄推奨系ニュース",
+      "examples": "AI関連銘柄急騰、今買うべきAI株、AIバブル、株価ランキング" },
+    { "no": 3, "severity": "default_exclude", "enabled": true, "name": "アフィリエイト・広告色の強いツール紹介記事",
+      "examples": "おすすめAIツール10選、代替ツールランキング、無料ツールまとめ、PR記事" },
+    { "no": 4, "severity": "default_exclude", "enabled": true, "name": "生成AIを使ったエンタメ・バズコンテンツ",
+      "examples": "AI美女、AIインフルエンサー、AIアート、AIミーム、個人作品紹介" },
+    { "no": 5, "severity": "default_exclude", "enabled": true, "name": "個人向けアプリ・軽微な機能アップデート",
+      "examples": "UI変更、スタンプ追加、テンプレート追加、個人サブスク変更" },
+    { "no": 6, "severity": "default_exclude", "enabled": true, "name": "実務適用の見通しが薄い研究論文・ベンチマーク情報",
+      "examples": "微妙なベンチマーク、数理モデルの細かな改良、実務示唆が弱い論文" },
+    { "no": 7, "severity": "default_exclude", "enabled": true, "name": "海外スタートアップの小規模な資金調達ニュースのみ",
+      "examples": "シード/Series A資金調達のみ、技術・事業内容が抽象的" },
+    { "no": 8, "severity": "default_exclude", "enabled": true, "name": "AI要素の薄い一般DX・ITニュース",
+      "examples": "クラウド移行、ERP刷新、SaaS導入のみ、タイトルだけAI" },
+    { "no": 9, "severity": "default_exclude", "enabled": true, "name": "イベント・セミナー告知のみの情報",
+      "examples": "AIセミナー開催告知、ウェビナー案内、展示会紹介、登壇者紹介のみ" },
+    { "no": 10, "severity": "default_exclude", "enabled": true, "name": "採用・人事・組織変更のみのニュース",
+      "examples": "役員人事、AI人材採用強化、部署新設、求人情報" },
+    { "no": 11, "severity": "low_priority", "enabled": true, "name": "汎用的なTips記事",
+      "examples": "ChatGPT活用Tips、プロンプト例、個人業務効率化ノウハウ" },
+    { "no": 12, "severity": "merge", "enabled": true, "name": "重複・転載記事",
+      "examples": "同一公式発表の複数記事、翻訳記事、内容ほぼ同一の記事" },
+    { "no": 13, "severity": "low_priority_or_exclude", "enabled": true, "name": "古い情報の再掲・まとめ記事",
+      "examples": "過去記事の再掲、同一日付は新しいが中身が古いまとめ" }
+  ],
+
+  "enums": {
+    "priority": ["low", "mid", "mid_high", "high"],
+    "severity": ["full_exclude", "default_exclude", "low_priority", "low_priority_or_exclude", "merge"],
+    "reliability": ["高", "中", "要確認", "低"],
+    "customer_relevance": ["直接関係", "近く応用可能", "テーマ一部参考", "一般参考", "関連薄い"],
+    "practical_usability": ["すぐ活用", "具体例参考", "参考になる", "追加解釈が必要", "一般的", "見込み薄い"],
+    "adoption_class": ["次回定例で提案", "参考情報", "共有のみ", "不採用"],
+    "region": ["日本", "海外", "グローバル"],
+    "info_type": ["一次情報(公式発表)", "主要メディア報道", "専門メディア報道", "ブログ・プレスリリース", "個人SNS・二次情報"],
+    "industry": ["業界横断","不動産","製造","モビリティ・自動車","情報通信","IT","半導体","金融","小売","物流","エネルギー","メディア・エンタメ","公共","教育","医薬品","通信","ロボティクス","クラウド","航空宇宙"],
+    "business_area": ["AI戦略","ガバナンス","法務・コンプライアンス","情報システム","セキュリティ","開発","業務プロセス改革","マーケティング","営業","カスタマーサポート","バックオフィス","人材育成・組織変革","研究開発","調達","データ基盤","生産・現場オペレーション","コンテンツ制作","経営企画"]
+  },
+
+  "tunable_thresholds": {
+    "min_total_score_to_publish": 60,
+    "adoption_class_score_map": {
+      "propose_next_meeting": 85,
+      "reference_info": 70,
+      "share_only": 60
+    },
+    "min_reliability_score_to_publish": 5,
+    "weekly": {
+      "target_industry": "不動産",
+      "max_industry_topics": 5,
+      "max_common_topics": 6,
+      "point_of_week_required": true
+    },
+    "monthly": {
+      "target_case_count": 15,
+      "chapter_count_hint": 5,
+      "min_score_for_case": 80,
+      "require_editorial_and_closing": true
+    },
+    "dedup": {
+      "lookback_weeks": 8,
+      "title_similarity_threshold": 0.85,
+      "treat_same_url_as_duplicate": true
+    }
+  },
+
+  "source_whitelist_hint": ["TechCrunch", "VentureBeat", "Ledge.ai", "ITmedia", "公式プレスリリース", "政府・公的機関"]
+}

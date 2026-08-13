@@ -5,6 +5,7 @@ APP_MODULE := adapter.http.fastapi.main:app
 PORT ?= 8000
 
 .PHONY: help sync lint format type-check test test-ci dev
+.PHONY: config-schema config-schema-check
 
 help:
 	@echo ""
@@ -15,6 +16,9 @@ help:
 	@echo "  test         - pytest を実行する"
 	@echo "  test-ci      - カバレッジ付きで pytest を実行する"
 	@echo "  dev          - 開発サーバーを起動する (uvicorn --reload)"
+	@echo ""
+	@echo "  config-schema        - config.json の JSON Schema を生成する"
+	@echo "  config-schema-check  - 生成済み JSON Schema が最新かを検査する"
 	@echo ""
 
 # === 開発 ===
@@ -35,6 +39,16 @@ type-check:
 
 dev:
 	uv run uvicorn --reload --app-dir src --host 0.0.0.0 --port $(PORT) $(APP_MODULE)
+
+# === スキーマ生成 ===
+# schemas/config.schema.json は Pydantic モデル（enterprise.entities.config）
+# からの生成物。手で編集せず、モデルを変えたら生成し直してコミットする。
+
+config-schema:
+	PYTHONPATH=src uv run python -m adapter.cli.export_config_schema
+
+config-schema-check:
+	PYTHONPATH=src uv run python -m adapter.cli.export_config_schema --check
 
 # === テスト ===
 

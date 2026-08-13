@@ -1,0 +1,656 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sapeet.example/schemas/config.json",
+  "title": "AI Intelligence config.json",
+  "additionalProperties": false,
+  "description": "`config.json` 全体（設計書 §2.1）。\n\nフィールドの宣言順は仕様書 §5.2 のキー順と一致させている。書き出した\n`config.json` のキー順が実データと揃い、revision 間の diff が読める形に\nなるため（監査ログの diff は設計書 §4.4）。",
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "meta": {
+      "$ref": "#/$defs/config_meta"
+    },
+    "information_categories": {
+      "items": {
+        "$ref": "#/$defs/information_category"
+      },
+      "maxItems": 7,
+      "minItems": 7,
+      "title": "Information Categories",
+      "type": "array"
+    },
+    "required_tags": {
+      "items": {
+        "$ref": "#/$defs/required_tag"
+      },
+      "maxItems": 10,
+      "minItems": 10,
+      "title": "Required Tags",
+      "type": "array"
+    },
+    "scoring_axes": {
+      "items": {
+        "$ref": "#/$defs/scoring_axis"
+      },
+      "maxItems": 6,
+      "minItems": 6,
+      "title": "Scoring Axes",
+      "type": "array"
+    },
+    "scoring_total": {
+      "const": 100,
+      "title": "Scoring Total",
+      "type": "integer"
+    },
+    "exclusion_rules": {
+      "items": {
+        "$ref": "#/$defs/exclusion_rule"
+      },
+      "maxItems": 13,
+      "minItems": 13,
+      "title": "Exclusion Rules",
+      "type": "array"
+    },
+    "enums": {
+      "$ref": "#/$defs/config_enums"
+    },
+    "tunable_thresholds": {
+      "$ref": "#/$defs/tunable_thresholds"
+    },
+    "source_whitelist_hint": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Source Whitelist Hint",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "meta",
+    "information_categories",
+    "required_tags",
+    "scoring_axes",
+    "scoring_total",
+    "exclusion_rules",
+    "enums",
+    "tunable_thresholds"
+  ],
+  "type": "object",
+  "$defs": {
+    "adoption_class_score_map": {
+      "additionalProperties": false,
+      "description": "採用区分のしきい値。降順整合（≥ の連鎖）の検証は T-05（設計書 §2.1.1-2）。",
+      "properties": {
+        "propose_next_meeting": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Propose Next Meeting",
+          "type": "integer"
+        },
+        "reference_info": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Reference Info",
+          "type": "integer"
+        },
+        "share_only": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Share Only",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "propose_next_meeting",
+        "reference_info",
+        "share_only"
+      ],
+      "title": "AdoptionClassScoreMap",
+      "type": "object"
+    },
+    "config_enums": {
+      "additionalProperties": false,
+      "description": "タグの取り得る値。分類・採点プロンプトの出力スキーマ生成元になる（T-19）。\n\n`industry` / `business_area` だけは運用で増減しうるため自由文字列。\nそれ以外は仕様書 §5.2 の確定値を `Literal` で固定する。",
+      "properties": {
+        "priority": {
+          "items": {
+            "$ref": "#/$defs/priority"
+          },
+          "title": "Priority",
+          "type": "array"
+        },
+        "severity": {
+          "items": {
+            "$ref": "#/$defs/severity"
+          },
+          "title": "Severity",
+          "type": "array"
+        },
+        "reliability": {
+          "items": {
+            "enum": [
+              "高",
+              "中",
+              "要確認",
+              "低"
+            ],
+            "type": "string"
+          },
+          "title": "Reliability",
+          "type": "array"
+        },
+        "customer_relevance": {
+          "items": {
+            "enum": [
+              "直接関係",
+              "近く応用可能",
+              "テーマ一部参考",
+              "一般参考",
+              "関連薄い"
+            ],
+            "type": "string"
+          },
+          "title": "Customer Relevance",
+          "type": "array"
+        },
+        "practical_usability": {
+          "items": {
+            "enum": [
+              "すぐ活用",
+              "具体例参考",
+              "参考になる",
+              "追加解釈が必要",
+              "一般的",
+              "見込み薄い"
+            ],
+            "type": "string"
+          },
+          "title": "Practical Usability",
+          "type": "array"
+        },
+        "adoption_class": {
+          "items": {
+            "enum": [
+              "次回定例で提案",
+              "参考情報",
+              "共有のみ",
+              "不採用"
+            ],
+            "type": "string"
+          },
+          "title": "Adoption Class",
+          "type": "array"
+        },
+        "region": {
+          "items": {
+            "enum": [
+              "日本",
+              "海外",
+              "グローバル"
+            ],
+            "type": "string"
+          },
+          "title": "Region",
+          "type": "array"
+        },
+        "info_type": {
+          "items": {
+            "enum": [
+              "一次情報(公式発表)",
+              "主要メディア報道",
+              "専門メディア報道",
+              "ブログ・プレスリリース",
+              "個人SNS・二次情報"
+            ],
+            "type": "string"
+          },
+          "title": "Info Type",
+          "type": "array"
+        },
+        "industry": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Industry",
+          "type": "array"
+        },
+        "business_area": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Business Area",
+          "type": "array"
+        }
+      },
+      "required": [
+        "priority",
+        "severity",
+        "reliability",
+        "customer_relevance",
+        "practical_usability",
+        "adoption_class",
+        "region",
+        "info_type",
+        "industry",
+        "business_area"
+      ],
+      "title": "ConfigEnums",
+      "type": "object"
+    },
+    "config_meta": {
+      "additionalProperties": false,
+      "description": "config 自体のメタ情報。`revision` は楽観ロックの比較対象（設計書 §4.3）。",
+      "properties": {
+        "config_name": {
+          "const": "ai_intelligence_requirements",
+          "title": "Config Name",
+          "type": "string"
+        },
+        "source_of_truth_xlsx": {
+          "const": "weekly_ai_intelligence_requirements.xlsx",
+          "title": "Source Of Truth Xlsx",
+          "type": "string"
+        },
+        "editable_by": {
+          "items": {
+            "const": "admin",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Editable By",
+          "type": "array"
+        },
+        "visible_to": {
+          "items": {
+            "const": "admin",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Visible To",
+          "type": "array"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        },
+        "updated_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated By"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "config_name",
+        "source_of_truth_xlsx",
+        "editable_by",
+        "visible_to",
+        "revision"
+      ],
+      "title": "ConfigMeta",
+      "type": "object"
+    },
+    "dedup_thresholds": {
+      "additionalProperties": false,
+      "description": "重複判定パラメータ（仕様書 §11.2 / T-18）。",
+      "properties": {
+        "lookback_weeks": {
+          "minimum": 0,
+          "title": "Lookback Weeks",
+          "type": "integer"
+        },
+        "title_similarity_threshold": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Title Similarity Threshold",
+          "type": "number"
+        },
+        "treat_same_url_as_duplicate": {
+          "title": "Treat Same Url As Duplicate",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "lookback_weeks",
+        "title_similarity_threshold",
+        "treat_same_url_as_duplicate"
+      ],
+      "title": "DedupThresholds",
+      "type": "object"
+    },
+    "exclusion_rule": {
+      "additionalProperties": false,
+      "description": "除外ルール。`severity` と `enabled` が可変（仕様書 §7.2）。\n\n評価は `no` 昇順（T-17）。",
+      "properties": {
+        "no": {
+          "maximum": 13,
+          "minimum": 1,
+          "title": "No",
+          "type": "integer"
+        },
+        "severity": {
+          "$ref": "#/$defs/severity"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "examples": {
+          "title": "Examples",
+          "type": "string"
+        }
+      },
+      "required": [
+        "no",
+        "severity",
+        "enabled",
+        "name",
+        "examples"
+      ],
+      "title": "ExclusionRule",
+      "type": "object"
+    },
+    "information_category": {
+      "additionalProperties": false,
+      "description": "情報カテゴリ。`priority` のみ可変（仕様書 §7.2）。",
+      "properties": {
+        "id": {
+          "enum": [
+            "ai_major_company_model",
+            "ai_agent_automation",
+            "ai_governance_risk",
+            "enterprise_ai_case",
+            "industry_ai_trend",
+            "ai_training_org_change",
+            "ai_implementation_ops"
+          ],
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "priority": {
+          "$ref": "#/$defs/priority"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "priority",
+        "description"
+      ],
+      "title": "InformationCategory",
+      "type": "object"
+    },
+    "monthly_thresholds": {
+      "additionalProperties": false,
+      "description": "月刊ビリーフの可変パラメータ（仕様書 §7.2）。",
+      "properties": {
+        "target_case_count": {
+          "minimum": 0,
+          "title": "Target Case Count",
+          "type": "integer"
+        },
+        "chapter_count_hint": {
+          "minimum": 0,
+          "title": "Chapter Count Hint",
+          "type": "integer"
+        },
+        "min_score_for_case": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Min Score For Case",
+          "type": "integer"
+        },
+        "require_editorial_and_closing": {
+          "title": "Require Editorial And Closing",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target_case_count",
+        "chapter_count_hint",
+        "min_score_for_case",
+        "require_editorial_and_closing"
+      ],
+      "title": "MonthlyThresholds",
+      "type": "object"
+    },
+    "priority": {
+      "description": "カテゴリ優先度。`mid_high` は xlsx 原本の「中〜高」表記に対応（仕様書 §5.3）。",
+      "enum": [
+        "low",
+        "mid",
+        "mid_high",
+        "high"
+      ],
+      "title": "Priority",
+      "type": "string"
+    },
+    "required_tag": {
+      "additionalProperties": false,
+      "description": "必須タグ定義。10件すべて必須なので `required` は `true` 固定。\n\n`value_source` が `enums.*` を指すときに当該キーが実在するかの検証は\nクロスフィールド制約なので T-05（設計書 §2.1.1-4）。",
+      "properties": {
+        "id": {
+          "enum": [
+            "information_category",
+            "ai_theme",
+            "industry",
+            "business_area",
+            "info_type",
+            "region",
+            "reliability",
+            "customer_relevance",
+            "practical_usability",
+            "adoption_class"
+          ],
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "single",
+            "multi",
+            "enum"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "required": {
+          "const": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "purpose": {
+          "title": "Purpose",
+          "type": "string"
+        },
+        "value_source": {
+          "title": "Value Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "type",
+        "required",
+        "purpose",
+        "value_source"
+      ],
+      "title": "RequiredTag",
+      "type": "object"
+    },
+    "scoring_axis": {
+      "additionalProperties": false,
+      "description": "スコアリング軸。`weight` が可変（仕様書 §7.2）。\n\n`weight` は 0-100 の整数まで。合計100 の担保は T-05（設計判断A: 保存拒否）。",
+      "properties": {
+        "id": {
+          "enum": [
+            "customer_relevance",
+            "practical_usability",
+            "market_impact",
+            "advisory_usability",
+            "reliability",
+            "urgency_freshness"
+          ],
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "weight": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Weight",
+          "type": "integer"
+        },
+        "criterion": {
+          "title": "Criterion",
+          "type": "string"
+        },
+        "bands": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Bands",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "weight",
+        "criterion",
+        "bands"
+      ],
+      "title": "ScoringAxis",
+      "type": "object"
+    },
+    "severity": {
+      "description": "除外ルールの強度。フィルタ挙動の分岐そのもの（仕様書 §5.4 / T-17）。",
+      "enum": [
+        "full_exclude",
+        "default_exclude",
+        "low_priority",
+        "low_priority_or_exclude",
+        "merge"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "tunable_thresholds": {
+      "additionalProperties": false,
+      "description": "管理画面が編集するしきい値群（仕様書 §7.2 の編集可能パラメータ）。",
+      "properties": {
+        "min_total_score_to_publish": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Min Total Score To Publish",
+          "type": "integer"
+        },
+        "adoption_class_score_map": {
+          "$ref": "#/$defs/adoption_class_score_map"
+        },
+        "min_reliability_score_to_publish": {
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Min Reliability Score To Publish",
+          "type": "integer"
+        },
+        "weekly": {
+          "$ref": "#/$defs/weekly_thresholds"
+        },
+        "monthly": {
+          "$ref": "#/$defs/monthly_thresholds"
+        },
+        "dedup": {
+          "$ref": "#/$defs/dedup_thresholds"
+        }
+      },
+      "required": [
+        "min_total_score_to_publish",
+        "adoption_class_score_map",
+        "min_reliability_score_to_publish",
+        "weekly",
+        "monthly",
+        "dedup"
+      ],
+      "title": "TunableThresholds",
+      "type": "object"
+    },
+    "weekly_thresholds": {
+      "additionalProperties": false,
+      "description": "週刊メルマガの可変パラメータ（仕様書 §7.2）。",
+      "properties": {
+        "target_industry": {
+          "title": "Target Industry",
+          "type": "string"
+        },
+        "max_industry_topics": {
+          "minimum": 0,
+          "title": "Max Industry Topics",
+          "type": "integer"
+        },
+        "max_common_topics": {
+          "minimum": 0,
+          "title": "Max Common Topics",
+          "type": "integer"
+        },
+        "point_of_week_required": {
+          "title": "Point Of Week Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "target_industry",
+        "max_industry_topics",
+        "max_common_topics",
+        "point_of_week_required"
+      ],
+      "title": "WeeklyThresholds",
+      "type": "object"
+    }
+  }
+}

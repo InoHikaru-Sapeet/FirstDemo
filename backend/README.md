@@ -28,9 +28,24 @@ make format        # ruff: 自動整形 + import 整列
 make type-check    # ty: 型チェック（ベストエフォート）
 make test          # pytest
 make test-ci       # カバレッジ付き pytest
+
+make config-schema        # config.json の JSON Schema を生成
+make config-schema-check  # 生成済みスキーマが最新かを検査
 ```
 
 `make help` の後ろに `migrate-*` / `up` / `down` / `db-init` が出る（`Makefile.db.mk`）。
+
+## 判断基準ファイル `config.json` のスキーマ
+
+`config.json` の構造は **Pydantic モデルが正**（[`src/enterprise/entities/config.py`](src/enterprise/entities/config.py)）。
+[`schemas/config.schema.json`](schemas/config.schema.json) はそこからの **生成物**（JSON Schema draft 2020-12）で、
+手で編集しない。モデルを変えたら `make config-schema` で生成し直してコミットする
+（ズレは `tests/enterprise/test_config_model.py` が検出する）。
+
+カテゴリ7ID・タグ10ID・軸6ID・`scoring_total`・enum の日本語値は固定値で、
+`weight` / `severity` / `enabled` / `priority` / `tunable_thresholds` が admin の編集対象
+（仕様書 §5.1・§7.2）。`Σ weight == 100` などのクロスフィールド制約はモデルではなく
+別モジュールが担う（設計書 §2.1.1）。
 
 ## データベース
 
