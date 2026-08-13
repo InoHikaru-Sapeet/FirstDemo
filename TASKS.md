@@ -405,11 +405,12 @@ flowchart TD
   - **認証系エンドポイントをマトリクスへ追加**（方針変更に伴う追加分）：
     - `POST /auth/register`・`POST /auth/login` は**未認証で到達可**（public）
     - `POST /auth/logout`・`GET /auth/me`・`POST /auth/password` は**認証済みの全ロール可**
-    - `GET /users`・`PATCH /users/{user_id}/role` は **admin のみ**（T-42）
+    - `GET /users`・`PATCH /users/{user_id}/role`・`PATCH /users/{user_id}/status` は **admin のみ**（T-42。`system` も 403）
   - **未認証は 401 / 認証済みかつ権限なしは 403** を全経路で統一（public 以外）
   - **全ロール × 全エンドポイントの網羅テスト**（マトリクスと1:1）。**未認証（匿名）も1つのケースとして含める**
 - **備考**: フロントの非表示は補助であり、実体はここ（§6.1）。フロント実装（T-32）より先に完成させる。
   - 2026-08-13 の方針変更（§1.1 備考）で認証系エンドポイントが増えたが、**§6.2 の既存6行の判定は変更していない**。認可は `Principal` だけに依存するため、認証方式の変更（SSO → ID/PW）の影響を受けない。
+  - ⚠️ **T-42 が先に着手されたため、admin 限定判定の最小実装 `require_admin()` が `auth/dependencies.py` に先行して入っている。** T-09 で `auth/rbac.py`（権限マトリクスの定数化）を作ったら、**`require_admin()` をマトリクスから導出する形へ置き換えること**。判定の正が2箇所に分かれたままだと、マトリクスを直しても `/users` 系が追随しない。網羅テストの対象にも `/users` の3本を含めること。
 
 #### - [ ] T-10: 監査ログ書き込みサービス
 - **対応**: §4.4（→ 仕様書 §6.1・§14）
@@ -420,15 +421,16 @@ flowchart TD
   - `config_update` は **before→after の diff**（変更パスごと）を JSON で保持し、`revision` を伴う
   - `actor` は「ロール＋ユーザ識別子」形式（例 `admin:admin_a`）、`at` は `Asia/Tokyo`
   - 監査ログの書き込み失敗が本処理を黙って握り潰さない（ログ＋エラー伝播方針を明記）
-  - **認証イベントを追加**（方針変更に伴う追加分）：`user_registered` / `user_role_change`（before→after のロールを diff に持つ）。**ログイン成功・失敗は監査ログではなくアプリログへ**（件数が多く、`audit_log` の粒度と合わないため）
+  - **認証イベントを追加**（方針変更に伴う追加分）：`user_registered` / `user_role_change`（before→after のロールを diff に持つ）/ `user_status_change`（停止・再開。T-42 で追加）。**ログイン成功・失敗は監査ログではなくアプリログへ**（件数が多く、`audit_log` の粒度と合わないため）
+  - ⚠️ **既に監査ログをモデルへ直書きしている箇所が2つある**（T-10 未着手のまま先行したため）。サービスを作ったら**両方ここへ寄せること**：`application/usecases/bootstrap_admin.py::_record_role_change()`（T-41）と `application/usecases/manage_users.py::_record_audit()`（T-42）
   - **パスワードハッシュ・平文・セッショントークンを監査ログに書かない**ことをテストで固定
 - **備考**: **監査ログに config の中身をそのまま残すと非admin への漏洩面になりうる**ため、参照経路は admin 限定であることをテストで確認する。
   - `event_type` の追加は設計書 §4.4 の enum に対する差分。T-03 のモデルは文字列カラムなのでマイグレーション不要だが、**§4.4 の表を更新する必要がある**（→ T-38）。
 
-#### - [ ] T-42: ユーザー管理 API（一覧・ロール昇格/降格）
+#### - [x] T-42: ユーザー管理 API（一覧・ロール昇格/降格）
 - **対応**: §4.1・§3.1／§1.1「ユーザー登録とロール付与」
 - **依存**: T-40, T-09, T-10
-- **成果物**: `backend/src/adapter/http/fastapi/routers/users.py`（`all_routers` へ登録）, `backend/src/application/usecases/manage_users.py`, テスト
+- **成果物**: `backend/src/adapter/http/fastapi/routers/users.py`（`all_routers` へ登録）, `backend/src/application/usecases/manage_users.py`, `backend/src/adapter/http/fastapi/auth/dependencies.py`（`require_admin` を追加）, `backend/src/adapter/database/models/audit_log.py`（`user_status_change` を追加）, テスト
 - **完了条件**:
   - `GET /users` → `{items: [{user_id, email, display_name, role, is_active, created_at}]}`（**admin のみ**）。パスワードハッシュを返さない
   - `PATCH /users/{user_id}/role` → `{role}` を `admin` / `editor` / `viewer` のいずれかへ変更（**admin のみ**）。`system` は指定できない（422）
@@ -438,6 +440,19 @@ flowchart TD
   - **昇格が即時に効くことをテストで固定**：viewer でログイン中のセッションが、admin による昇格後、再ログインなしに editor の権限で `POST /run` を通す
 - **備考**: このタスクが §1.1「昇格できるのは admin だけ」の実体。自己登録（T-40）が `role` を受け取らないことと対で、**ロールが上がる経路をこの1本に絞る**（＋ブートストラップ CLI の T-41）。
   - 「最後の admin を守る」チェックは**トランザクション内で件数を数える**こと。2人の admin が同時に相手を降格させると 0 人になりうる。
+  - **実績（2026-08-13）**: `make lint` / `make type-check` / `make test` すべて通過。テストは **615件**（T-42 で追加したのは 45件：ユースケース 24 / ルーター 21）。
+  - ⚠️ **依存の T-09（RBAC）・T-10（監査ログ書き込みサービス）が未着手のまま着手した。** T-42 は admin 限定の認可判定なしには成立しないため、**必要な最小限だけを先取りした**：
+    - **認可**: `auth/dependencies.py` に `require_admin()` を追加（未認証 401／admin 以外 403。`system` も 403）。**T-09 で `auth/rbac.py` を作ったら、この関数を §6.2 の権限マトリクスから導出する形へ寄せること。** 判定の正が2箇所に分かれたままだと、マトリクスを直しても API が追随しない。
+    - **監査ログ**: T-41 と同じく**モデルへ直接積んでいる**。T-10 で監査サービスを作ったら `ManageUsersUsecase._record_audit()` をそちらへ寄せること。
+  - ⚠️ **`AuditEventType.USER_STATUS_CHANGE` を追加した**（設計書 §4.4 の enum への差分。完了条件は `user_role_change` しか挙げていない）。**admin の停止は実質的な権限剥奪**（ログインできない＝管理者として機能しない）なので、降格と同じ重みで記録しないと「誰が admin を無力化したか」が追えない。`event_type` は文字列カラムなのでマイグレーションは不要。**§4.4 の表の更新が必要（→ T-38）**。`tests/adapter/test_models.py::test_event_types_match_the_design` の期待値も更新済み。
+  - **「最後の admin」は *有効な*（`is_active=true`）admin で数える。** ⚠️ **T-41 の `count_admins()`（停止中も数える）とは意図的に異なる**。T-41 は「2人目の初期 admin を CLI で作らせない」ための判定で、停止中を除外すると admin を停止するだけで2人目を作れてしまう。T-42 は「締め出されない」ための判定で、逆に停止中を数えると**最後の有効な admin を停止する操作が通ってしまい**、誰も管理画面へ入れなくなる。目的が違うので数え方も違う（両方テストで固定）。
+  - 判定は「**変更後も有効な admin が1人以上残るか**」の1本に統一した（降格・停止・自分自身を同じ式で扱う）。`role=admin` への無変更まで 409 にしないのはこの形の副産物。
+  - **同時実行対策は `SELECT ... FOR UPDATE`**（`_count_other_active_admins()`）。`count(*)` だけだと、2人の admin が同時に相手を降格させたとき両方が「相手が居る」と判断して 0 人になりうる。admin 行に行ロックを取れば後続は先行のコミットを待ち、更新後の状態を見て 409 を返せる。**SQLite では SQLAlchemy が `FOR UPDATE` を出力しない**（書き込みトランザクション自体が直列化されるので結果は同じ）が、PostgreSQL では出る（両ダイアレクトのコンパイル結果を実測確認済み）。標準 SQL なので §1「DB 固有機能を使わない」からは外れない。
+  - **`system` は2重に塞いだ**：リクエストモデルが `Literal[Role.ADMIN, Role.EDITOR, Role.VIEWER]`（OpenAPI にも3値しか出ない＝T-31 の型生成に効く）＋ ユースケース側の `ASSIGNABLE_ROLES` 検査（直接呼び出し経路用）。DB の CHECK 制約（T-08）は最後の砦。**型と `ASSIGNABLE_ROLES` が一致することをテストで固定**（片方だけ増えると `system` が通る）。
+  - **降格時にセッションを失効させていない。** ロールは毎リクエスト `users` 行から解決される（T-40）ので降格は次のリクエストから効く。失効させると「ログアウトされた」ことから降格に気づく副次的な情報が増えるだけで得がない。停止（`status`）は完了条件どおり全失効させる。
+  - ロール変更・停止はどちらも**べき等**（同じ値なら何も書かず監査ログも増やさない）。T-41 の `ALREADY_ADMIN` と同じ「変えていないものを記録しない」方針。
+  - ⚠️ **完了条件の「昇格が即時に効く」テストは、`POST /run`（T-26 未実装）の代わりに `GET /users` で固定した**。viewer でログイン中のセッションが admin による昇格後、**再ログインなしで** 403 → 200 に変わることを検証している（`test_a_promotion_takes_effect_without_re_login`）。降格側（admin → viewer で 200 → 403）も同じ形で固定済み。**T-26 の完成後に `POST /run` での editor 昇格ケースを足すこと。**
+  - ⚠️ **`/users` 系のパスは設計書 §3.2 のエンドポイント表に無い**（2026-08-13 の方針変更で増えた分。§3.2 を grep して不在を確認済み）。§3.2 の表と §4.4 の enum の更新が必要（→ T-38）。
 
 ---
 

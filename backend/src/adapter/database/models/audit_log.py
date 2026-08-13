@@ -22,9 +22,10 @@ from adapter.database.types import UtcDateTime
 class AuditEventType(StrEnum):
     """監査対象のイベント種別（設計書 §4.4）。
 
-    ⚠️ `USER_ROLE_CHANGE` は **設計書 §4.4 の enum に対する追加分**。
-    2026-08-13 の方針変更（自前の ID/PW 認証。TASKS.md §1.1）でロール昇格が
-    アプリの操作になったため、T-41（ブートストラップ CLI）で追加した。
+    ⚠️ `USER_ROLE_CHANGE` / `USER_STATUS_CHANGE` は **設計書 §4.4 の enum に
+    対する追加分**。2026-08-13 の方針変更（自前の ID/PW 認証。TASKS.md §1.1）で
+    ロール付与がアプリの操作になったため、T-41（ブートストラップ CLI）と
+    T-42（ユーザー管理 API）で追加した。
     `event_type` は文字列カラムなのでマイグレーションは不要だが、**§4.4 の表は
     更新が必要**（→ T-38）。`user_registered` は T-10 が足す。
     """
@@ -34,6 +35,9 @@ class AuditEventType(StrEnum):
     RUN_FINISH = "run_finish"
     ARTIFACT_CREATED = "artifact_created"
     USER_ROLE_CHANGE = "user_role_change"
+    # アカウントの停止・再開（T-42）。admin の停止は実質的な権限剥奪なので、
+    # ロール変更と同じ重みで残す。
+    USER_STATUS_CHANGE = "user_status_change"
 
 
 class AuditLog(Base):

@@ -4,9 +4,12 @@
 変えるだけでよい（`backend.py` の説明どおり）。テストでは
 `app.dependency_overrides[get_authentication_backend]` で差し替えられる。
 
-⚠️ **未認証は 401、認証済みだが権限なしは 403。** ここが返すのは 401 だけで、
-403 は認可（T-09）の担当。両者を混ぜると、フロントが「ログインへ誘導すべきか」
-「権限不足を表示すべきか」を判断できなくなる（T-43）。
+⚠️ **未認証は 401、認証済みだが権限なしは 403。** 両者を混ぜると、フロントが
+「ログインへ誘導すべきか」「権限不足を表示すべきか」を判断できなくなる（T-43）。
+
+⚠️ 認可（403）の本体は T-09（`auth/rbac.py`）だが未着手のため、T-42 が必要と
+する admin 限定の判定だけを `require_admin()` として先取りしてある。
+**T-09 の完成時にそちらへ寄せること**（同関数の docstring 参照）。
 """
 
 from collections.abc import AsyncIterator
@@ -25,8 +28,9 @@ from adapter.http.fastapi.auth.session_backend import (
     SessionAuthenticationBackend,
 )
 from application.usecases.auth import AuthUsecase, LoginPolicy, SessionPolicy
+from application.usecases.manage_users import ManageUsersUsecase
 from config import Settings, get_settings
-from enterprise.entities.principal import Principal
+from enterprise.entities.principal import Principal, Role
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:
@@ -109,6 +113,34 @@ async def require_principal(
             detail="ログインが必要です。",
         )
     return principal
+
+
+async def require_admin(
+    principal: Annotated[Principal, Depends(require_principal)],
+) -> Principal:
+    """admin 限定の入口。未認証は **401**、認証済みだが admin でなければ **403**。
+
+    ⚠️ `system`（cron）も **403**。ユーザー管理は人が行う操作で、
+    §6.2 の `internal_only`（内部読込のみ）にも当てはまらない。
+
+    ⚠️ **これは T-09（RBAC）の先取り。** T-42（ユーザー管理 API）は
+    admin 限定の判定なしには成立しないが、T-09 が未着手のため最小の実装を
+    ここへ置いた。**T-09 で `auth/rbac.py` を作ったら、この関数はそちらの
+    権限マトリクスから導出する形へ寄せること**（判定の正が2箇所に分かれた
+    ままだと、マトリクスを直しても API が追随しない）。
+    """
+    if principal.role is not Role.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="この操作には管理者権限が必要です。",
+        )
+    return principal
+
+
+def get_manage_users_usecase(
+    db: Annotated[AsyncSession, Depends(get_db_session)],
+) -> ManageUsersUsecase:
+    return ManageUsersUsecase(db)
 
 
 def get_session_token(
