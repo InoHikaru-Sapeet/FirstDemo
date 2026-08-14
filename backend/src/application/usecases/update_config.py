@@ -28,7 +28,6 @@
 `updated_by` と監査ログの `actor` に使うだけ。
 """
 
-import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -41,8 +40,8 @@ from adapter.config_repository import (
     ConfigRevisionConflictError,
     diff_configs,
 )
-from adapter.database.models.audit_log import AuditEventType, AuditLog
 from adapter.storage.artifact_store import CONFIG_FILENAME
+from application.usecases.audit import AuditService
 from enterprise.entities.config import IntelligenceConfig
 from enterprise.entities.config_validation import ConfigIssue, ConfigIssueCode
 from enterprise.entities.principal import Principal
@@ -312,6 +311,7 @@ class UpdateConfigUsecase:
     def __init__(self, db: AsyncSession, repo: ConfigRepository) -> None:
         self._db = db
         self._repo = repo
+        self._audit = AuditService(db)
 
     async def execute(
         self,
@@ -373,29 +373,17 @@ class UpdateConfigUsecase:
     ) -> None:
         """`config_update` を積む（commit は `save()`。設計書 §4.4）。
 
-        `diff` は `{path: {"before","after"}}`（T-11 の `diff_configs`）で、
-        §4.4 の例と同じ形。`meta.*` は差分から除かれている（毎回変わる
-        revision / updated_at が並ぶと、変えた判断基準が埋もれるため）。
-
-        ⚠️ **監査ログの参照経路は admin 限定にすること。** `diff` には config の
-        中身（before/after の値）が入るので、非 admin に見せると
-        「config を admin 以外に露出しない」（仕様書 §2・§6.1）を監査ログ経由で
-        破ることになる。現時点で監査ログを返す API は存在しない。
-
-        ⚠️ T-10（監査ログ書き込みサービス）が未着手のため、T-41・T-42 と同じく
-        **モデルへ直接積んでいる**。T-10 で作ったらここも寄せること。
+        （2026-08-14）T-10 の `AuditService` へ寄せた。**commit しないのは従来と
+        同じ**で、`save()` のトランザクションに乗る＝ファイル書き込みが失敗したら
+        監査ログも残らない。詳細な約束（秘密を書かない・握り潰さない）は
+        `application/usecases/audit.py` のモジュール docstring を参照。
         """
-        self._db.add(
-            AuditLog(
-                audit_id=f"aud_{uuid.uuid4().hex}",
-                event_type=AuditEventType.CONFIG_UPDATE,
-                actor=actor.actor,
-                at=_now(),
-                revision=revision,
-                diff=diff,
-                target=CONFIG_FILENAME,
-                period=None,
-            )
+        self._audit.record_config_update(
+            actor=actor.actor,
+            at=_now(),
+            revision=revision,
+            diff=diff,
+            target=CONFIG_FILENAME,
         )
 
 

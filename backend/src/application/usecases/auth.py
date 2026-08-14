@@ -36,6 +36,7 @@ from adapter.database.models.user import (
     is_valid_email_format,
     normalize_email,
 )
+from application.usecases.audit import AuditService
 from enterprise.entities.principal import (
     DEFAULT_SELF_REGISTERED_ROLE,
     Principal,
@@ -160,6 +161,7 @@ class AuthUsecase:
         self._session_policy = session_policy
         self._login_policy = login_policy
         self._allowed_email_domains = allowed_email_domains
+        self._audit = AuditService(db)
 
     # --- 登録 -------------------------------------------------------------
 
@@ -209,6 +211,13 @@ class AuthUsecase:
             locked_until=None,
         )
         self._db.add(user)
+        # 監査ログ（T-10）。**アカウントが増えたことは残す**（誰がいつ登録したか
+        # 追えないと、後からロールを昇格させた記録だけが浮くため）。
+        # ⚠️ 平文もハッシュも渡さない（`record_user_registered` は受け取らない）。
+        # ⚠️ ログインの成功・失敗はここへ書かない（アプリログの担当。TASKS.md T-10）。
+        self._audit.record_user_registered(
+            user_id=user.user_id, email=user.email, role=Role(user.role), at=now
+        )
         await self._db.commit()
         return user
 

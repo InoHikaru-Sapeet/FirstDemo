@@ -11,6 +11,7 @@ application 層の業務規則を直接検証する。HTTP 経由の確認は
 - ロールをセッションに焼き込まない（昇格が即時に効く）
 """
 
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,6 +25,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from adapter.database.base import Base
+from adapter.database.models.audit_log import AuditEventType, AuditLog
 from adapter.database.models.session import Session
 from adapter.database.models.user import User
 from application.usecases import auth as auth_module
@@ -98,6 +100,56 @@ async def test_registration_always_creates_a_viewer(usecase: AuthUsecase) -> Non
     user = await register_user(usecase)
 
     assert user.role is Role.VIEWER
+
+
+async def test_a_registration_is_written_to_the_audit_log(
+    db: AsyncSession, usecase: AuthUsecase
+) -> None:
+    """⚠️ 自己登録を監査ログへ残す（T-10）。
+
+    アカウントが増えたことが残らないと、後から付いたロール昇格の記録
+    （`user_role_change`）だけが浮き、その人がいつ現れたのか追えない。
+    """
+    user = await register_user(usecase)
+
+    entries = list((await db.execute(select(AuditLog).order_by(AuditLog.at))).scalars())
+
+    assert [entry.event_type for entry in entries] == [AuditEventType.USER_REGISTERED]
+    assert entries[0].target == user.user_id
+    assert entries[0].diff == {"email": EMAIL, "role": "viewer"}
+
+
+async def test_a_rejected_registration_leaves_no_audit_row(
+    db: AsyncSession, usecase: AuthUsecase
+) -> None:
+    """拒否された登録は記録しない（起きなかったことを残さない）。"""
+    await register_user(usecase)
+    with pytest.raises(AuthError):
+        await register_user(usecase)  # 同じメール → 409 相当
+
+    entries = list((await db.execute(select(AuditLog))).scalars())
+
+    assert len(entries) == 1
+
+
+async def test_the_registration_audit_row_holds_no_password_material(
+    db: AsyncSession, usecase: AuthUsecase
+) -> None:
+    """⚠️ 平文もハッシュも監査ログに入れない（T-10 と同じ約束）。"""
+    user = await register_user(usecase)
+
+    entries = list((await db.execute(select(AuditLog))).scalars())
+    serialized = json.dumps(
+        [
+            {"actor": entry.actor, "target": entry.target, "diff": entry.diff}
+            for entry in entries
+        ],
+        ensure_ascii=False,
+    )
+
+    assert PASSWORD not in serialized
+    assert "$2b$" not in serialized
+    assert user.password_hash not in serialized
 
 
 async def test_register_takes_no_role_argument() -> None:

@@ -21,16 +21,15 @@
    ⚠️ ここでも**パスワードハッシュ・平文を書かない**（T-41 と同じ約束）。
 """
 
-import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from adapter.database.models.audit_log import AuditEventType, AuditLog
 from adapter.database.models.session import Session
 from adapter.database.models.user import User
+from application.usecases.audit import AuditService
 from enterprise.entities.principal import ASSIGNABLE_ROLES, Principal, Role
 
 
@@ -73,6 +72,7 @@ class ManageUsersUsecase:
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
+        self._audit = AuditService(db)
 
     # --- 参照 -------------------------------------------------------------
 
@@ -132,16 +132,8 @@ class ManageUsersUsecase:
         now = _now()
         user.role = new_role
         user.updated_at = now
-        self._record_audit(
-            event_type=AuditEventType.USER_ROLE_CHANGE,
-            actor=actor,
-            user=user,
-            diff={
-                "role": {"before": before.value, "after": new_role.value},
-                # 対象を人間が識別できるように残す（user_id は不透明なため）。
-                "email": user.email,
-            },
-            at=now,
+        self._record_role_change(
+            actor=actor, user=user, before=before, after=new_role, at=now
         )
         await self._db.commit()
 
@@ -180,15 +172,8 @@ class ManageUsersUsecase:
         if not is_active:
             await self._revoke_sessions(user_id, now)
 
-        self._record_audit(
-            event_type=AuditEventType.USER_STATUS_CHANGE,
-            actor=actor,
-            user=user,
-            diff={
-                "is_active": {"before": not is_active, "after": is_active},
-                "email": user.email,
-            },
-            at=now,
+        self._record_status_change(
+            actor=actor, user=user, before=not is_active, after=is_active, at=now
         )
         await self._db.commit()
         return user
@@ -273,35 +258,35 @@ class ManageUsersUsecase:
         ).all()
         return len(rows)
 
-    def _record_audit(
-        self,
-        event_type: AuditEventType,
-        actor: Principal,
-        user: User,
-        diff: dict[str, object],
-        at: datetime,
+    def _record_role_change(
+        self, *, actor: Principal, user: User, before: Role, after: Role, at: datetime
     ) -> None:
-        """監査ログへ積む（commit は呼び出し元）。
+        """ロール変更を監査ログへ積む（commit は呼び出し元）。
 
-        `actor` は `role:subject` 形式（設計書 §4.4。例 `admin:usr_abc`）、
-        `target` は対象の `user_id`。
-
-        ⚠️ **パスワードハッシュ・平文・セッショントークンを書かない。**
-
-        ⚠️ T-10 が監査ログ書き込みサービスを作ったら、**この直書きを
-        そちらへ寄せること**（T-41 の `_record_role_change()` も同様）。
+        （2026-08-14）T-10 の `AuditService` へ寄せた。`diff` の形も `actor` の
+        表記も従来と同一。約束（秘密を書かない・握り潰さない・commit しない）は
+        `application/usecases/audit.py` のモジュール docstring を参照。
         """
-        self._db.add(
-            AuditLog(
-                audit_id=f"aud_{uuid.uuid4().hex}",
-                event_type=event_type,
-                actor=actor.actor,
-                at=at,
-                revision=None,
-                diff=diff,
-                target=user.user_id,
-                period=None,
-            )
+        self._audit.record_user_role_change(
+            actor=actor.actor,
+            at=at,
+            user_id=user.user_id,
+            email=user.email,
+            before=before,
+            after=after,
+        )
+
+    def _record_status_change(
+        self, *, actor: Principal, user: User, before: bool, after: bool, at: datetime
+    ) -> None:
+        """停止・再開を監査ログへ積む（commit は呼び出し元）。"""
+        self._audit.record_user_status_change(
+            actor=actor.actor,
+            at=at,
+            user_id=user.user_id,
+            email=user.email,
+            before=before,
+            after=after,
         )
 
 

@@ -87,6 +87,27 @@ async def audit_entries(db: AsyncSession) -> list[AuditLog]:
     return list((await db.execute(select(AuditLog))).scalars().all())
 
 
+async def add_session(db: AsyncSession, user_id: str) -> str:
+    """有効なセッションを1つ作り、その `session_id` を返す。
+
+    `session_id` は生トークンの SHA-256（T-40）。実物と同じ64桁16進にしておく。
+    """
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    session_id = "9f" * 32
+    db.add(
+        Session(
+            session_id=session_id,
+            user_id=user_id,
+            created_at=now,
+            expires_at=datetime(2026, 8, 8, tzinfo=UTC),
+            last_seen_at=now,
+            revoked_at=None,
+        )
+    )
+    await db.commit()
+    return session_id
+
+
 # --- 一覧 -----------------------------------------------------------------
 
 
@@ -435,9 +456,17 @@ async def test_a_rejected_change_writes_no_audit_entry(
 async def test_the_audit_log_contains_no_password_material(
     db: AsyncSession, usecase: ManageUsersUsecase
 ) -> None:
-    """⚠️ 平文もハッシュも監査ログに入れない（T-41 と同じ約束）。"""
+    """⚠️ 平文もハッシュも監査ログに入れない（T-41 と同じ約束）。
+
+    （2026-08-14 追加）**セッショントークンも検査する。** 停止（`change_status`）は
+    そのユーザーのセッションを全失効させるので、失効した `session_id` を
+    「何を消したか」として `diff` に載せたくなるが、載せてはいけない。
+    `session_id` は生トークンの SHA-256（T-40）で、それ自体は乗っ取りに使えない
+    ものの、監査ログに置く理由がない（従来このケースは未検証だった）。
+    """
     admin = await add_user(db, "admin@sapeet.com", role=Role.ADMIN)
     target = await add_user(db, "viewer@sapeet.com")
+    session_id = await add_session(db, target.user_id)
 
     await usecase.change_role(actor_for(admin), target.user_id, Role.EDITOR)
     await usecase.change_status(actor_for(admin), target.user_id, is_active=False)
@@ -450,3 +479,5 @@ async def test_the_audit_log_contains_no_password_material(
         assert PASSWORD not in serialized
         assert "$2b$" not in serialized
         assert "password" not in serialized
+        assert session_id not in serialized
+        assert "token" not in serialized.lower()

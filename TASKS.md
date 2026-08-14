@@ -425,7 +425,7 @@ flowchart TD
   - **終了コードで理由を区別する**: 0=成功/何もしなかった、1=業務規則による拒否（admin 既存・対象不在・メール既存）、2=入力不備（メール形式・表示名空・パスワードポリシー・確認不一致・中断）。cron やセットアップスクリプトから判定できるようにするため。
   - **業務規則は `application/usecases/bootstrap_admin.py` に置き、CLI は入出力だけ**にした（成果物リストは CLI 1ファイルだったが、`adapter → application → enterprise` の依存の向きを保つため分けた）。DB を触るテストがユースケース側でそのまま書けるという実利もある。
   - ⚠️ **`AuditEventType.USER_ROLE_CHANGE` を追加した**（設計書 §4.4 の enum への差分）。`event_type` は文字列カラムなのでマイグレーションは不要。**§4.4 の表の更新が必要（→ T-38）**。`user_registered` は T-10 の担当。`tests/adapter/test_models.py::test_event_types_match_the_design` の期待値も更新済み。
-  - ⚠️ **監査ログの書き込みは T-10 が未着手のためモデルへ直接積んでいる。** T-10 で監査サービスを作ったら `_record_role_change()` をそちらへ寄せること。`actor` は完了条件どおり `cli:create-admin`、`diff` は `{"role": {"before": <前のロール or null>, "after": "admin"}, "email": ...}`、`target` は `user_id`。`before: null` は「このコマンドが作成した」の意。**平文・ハッシュを書かないことをテストで固定**（`test_the_audit_log_contains_no_password_material`）。
+  - ~~⚠️ **監査ログの書き込みは T-10 が未着手のためモデルへ直接積んでいる。**~~ → **2026-08-14 実施済み（T-10）**。`_record_role_change()` は `AuditService.record_user_role_change()` を呼ぶ形になった（書く内容は不変）。`actor` は完了条件どおり `cli:create-admin`、`diff` は `{"role": {"before": <前のロール or null>, "after": "admin"}, "email": ...}`、`target` は `user_id`。`before: null` は「このコマンドが作成した」の意。**平文・ハッシュを書かないことをテストで固定**（`test_the_audit_log_contains_no_password_material`）。
   - メール形式の判定を `is_valid_email_format()` / `email_domain()` として `models/user.py` へ切り出し、**自己登録（T-40）と CLI（T-41）で同じ判定**にした（挙動は変えていない）。CLI は**ドメイン許可リスト（`auth_allowed_email_domains`）を課さない**：ブートストラップは運用者の判断で行う経路で、社内ドメイン外の管理者を作る余地を残す（自己登録は従来どおり制限される）。
   - `.env.example` は**ガードレールにより AI が編集できない**（T-01 備考）。`SERVICE_TOKEN_HASH` の追記ブロックを提示済み。未設定のままでも動く（system 経路が無効なだけ）。
 
@@ -462,7 +462,7 @@ flowchart TD
   - **既存のルーターテストは削っていない。** 役割を分けた：`test_rbac.py` は「全エンドポイント × 全ロール」の網羅と配線、`test_config_router.py` / `test_users_router.py` は各ルーター固有の要件（config の存在を 403 の差で悟らせない・denial が config 構造を漏らさない等）。
   - **実効性はミューテーションで確認済み**：`GET /users` から `require_admin` を外すと8件（★ の system テスト含む）、マトリクスの `GET /users` × system を `allow` に変えると6件が落ちることを実測した。
 
-#### - [ ] T-10: 監査ログ書き込みサービス
+#### - [x] T-10: 監査ログ書き込みサービス
 - **対応**: §4.4（→ 仕様書 §6.1・§14）
 - **依存**: T-03, T-09
 - **成果物**: `backend/src/application/usecases/audit.py`, テスト
@@ -476,7 +476,17 @@ flowchart TD
   - ⚠️ **既に監査ログをモデルへ直書きしている箇所が3つある**（T-10 未着手のまま先行したため）。サービスを作ったら**3つともここへ寄せること**：`application/usecases/bootstrap_admin.py::_record_role_change()`（T-41）／ `application/usecases/manage_users.py::_record_audit()`（T-42）／ `application/usecases/update_config.py::_record_audit()`（T-13）。**3つ目は 2026-08-14 の調査で判明した追加分**（T-13 で増えたが、この完了条件は2箇所のままだった）
   - **パスワードハッシュ・平文・セッショントークンを監査ログに書かない**ことをテストで固定
 - **備考**: **監査ログに config の中身をそのまま残すと非admin への漏洩面になりうる**ため、参照経路は admin 限定であることをテストで確認する。
-  - `event_type` の追加は設計書 §4.4 の enum に対する差分。T-03 のモデルは文字列カラムなのでマイグレーション不要だが、**§4.4 の表を更新する必要がある**（→ T-38）。
+  - ⚠️ `event_type` の追加は**設計書 §4.4 の enum に対する差分**。T-03 のモデルは文字列カラムなのでマイグレーション不要だが、**§4.4 の表を更新する必要がある**（→ T-38）。§4.4 は4種（`config_update` / `run_start` / `run_finish` / `artifact_created`）しか挙げていないが、実装は **7種**（＋ `user_registered` / `user_role_change` / `user_status_change`）。
+  - **実績（2026-08-14）**: `make lint` / `make type-check` / `make test` すべて通過。テストは **870件**（T-10 で追加したのは 22件：サービス 19 / 登録の監査ログ 3。既存2件に検査を追加）。
+  - **`AuditService` は `add()` するだけで commit しない。** 呼び出し元のトランザクションに乗せることで、T-13 の「config の書き込みが失敗したら監査ログも残らない」が成立する。`test_it_does_not_commit` で rollback 時に消えることを固定。**サービス側で commit すると、config は保存されていないのに『変更した』記録だけが残る**（またはその逆）。
+  - **握り潰さない**方針をモジュール docstring に明記し、`test_a_failure_is_not_swallowed` で例外が伝播することを固定した。`try/except` で握る実装をここへ足さないこと。
+  - **入口で門番を置いた**：`actor` が `役割:識別子` 形式でない／`at` が naive なら `ValueError`。「後から誰の操作か追えない行」「どのタイムゾーンか分からない行」を作らせないため。`at` は **UTC 保存・表示時に Asia/Tokyo へ変換**（T-03 の `UtcDateTime`）。
+  - **直書き3箇所を寄せた**：`bootstrap_admin.py::_record_role_change()`（T-41）/ `manage_users.py`（T-42。`_record_audit` を `_record_role_change` / `_record_status_change` の2つへ分割）/ `update_config.py::_record_audit()`（T-13）。**`diff` の形も `actor` の表記も変えていない**ので既存テストは無変更で通る。
+  - **`AuditLog(...)` の直書きが復活しないことをテストで固定**（`test_no_usecase_builds_an_audit_log_directly` が `usecases/*.py` を走査する）。⚠️ これが無いと、次に急ぐ人がまた直接積んで約束がずれる。
+  - ⚠️ **`user_registered` は enum への追加から必要だった**（調査時点で `AuditEventType` に存在せず、`POST /auth/register` は監査ログを一切書いていなかった）。`AuthUsecase.register()` の成功時に記録する。**`record_user_registered()` はパスワードを引数に取らない**（渡さないよう気をつけるのではなく渡せない形にした。`test_the_registration_recorder_takes_no_password_argument` で署名を固定）。`actor` は本人（`viewer:usr_...`）。
+  - **秘密の非露出を3種に拡張**：平文・bcrypt ハッシュに加え **セッショントークン**を検査する（従来のテストは前2種しか見ていなかった）。`test_manage_users.py` の該当テストは、停止でセッションを失効させる経路に実際のセッション行を用意したうえで `session_id` が `diff` に出ないことを確認している。
+  - **ログイン成功・失敗は監査ログに入れない**（アプリログの担当）。`test_login_events_are_not_audit_events` が enum に `login_*` が現れないことを見張る。
+  - **実効性はミューテーションで確認済み**：登録時の記録を削ると2件、サービスが commit するように変えると8件、直書きを1箇所復活させると1件が落ちることを実測した。
 
 #### - [x] T-42: ユーザー管理 API（一覧・ロール昇格/降格）
 - **対応**: §4.1・§3.1／§1.1「ユーザー登録とロール付与」
@@ -494,7 +504,7 @@ flowchart TD
   - **実績（2026-08-13）**: `make lint` / `make type-check` / `make test` すべて通過。テストは **615件**（T-42 で追加したのは 45件：ユースケース 24 / ルーター 21）。
   - ⚠️ **依存の T-09（RBAC）・T-10（監査ログ書き込みサービス）が未着手のまま着手した。** T-42 は admin 限定の認可判定なしには成立しないため、**必要な最小限だけを先取りした**：
     - **認可**: `auth/dependencies.py` に `require_admin()` を追加（未認証 401／admin 以外 403。`system` も 403）。~~**T-09 で `auth/rbac.py` を作ったら、この関数を §6.2 の権限マトリクスから導出する形へ寄せること。**~~ → **2026-08-14 実施済み（T-09）**。`require_admin` は `require_permission`（マトリクス由来）の薄い別名になり、**このファイルの import と使い方は変えていない**。
-    - **監査ログ**: T-41 と同じく**モデルへ直接積んでいる**。T-10 で監査サービスを作ったら `ManageUsersUsecase._record_audit()` をそちらへ寄せること。
+    - **監査ログ**: T-41 と同じく**モデルへ直接積んでいた**。→ **2026-08-14 実施済み（T-10）**。`_record_audit()` は `AuditService` を呼ぶ `_record_role_change()` / `_record_status_change()` の2つに分かれた（書く内容は不変）。
   - ⚠️ **`AuditEventType.USER_STATUS_CHANGE` を追加した**（設計書 §4.4 の enum への差分。完了条件は `user_role_change` しか挙げていない）。**admin の停止は実質的な権限剥奪**（ログインできない＝管理者として機能しない）なので、降格と同じ重みで記録しないと「誰が admin を無力化したか」が追えない。`event_type` は文字列カラムなのでマイグレーションは不要。**§4.4 の表の更新が必要（→ T-38）**。`tests/adapter/test_models.py::test_event_types_match_the_design` の期待値も更新済み。
   - **「最後の admin」は *有効な*（`is_active=true`）admin で数える。** ⚠️ **T-41 の `count_admins()`（停止中も数える）とは意図的に異なる**。T-41 は「2人目の初期 admin を CLI で作らせない」ための判定で、停止中を除外すると admin を停止するだけで2人目を作れてしまう。T-42 は「締め出されない」ための判定で、逆に停止中を数えると**最後の有効な admin を停止する操作が通ってしまい**、誰も管理画面へ入れなくなる。目的が違うので数え方も違う（両方テストで固定）。
   - 判定は「**変更後も有効な admin が1人以上残るか**」の1本に統一した（降格・停止・自分自身を同じ式で扱う）。`role=admin` への無変更まで 409 にしないのはこの形の副産物。
@@ -576,7 +586,7 @@ flowchart TD
   - **クロスフィールド検証はこの層で行わない。** `apply_patch` は Σweight≠100 の候補も作れ、拒否するのは保存直前の `ConfigRepository.save()`（T-05）1箇所。二重化するとドライラン（T-29）と保存で片方だけ直す事故が起きる。境界を `test_cross_field_rules_are_not_enforced_here` で明示。**自動補正しないことも `test_the_rejected_input_is_never_normalized` で固定**（設計判断A）。
   - **409（楽観ロック）を 422 より先に返す。** 古い `base_revision` の場合、admin が見ていない config に対する項目別 422 を返しても直しようがなく、正しい案内は「読み直して再保存」であるため（`test_a_conflict_is_reported_before_field_level_issues`）。
   - **監査ログは config の書き込みと同じトランザクションに載せた。** `save()` が commit する前に `AuditLog` を add し、失敗時は `rollback()` する。「config は変わったが誰が変えたか残っていない」を作らないため。**拒否時（422・409・403）に行が増えないことをテストで固定**。
-  - ⚠️ **監査ログの書き込みは T-10 が未着手のためモデルへ直接積んでいる**（T-41・T-42 と同じ）。T-10 で監査サービスを作ったら `UpdateConfigUsecase._record_audit()` もそちらへ寄せること。`actor` は `Principal.actor`（`admin:usr_...`）、`revision` は採番後の値、`target` は `config.json`、`diff` は T-11 の `diff_configs()`（`meta.*` を除く）。
+  - ~~⚠️ **監査ログの書き込みは T-10 が未着手のためモデルへ直接積んでいる**（T-41・T-42 と同じ）。~~ → **2026-08-14 実施済み（T-10）**。`UpdateConfigUsecase._record_audit()` は `AuditService.record_config_update()` を呼ぶ形になった（書く内容・トランザクションの乗り方は不変）。`actor` は `Principal.actor`（`admin:usr_...`）、`revision` は採番後の値、`target` は `config.json`、`diff` は T-11 の `diff_configs()`（`meta.*` を除く）。
   - ⚠️ **`updated_by` は `Principal.actor` 形式（`admin:usr_xxx`）**。§3.3 の履歴例は `"admin_a"` とユーザ識別子だけだが、T-11 の申し送り（「T-13 は `Principal.actor` 相当を渡す」）と §4.4 の `actor` 表記に合わせた。
   - ⚠️ **エラー本文はプロジェクト共通の `detail` 封筒に載せた**（`{"detail":{"error":"revision_conflict","current_revision":2}}`）。§3.3 は封筒なしの形で書いているが、T-40・T-42 が既に `detail` 封筒で統一されているのでそちらに合わせた（→ §3.3 の記法を揃えるなら T-38）。
   - **T-05 を必ず通ることはミューテーションで確認済み**：`save()` から `ensure_valid_config()` を外すと5件のテストが落ちる。監査ログの add を外すと2件落ちる。

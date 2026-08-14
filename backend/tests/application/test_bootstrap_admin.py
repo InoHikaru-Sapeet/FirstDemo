@@ -435,7 +435,12 @@ async def test_the_audit_timestamp_is_timezone_aware_utc(
 async def test_the_audit_log_contains_no_password_material(
     usecase: BootstrapAdminUsecase, db: AsyncSession
 ) -> None:
-    """⚠️ 平文もハッシュも監査ログに置かない（T-10 と同じ約束）。"""
+    """⚠️ 平文もハッシュも監査ログに置かない（T-10 と同じ約束）。
+
+    （2026-08-14 追加）**セッショントークンも検査する。** この経路はセッションを
+    発行しないので混入する余地は小さいが、3種の秘密（平文・ハッシュ・トークン）を
+    同じ形で見張る約束にした（従来トークンは未検証だった）。
+    """
     user = await usecase.create_initial_admin(
         email=EMAIL, display_name=DISPLAY_NAME, password=PASSWORD
     )
@@ -454,6 +459,8 @@ async def test_the_audit_log_contains_no_password_material(
     assert PASSWORD not in serialised
     assert user.password_hash not in serialised
     assert "$2b$" not in serialised
+    assert "token" not in serialised.lower()
+    assert "session" not in serialised.lower()
 
 
 # --- 人数の数え方 ---------------------------------------------------------

@@ -29,12 +29,12 @@ from enum import StrEnum
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from adapter.database.models.audit_log import AuditEventType, AuditLog
 from adapter.database.models.user import (
     User,
     is_valid_email_format,
     normalize_email,
 )
+from application.usecases.audit import AuditService
 from enterprise.entities.principal import Role
 from enterprise.services.password import hash_password
 
@@ -83,6 +83,7 @@ class BootstrapAdminUsecase:
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
+        self._audit = AuditService(db)
 
     # --- 参照 -------------------------------------------------------------
 
@@ -254,31 +255,19 @@ class BootstrapAdminUsecase:
         """ロール変更を監査ログへ積む（commit は呼び出し元）。
 
         `before=None` は「このコマンドが作成した」ことを意味する。
+        `actor` は `cli:create-admin`（人ではなくコマンドが行為者）。
 
-        ⚠️ **パスワードハッシュ・平文を書かない。** 監査ログは admin が閲覧する
-        ものだが、それでもハッシュを置く理由がない（T-10 も同じ約束）。
-
-        ⚠️ T-10 が監査ログ書き込みサービスを作ったら、**この直書きをそちらへ
-        寄せること**（現時点では T-10 が未着手のためモデルへ直接積んでいる）。
+        （2026-08-14）T-10 の `AuditService` へ寄せた。`diff` の形も `actor` も
+        従来と同一。約束（**パスワードハッシュ・平文を書かない**・握り潰さない・
+        commit しない）は `application/usecases/audit.py` の docstring を参照。
         """
-        self._db.add(
-            AuditLog(
-                audit_id=f"aud_{uuid.uuid4().hex}",
-                event_type=AuditEventType.USER_ROLE_CHANGE,
-                actor=CLI_ACTOR,
-                at=at,
-                revision=None,
-                diff={
-                    "role": {
-                        "before": before.value if before is not None else None,
-                        "after": Role.ADMIN.value,
-                    },
-                    # 対象を人間が識別できるように残す（user_id は不透明なため）。
-                    "email": user.email,
-                },
-                target=user.user_id,
-                period=None,
-            )
+        self._audit.record_user_role_change(
+            actor=CLI_ACTOR,
+            at=at,
+            user_id=user.user_id,
+            email=user.email,
+            before=before,
+            after=Role.ADMIN,
         )
 
 
