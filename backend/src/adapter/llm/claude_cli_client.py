@@ -40,6 +40,28 @@ outputs 相当（`output_config.format`）があるかは未確認なので、JS
 内容をプロンプトへ載せて再依頼する。**リトライするのはスキーマ不一致だけ**
 （プロセス失敗・タイムアウトは1回あたり数分かかるうえ、再実行で直るかを判別する
 材料が無い。ジョブ単位の再実行＝呼び出し元の判断に委ねる）。
+
+---
+
+**追加の実測（2026-08-14。同じ CLI・同じ環境）**
+
+⚠️ **ツールの許可が無いと、封筒は「成功」のまま中身が拒否記録になる。**
+`--allowedTools` を付けずに web 検索の要る指示を出すと、`is_error=false` /
+`subtype="success"` / `api_error_status=null` のまま **`permission_denials` 配列に
+拒否記録が入り**、`result` には「権限がないので実行できない」旨の日本語文が入った。
+つまり **`is_error` / `subtype` / `api_error_status` / `stop_reason` の4つだけでは
+すり抜ける**。`_ensure_success()` は `permission_denials` が空でないことも失敗として
+扱う（拒否されたツール名を `reasons` に載せる）。⚠️ **この検査を外さないこと。**
+外すと「検索していない収集結果」＝モデルの記憶からの推測が、成功として後段へ流れる。
+
+⚠️ **「JSON のみ出力」と指示しても、`result` が ```json のコードフェンスで包まれ、
+後ろに説明文や `Sources:` が付くことがある**（実測で発生）。そのため `result` は
+そのまま Pydantic へ渡さず、**最初の完全な JSON 値だけを取り出してから**検証する
+（`_extract_json_payload()`）。取り出せなければ従来どおりリトライ経路へ落ちる。
+
+**web 検索は `--allowedTools "WebSearch"` で有効化できる**（→ `extra_args`。
+プロトコルには出さない）。**実施されたかどうかは封筒トップの `server_tool_use`
+ではなく `modelUsage[].webSearchRequests` に出る。**
 """
 
 import asyncio
@@ -90,6 +112,24 @@ REFUSAL_STOP_REASON = "refusal"
 
 # 子プロセスへ渡さない環境変数。**Team 契約のログインセッションで呼ぶ**ため。
 API_KEY_ENV = "ANTHROPIC_API_KEY"
+
+# 拒否記録（`permission_denials[]`）からツール名を取るキー。実測ではこの名前だった。
+# ⚠️ **要素の形に依存しないこと。** 取れなければ要素そのものを載せる（拒否があった
+# 事実の方が重要で、名前が読めないことを理由に成功へ倒さない）。
+PERMISSION_DENIAL_TOOL_KEY = "tool_name"
+
+# 拒否記録の形が想定と違ったときに例外メッセージへ載せる長さの上限
+# （`tool_input` に長い本文が入りうるので、原因が読める範囲だけ載せる）。
+DENIAL_LABEL_LIMIT = 200
+
+# `result` から JSON を取り出すときに試す開始位置の上限（`_extract_json_payload`）。
+# 途中で切れた巨大な出力に対して「開始位置 × 末尾まで走査」の総当たりになるのを
+# 防ぐだけの安全弁。実際の出力は先頭かフェンス直後から始まるので、通常は1回で済む。
+JSON_SCAN_LIMIT = 64
+
+# JSON 値の開始文字。⚠️ オブジェクトと配列だけを見る（`raw_articles.json` は
+# トップレベルが array。設計書 §2.3）。裸の数値・文字列は本文中の数字を拾うので見ない。
+JSON_VALUE_STARTS = "{["
 
 # リトライ時にプロンプトへ載せる「前回の出力」の上限。プロンプトは argv で渡すので
 # 際限なく膨らませない（下の ⚠️ ARG_MAX 参照）。
@@ -239,6 +279,14 @@ class ClaudeCliEnvelope(BaseModel):
     api_error_status: Any = None
     """API 側のエラー状態。⚠️ **型を決めつけない**（未実測。数値か文字列か不明）。"""
 
+    permission_denials: list[Any] | None = None
+    """許可されていないツールを使おうとして拒否された記録（2026-08-14 実測）。
+
+    ⚠️ **ここが非空でも封筒は `is_error=false` / `subtype="success"` のまま**。
+    要素の形は `{"tool_name": ..., ...}` だったが、**形に依存しない**（`list[Any]`）。
+    判定に使うのは「空でないこと」で、名前は診断のために best-effort で取る。
+    """
+
     total_cost_usd: float | None = None
     duration_ms: int | None = None
     session_id: str | None = None
@@ -254,6 +302,27 @@ class ClaudeCliEnvelope(BaseModel):
     def models_used(self) -> tuple[str, ...]:
         """実際に使われたモデル名。取れなければ空タプル。"""
         return tuple(self.usage_by_model or ())
+
+    @property
+    def denied_tools(self) -> tuple[str, ...]:
+        """拒否されたツールの名前（診断用）。拒否が無ければ空タプル。
+
+        ⚠️ **名前が読めないことを「拒否が無かった」に読み替えない。** 形が想定と
+        違う要素は、その内容をそのまま載せて1件として数える。
+        """
+        labels: list[str] = []
+        for denial in self.permission_denials or ():
+            name = (
+                denial.get(PERMISSION_DENIAL_TOOL_KEY)
+                if isinstance(denial, Mapping)
+                else None
+            )
+            labels.append(
+                str(name)
+                if name is not None
+                else summarize_stream(str(denial), limit=DENIAL_LABEL_LIMIT)
+            )
+        return tuple(labels)
 
 
 class ClaudeCliClient:
@@ -338,7 +407,7 @@ class ClaudeCliClient:
                 prompt_version=prompt_version,
                 attempt=attempt,
             )
-            payload = _strip_code_fence(_require_payload(envelope))
+            payload = _extract_json_payload(_require_payload(envelope))
             try:
                 value = parse_json_document(adapter, payload, label=label)
             except DocumentParseError as exc:
@@ -506,10 +575,19 @@ def _ensure_success(envelope: ClaudeCliEnvelope, *, stderr: str) -> None:
         reasons.append(f"subtype={envelope.subtype!r}（{SUCCESS_SUBTYPE!r} ではない）")
     if envelope.stop_reason == REFUSAL_STOP_REASON:
         reasons.append("stop_reason='refusal'（モデルが応答を拒否した）")
+    if denied := envelope.denied_tools:
+        # ⚠️ **実測でここだけが失敗を示していた。** 封筒は成功を申告したまま、
+        # `result` には「権限がないので実行できない」旨の文が入っていた。
+        # 許可の付け忘れ（`extra_args` の `--allowedTools`）はここで気づく。
+        reasons.append(
+            f"permission_denials={len(denied)}件（拒否されたツール: "
+            + ", ".join(denied)
+            + "）。CLI へツールの許可を渡していない疑い"
+        )
 
     if reasons:
         raise AIResponseError(
-            "終了コードは0でしたが、封筒が失敗を申告しています — "
+            "終了コードは0でしたが、この応答は成功として扱えません — "
             + " / ".join(reasons)
             + f" / stderr: {summarize_stream(stderr)}",
             reasons=reasons,
@@ -542,24 +620,36 @@ def _require_payload(envelope: ClaudeCliEnvelope) -> str:
     return envelope.result
 
 
-def _strip_code_fence(payload: str) -> str:
-    """```json ... ``` で囲まれていた場合だけ外す。
+def _extract_json_payload(payload: str) -> str:
+    """`result` から**最初の完全な JSON 値**（オブジェクトか配列）を取り出す。
 
-    プロンプトでコードフェンスを禁じてはいるが、囲まれて返ることは起こりうる。
-    1回の呼び出しが数分かかるので、この程度は受け入れてリトライを節約する。
-    ⚠️ **これ以上の救済はしない**（説明文の混じった出力を拾い出す等）。曖昧な
-    出力を推測で通すと、後段が黙って別の記事集合を扱うことになる。
+    プロンプトで「JSON だけ・フェンスで囲まない」と指示してはいるが、**実測では
+    ```json のフェンスで包まれ、後ろに説明文と `Sources:` が付いて返った**。
+    1回の呼び出しが数分〜30分かかるので、この程度の逸脱はここで吸収して
+    リトライを節約する（フェンスの除去も、この走査が兼ねる）。
+
+    ⚠️ **取り出せなければ元の文字列をそのまま返す**（＝従来どおりスキーマ検証で
+    失敗し、指摘つきのリトライ経路へ落ちる）。ここで「それらしい断片」を継ぎ接ぎ
+    して通すと、後段が黙って別の記事集合を扱うことになる。
+
+    ⚠️ **取るのは「最初の」完全な値**。説明文の中に例示の JSON が先に出てくると
+    そちらを拾う。拾った値がスキーマに合わなければリトライで気づける形にしてある。
     """
     stripped = payload.strip()
-    if not stripped.startswith("```") or not stripped.endswith("```"):
-        return stripped
-
-    body = stripped[3:-3]
-    head, separator, rest = body.partition("\n")
-    if separator and not head.strip().startswith(("{", "[")):
-        # ```json のような言語指定の行を落とす。
-        return rest.strip()
-    return body.strip()
+    decoder = json.JSONDecoder()
+    attempts = 0
+    for index, char in enumerate(stripped):
+        if char not in JSON_VALUE_STARTS:
+            continue
+        attempts += 1
+        if attempts > JSON_SCAN_LIMIT:
+            break
+        try:
+            _, end = decoder.raw_decode(stripped, index)
+        except ValueError:
+            continue
+        return stripped[index:end]
+    return stripped
 
 
 def _retry_note(exc: DocumentParseError, payload: str, *, attempt: int) -> str:

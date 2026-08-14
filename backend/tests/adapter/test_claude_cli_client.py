@@ -66,6 +66,60 @@ MEASURED_ENVELOPE: dict[str, Any] = {
 }
 
 
+# 2026-08-14 の追加実測: **`--allowedTools` を付けずに**ツールの要る指示を出した場合。
+# ⚠️ **`is_error` / `subtype` / `api_error_status` / `stop_reason` は成功時と同じ。**
+# 違うのは `permission_denials` が非空になることと、`result` が「権限が無いので
+# 実行できない」旨の日本語文になることだけ。**この2件が既存の成功判定をすり抜けた**
+# のがこの封筒をここへ残す理由。
+# （ID・所要時間・文面の細部は記録から起こしたもので、判定には使っていない。
+#  判定に使うのは「`permission_denials` が空でないこと」だけ。）
+MEASURED_DENIAL_ENVELOPE: dict[str, Any] = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "duration_ms": 24518,
+    "duration_api_ms": 9042,
+    "num_turns": 2,
+    "result": (
+        "申し訳ありませんが、WebSearch ツールの使用権限が与えられていないため、"
+        "検索を実行できませんでした。"
+    ),
+    "session_id": "6a4b1c77-2b0e-4c39-9c8e-3d51a0f9b204",
+    "total_cost_usd": 0.04127,
+    "stop_reason": None,
+    "api_error_status": None,
+    "permission_denials": [
+        {
+            "tool_name": "WebSearch",
+            "tool_use_id": "toolu_01B9xQ7mS2vK4dP6fL8nR3wY",
+            "tool_input": {"query": "AI ニュース 2026-W31"},
+        }
+    ],
+    "usage": {"input_tokens": 1843, "output_tokens": 96},
+    "modelUsage": {
+        "claude-opus-5": {
+            "inputTokens": 1843,
+            "outputTokens": 96,
+            "costUSD": 0.04127,
+            "webSearchRequests": 0,
+        }
+    },
+}
+
+# 2026-08-14 の追加実測: 「JSON のみ出力」と指示しても、```json のコードフェンスで
+# 包まれ、**後ろに説明文と `Sources:` が付く**ことがある（実測で発生）。
+# 1回の呼び出しが数分〜30分かかるので、この逸脱はリトライを消費せず吸収する。
+MEASURED_FENCED_RESULT = """```json
+{"label": "AI", "score": 7}
+```
+
+上記が対象期間の収集結果です。件数は1件でした。
+
+Sources:
+- https://example.com/news/1
+"""
+
+
 class Answer(BaseModel):
     """テスト用の出力スキーマ。"""
 
@@ -114,6 +168,17 @@ def envelope(result_text: str | None = ANSWER_JSON, **overrides: Any) -> str:
     """実測した封筒をベースに、一部だけ差し替えた標準出力を作る。"""
     payload = dict(MEASURED_ENVELOPE)
     payload["result"] = result_text
+    for key, value in overrides.items():
+        if value is _ABSENT:
+            payload.pop(key, None)
+        else:
+            payload[key] = value
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def denial_envelope(**overrides: Any) -> str:
+    """実測した**拒否つき**封筒をベースに、一部だけ差し替えた標準出力を作る。"""
+    payload = dict(MEASURED_DENIAL_ENVELOPE)
     for key, value in overrides.items():
         if value is _ABSENT:
             payload.pop(key, None)
@@ -365,14 +430,60 @@ async def test_a_code_fence_around_the_json_is_tolerated() -> None:
     assert result.value.score == 7
 
 
-async def test_prose_around_the_json_is_not_rescued() -> None:
-    """⚠️ 説明文の混じった出力を拾い出さない（曖昧な出力を推測で通さない）。"""
+async def test_the_measured_fence_with_trailing_prose_is_extracted() -> None:
+    """実測: フェンス＋後続の説明文・`Sources:` が付いて返ることがある。"""
+    client, runner, _ = build_client([stdout_of(envelope(MEASURED_FENCED_RESULT))])
+
+    result = await client.complete(prompt="q", output_schema=Answer)
+
+    assert result.value == Answer(label="AI", score=7)
+    assert len(runner.calls) == 1  # 逸脱の吸収にリトライを消費しない
+
+
+async def test_prose_before_the_json_is_extracted() -> None:
+    """前置きが付いた場合も最初の完全な JSON 値を取り出す。"""
     client, _, _ = build_client(
-        [stdout_of(envelope(f"はい、こちらです: {ANSWER_JSON}"))], max_attempts=1
+        [stdout_of(envelope(f"はい、こちらです: {ANSWER_JSON}"))]
     )
 
-    with pytest.raises(AIOutputParseError):
+    result = await client.complete(prompt="q", output_schema=Answer)
+
+    assert result.value.score == 7
+
+
+async def test_a_top_level_array_is_extracted_from_prose() -> None:
+    """`raw_articles.json` はトップレベルが array（設計書 §2.3）。"""
+    adapter = TypeAdapter(list[Answer])
+    client, _, _ = build_client(
+        [stdout_of(envelope('収集結果です:\n[{"label":"a","score":1}]\n以上です。'))]
+    )
+
+    result = await client.complete(prompt="q", output_schema=adapter)
+
+    assert result.value == [Answer(label="a", score=1)]
+
+
+async def test_only_the_first_complete_json_value_is_taken() -> None:
+    """⚠️ 断片を継ぎ接ぎしない。取るのは最初の完全な値ひとつだけ。"""
+    result_text = ANSWER_JSON + '\nおまけ: {"label": "B", "score": 1}'
+    client, _, _ = build_client([stdout_of(envelope(result_text))])
+
+    result = await client.complete(prompt="q", output_schema=Answer)
+
+    assert result.value == Answer(label="AI", score=7)
+
+
+async def test_text_without_any_json_still_falls_back_to_the_retry_path() -> None:
+    """取り出せなければ従来どおり（スキーマ検証で失敗 → 指摘つきリトライ）。"""
+    client, runner, _ = build_client(
+        [stdout_of(envelope("権限が無いため実行できませんでした。"))], max_attempts=2
+    )
+
+    with pytest.raises(AIOutputParseError) as caught:
         await client.complete(prompt="q", output_schema=Answer)
+
+    assert len(runner.calls) == 2
+    assert "権限が無いため" in caught.value.payload
 
 
 # --- 異常系（原因ごとに別の例外）------------------------------------------
@@ -466,6 +577,61 @@ async def test_a_subtype_other_than_success_is_not_treated_as_success() -> None:
         await client.complete(prompt="q", output_schema=Answer)
 
     assert "error_max_turns" in caught.value.reasons[0]
+
+
+async def test_the_measured_permission_denial_is_not_treated_as_success() -> None:
+    """⚠️ **実測**: 許可の無いツールを使おうとすると、封筒は成功のまま
+    `permission_denials` に拒否記録が入り、`result` は権限が無い旨の文になる。
+    `is_error` / `subtype` / `api_error_status` / `stop_reason` の4つだけでは
+    すり抜けるので、拒否記録そのものを見る。"""
+    client, runner, _ = build_client([stdout_of(denial_envelope())])
+
+    with pytest.raises(AIResponseError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert "WebSearch" in " ".join(caught.value.reasons)
+    assert "WebSearch" in str(caught.value)
+    assert len(runner.calls) == 1  # 許可の付け忘れはリトライで直らない
+
+
+async def test_a_denial_fails_even_when_the_result_parses() -> None:
+    """拒否があったら、出力がスキーマに合っていても成功にしない。
+
+    ⚠️ 検索していない収集結果＝モデルの記憶からの推測を後段へ流さないため。
+    """
+    client, _, _ = build_client([stdout_of(denial_envelope(result=ANSWER_JSON))])
+
+    with pytest.raises(AIResponseError):
+        await client.complete(prompt="q", output_schema=Answer)
+
+
+async def test_an_empty_denial_list_is_still_a_success() -> None:
+    """拒否が**無い**ことは成功の妨げにならない（実測の成功封筒には空配列が付く）。"""
+    client, _, _ = build_client([stdout_of(envelope(permission_denials=[]))])
+
+    result = await client.complete(prompt="q", output_schema=Answer)
+
+    assert result.value.score == 7
+
+
+@pytest.mark.parametrize(
+    "denials",
+    [
+        [{"tool_use_id": "toolu_01", "tool_input": {"query": "q"}}],  # 名前が無い
+        ["WebSearch"],  # 要素が dict ですらない
+        [{"tool_name": "WebSearch"}, {"tool_name": "WebFetch"}],  # 複数
+    ],
+)
+async def test_a_denial_of_an_unexpected_shape_still_fails(denials: list[Any]) -> None:
+    """⚠️ 要素の形が想定と違っても「拒否が無かった」に読み替えない。"""
+    client, _, _ = build_client(
+        [stdout_of(denial_envelope(permission_denials=denials))]
+    )
+
+    with pytest.raises(AIResponseError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert f"permission_denials={len(denials)}件" in " ".join(caught.value.reasons)
 
 
 async def test_a_refusal_stop_reason_is_not_swallowed() -> None:

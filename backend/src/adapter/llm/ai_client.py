@@ -137,13 +137,19 @@ class AIProtocolError(AIClientError):
 
 
 class AIResponseError(AIClientError):
-    """封筒自身が失敗を申告している（`is_error` / `subtype` / `api_error_status`）。
+    """応答を成功として扱えない（`is_error` / `subtype` / `api_error_status` ほか）。
 
     ⚠️ **終了コード0でもここへ落ちる。** 成功判定を終了コードだけに頼らないため
     （実測では成功時に 0 が返るが、失敗時の終了コードは未実測）。
 
+    ⚠️ **封筒が「成功」を申告していてもここへ落ちることがある。** 実測では、ツールの
+    許可が無いとき `is_error=false` / `subtype="success"` のまま `permission_denials`
+    に拒否記録が入った（`claude_cli_client` 冒頭）。「失敗と言っていない」を
+    「成功」と読み替えない。
+
     Attributes:
-        reasons: 失敗と判断した根拠（`is_error=true` 等）。全部載せる
+        reasons: 失敗と判断した根拠（`is_error=true`・拒否されたツール名 等）。
+            全部載せる
     """
 
     def __init__(self, message: str, *, reasons: Sequence[str], stderr: str) -> None:
