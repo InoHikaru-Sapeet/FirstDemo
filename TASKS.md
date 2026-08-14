@@ -485,20 +485,30 @@ flowchart TD
   - ⚠️ **現状はアプリ・DB・`config.json` がすべて同一ホスト（開発者の PC）にあるため、事実上 config を編集できるのは1人だけ。** 楽観ロックは実装済みだが、競合が実際に起きるのは共有ストレージへ移した後。**会社展開（本番 AWS）で `config.json` を S3 等へ移すと複数管理者が同一 config を編集できるようになる**（切り替えは `ArtifactStore` の実装差し替えで対応）。同時編集の競合対策（後勝ち・楽観ロックの強化等）は AWS 移行時に検討＝**現時点では未実装でよい**。詳細は [future-roadmap.md](./docs/future-roadmap.md)「`config.json` の置き場」に記録した。
   - 主要な性質はミューテーションテストで実効性を確認済み：楽観ロックの比較を外す／commit をファイル書き込みより前に出す／呼び出し元の `meta` をそのまま採用する、の3改変でそれぞれ対応するテストが落ちることを実測した。
 
-#### - [ ] T-12: `GET /config` / `GET /config/history`
+#### - [x] T-12: `GET /config` / `GET /config/history`
 - **対応**: §3.2・§3.3
 - **依存**: T-09, T-11
-- **成果物**: `backend/src/adapter/http/fastapi/routers/config.py`（`all_routers` へ登録）, テスト
+- **成果物**: `backend/src/adapter/http/fastapi/routers/config.py`（`all_routers` へ登録）, `backend/tests/adapter/test_config_router.py`
 - **完了条件**:
   - `GET /config` → `200 { "revision": N, "config": {...} }`（admin のみ）
   - `GET /config/history` → `200 { "items": [{ revision, updated_at, updated_by, diff_summary }] }`（admin のみ）
   - **非admin は 403 のみでボディに config 情報を含まない**（エラーメッセージからも推測できないこと）
   - OpenAPI にレスポンススキーマが出る（T-31 の型生成の入力になる）
+- **備考**（実績 2026-08-14）: `make lint` / `make type-check` / `make test` すべて通過。テストは **732件**（T-12・T-13 で追加したのは 89件：ルーター 70 / patch 許可リスト 19）。
+  - ⚠️ **依存の T-09（RBAC）が未着手のまま着手した。** T-42 と同じく `auth/dependencies.py` の `require_admin()` を使っている。**T-09 で `auth/rbac.py` を作ったら、config ファミリ4行（`GET /config`・`PUT /config`・`GET /config/history`・`POST /config/dry-run`）も権限マトリクスから導出する形へ寄せ、網羅テストの対象に含めること。**
+  - **「存在も中身も見せない」の担保は「認可をハンドラの手前で終わらせる」こと。** `require_admin` は依存として解決され、**ボディ検証より先に**走る（FastAPI が sub-dependency を先に解決するため。実測でテスト固定済み）。結果として非 admin のリクエストは **`config.json` を一度も読まない**。これが次の2つを同時に満たす：
+    1. **存在の秘匿**：config が有る場合と無い場合で、非 admin への応答が**ステータス・本文とも完全に同一**（`test_the_denial_is_identical_whether_or_not_the_config_exists`）。状態依存にすると 403/404 の差で存在が分かる。
+    2. **構造の秘匿**：非 admin の `PUT` は patch の中身（固定項目・未知キー・不正 revision）に関わらず応答が1種類（`test_a_denied_update_never_reveals_the_config_structure`）。項目別 422 を返すと config のキー構成が漏れる。
+  - **`system`（cron）も 403。** §6.2 の「内部のみ」はパイプラインがファイルを直接読む経路のことで、**HTTP のレスポンス経路は持たない**（§3.1）。サービストークン（`Authorization: Bearer`）で実際に叩いて 403 を固定した。
+  - ⚠️ **`GET /openapi.json` は未認証で到達でき、config のレスポンススキーマ（フィールド名と enum の日本語確定値）が載る。** T-12 の完了条件「OpenAPI にレスポンススキーマが出る（T-31 の型生成の入力）」に従った結果で、**露出するのはスキーマ（器）だけ・revision や weight などの運用中の値は含まれない**。とはいえ「存在も中身も」の厳密解釈とは緊張があるので、**`/openapi.json` と `/docs` を admin 限定にするか否かは要判断（→ T-38）**。admin 限定にする場合は、T-31 の型生成をオフライン生成（`export_config_schema` と同じ形の CLI）へ切り替える必要がある。
+  - 降格の即時反映も config 経路で固定（`test_a_demoted_admin_stops_seeing_the_config_without_re_login`）。admin を降格させた次のリクエストから 200 → 403 になる。
+  - 履歴一覧に中身が混ざらないことを HTTP 層でも固定（`config_snapshot` / `scoring_axes` / `exclusion_rules` の語が応答本文に現れない）。T-11 が `config_snapshot` を SELECT しない設計と対。
+  - **認可の実効性はミューテーションで確認済み**：`get_config` から `require_admin` の依存を外すと 13件のテストが落ちる。
 
-#### - [ ] T-13: `PUT /config`（更新・楽観ロック・監査）
+#### - [x] T-13: `PUT /config`（更新・楽観ロック・監査）
 - **対応**: §3.3・§4.3（→ 仕様書 §7.4）
 - **依存**: T-05, T-10, T-12
-- **成果物**: `backend/src/adapter/http/fastapi/routers/config.py`（追記）, `backend/src/application/usecases/update_config.py`, テスト
+- **成果物**: `backend/src/adapter/http/fastapi/routers/config.py`（追記）, `backend/src/application/usecases/update_config.py`, `backend/src/enterprise/entities/config_validation.py`（`ConfigIssueCode` に4値追加）, `backend/tests/application/test_update_config.py`, `backend/tests/adapter/test_config_router.py`
 - **完了条件**:
   - Request：`{ base_revision, patch }`。`patch` は §7.2 の**編集可能パラメータのみ許可**（許可リスト方式）
   - 固定項目（ID系・`scoring_total`・`schema_version` 等）を含む patch は **422**
@@ -506,6 +516,19 @@ flowchart TD
   - `base_revision` 不一致は **409**（`{error:"revision_conflict", current_revision}`）
   - 成功時 `200 { revision, updated_at, updated_by }`、`revision++`、**監査ログに diff を記録**
   - 非admin は 403
+- **備考**（実績 2026-08-14）: T-12 と同時に実装。件数・共通事項は T-12 の備考を参照。
+  - **許可リストは `EDITABLE_PATHS`（20パス）の1定数に集約した。** 配列要素は `*` で表す（`scoring_axes.*.weight`）。**判定の正を1箇所に保つ**ため、Pydantic の patch モデルで型として表現する案は採らなかった（型定義と §7.2 の表に許可判定が二重化し、422 の本文も FastAPI 既定の `detail:[...]` になって T-05 の `issues` と揃わなくなる）。代償として **OpenAPI 上の `patch` は自由形式オブジェクト**になる。T-33 のフォームは `GET /config` のスキーマから組むので実害は小さいが、T-31 の型生成で patch 型が欲しくなったら `EDITABLE_PATHS` から生成すること。
+  - ⚠️ **§7.2 の表に行が無い4項目を許可した**：`tunable_thresholds.min_reliability_score_to_publish` / `weekly.point_of_week_required` / `monthly.min_score_for_case` / `monthly.require_editorial_and_closing`。§7.2 の見出しが「§5.2 の**可変項目**にマップ」で、可変項目の定義（§5.1 ／ T-04）は `tunable_thresholds` をまるごと可変としているため、表の取りこぼしと解釈した。特に `min_reliability_score_to_publish` は採否判定（T-21 手順5）が使う値で、許可しないと `config.json` の手編集でしか変えられない。**§7.2 の表に4行を追記する必要がある（→ T-38）**。`test_the_allow_list_covers_every_tunable_threshold` が「`tunable_thresholds` に編集できない項目が残っていない」ことを固定している。
+  - **配列要素は添字ではなく識別子（`id` / `no`）で対応づける。** フロントがフィルタ済みの一覧を送ると添字がずれるため。**`id` / `no` はセレクタであって編集対象ではない**ので、ID を変える手段は「存在しない ID を指す」＝ 422 しかない（`test_changing_an_identifier_is_impossible`）。
+  - **1件でも違反があれば何も適用しない**（部分適用しない）。「一部だけ通った」ことに admin が気づけないまま次回フィルタが走る事故を防ぐ。違反は早期 return せず全件返す（T-05 と同じ方針）。
+  - **422 の `issues` を1種類の形に揃えた**（`{path, reason, code}`）。`ConfigIssueCode` に `field_not_editable` / `unknown_field` / `unknown_target` / `invalid_value` の4値を追加し、**モデル由来 422・クロスフィールド 422・patch 422 をフロント（T-34）が同じ方法で `path` からフォーム欄へマッピング**できるようにした。⚠️ この4値は T-05 のクロスフィールド検証は生成しない（生成元は T-13）。
+  - **クロスフィールド検証はこの層で行わない。** `apply_patch` は Σweight≠100 の候補も作れ、拒否するのは保存直前の `ConfigRepository.save()`（T-05）1箇所。二重化するとドライラン（T-29）と保存で片方だけ直す事故が起きる。境界を `test_cross_field_rules_are_not_enforced_here` で明示。**自動補正しないことも `test_the_rejected_input_is_never_normalized` で固定**（設計判断A）。
+  - **409（楽観ロック）を 422 より先に返す。** 古い `base_revision` の場合、admin が見ていない config に対する項目別 422 を返しても直しようがなく、正しい案内は「読み直して再保存」であるため（`test_a_conflict_is_reported_before_field_level_issues`）。
+  - **監査ログは config の書き込みと同じトランザクションに載せた。** `save()` が commit する前に `AuditLog` を add し、失敗時は `rollback()` する。「config は変わったが誰が変えたか残っていない」を作らないため。**拒否時（422・409・403）に行が増えないことをテストで固定**。
+  - ⚠️ **監査ログの書き込みは T-10 が未着手のためモデルへ直接積んでいる**（T-41・T-42 と同じ）。T-10 で監査サービスを作ったら `UpdateConfigUsecase._record_audit()` もそちらへ寄せること。`actor` は `Principal.actor`（`admin:usr_...`）、`revision` は採番後の値、`target` は `config.json`、`diff` は T-11 の `diff_configs()`（`meta.*` を除く）。
+  - ⚠️ **`updated_by` は `Principal.actor` 形式（`admin:usr_xxx`）**。§3.3 の履歴例は `"admin_a"` とユーザ識別子だけだが、T-11 の申し送り（「T-13 は `Principal.actor` 相当を渡す」）と §4.4 の `actor` 表記に合わせた。
+  - ⚠️ **エラー本文はプロジェクト共通の `detail` 封筒に載せた**（`{"detail":{"error":"revision_conflict","current_revision":2}}`）。§3.3 は封筒なしの形で書いているが、T-40・T-42 が既に `detail` 封筒で統一されているのでそちらに合わせた（→ §3.3 の記法を揃えるなら T-38）。
+  - **T-05 を必ず通ることはミューテーションで確認済み**：`save()` から `ensure_valid_config()` を外すと5件のテストが落ちる。監査ログの add を外すと2件落ちる。
 
 ---
 

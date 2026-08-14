@@ -42,6 +42,11 @@ class ConfigIssueCode(StrEnum):
     """違反の種類。UI が違反ごとの補助操作を出し分けるための機械可読キー。
 
     例：`WEIGHT_SUM_MISMATCH` を見て「比率維持で100へ補正」ボタンを出す（T-33）。
+
+    ⚠️ 後半4つは **`PUT /config` の patch 検査（T-13）** が使う。この層
+    （クロスフィールド検証）は生成しない。`ConfigIssue` を1種類に保つことで、
+    フロント（T-34）が「モデル由来 422 / クロスフィールド 422 / patch 422」を
+    **同じ方法で** `path` からフォーム欄へマッピングできるようにするため。
     """
 
     WEIGHT_SUM_MISMATCH = "weight_sum_mismatch"
@@ -50,6 +55,16 @@ class ConfigIssueCode(StrEnum):
     UNKNOWN_ENUM_REFERENCE = "unknown_enum_reference"
     FIXED_ID_CHANGED = "fixed_id_changed"
     INITIAL_VALUE_MISMATCH = "initial_value_mismatch"
+
+    # --- patch 検査（T-13。仕様書 §7.2 の編集可能パラメータ許可リスト）-----
+    # config に存在するが編集を許していない項目（ID系・`scoring_total` 等）
+    FIELD_NOT_EDITABLE = "field_not_editable"
+    # config に存在しないキー（タイポ・古いフロントからの送信）
+    UNKNOWN_FIELD = "unknown_field"
+    # 配列要素の指定（`id` / `no`）が欠けている、または該当要素が無い
+    UNKNOWN_TARGET = "unknown_target"
+    # 型・値域がモデル（T-04）に反する
+    INVALID_VALUE = "invalid_value"
 
 
 class ConfigIssue(BaseModel):
