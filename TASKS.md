@@ -260,7 +260,7 @@ flowchart TD
   - 生成コマンドは `make config-schema`（`--check` で最新かを検査＝`make config-schema-check`）。**生成物のドリフトはテストが検出する**（`test_committed_schema_file_is_up_to_date`）。
   - `$defs` のキーをスネークケースへ寄せる `ConfigJsonSchemaGenerator` を入れ、§2.1 が参照する `#/$defs/priority` / `#/$defs/severity` と名前を一致させた。
   - §2.1 との差分は表現の違いのみ（Pydantic はネストモデルを `$ref` に切り出す／`const` に `type` を併記する／`updated_at` の nullable を `anyOf` で書く）。意味は同じで、テストで1項目ずつ突き合わせている。
-  - 仕様書 §5.2 の確定 config を `tests/enterprise/data/config_initial.json` へ逐語でコピーし、**実データがそのまま通ること**と `model_dump(mode="json")` のラウンドトリップ一致（キー順込み）をテストで固定。**T-14 のフォールバック（xlsx が入手できない場合の初期 config）はこのファイルを本番位置へ移して使う。**
+  - 仕様書 §5.2 の確定 config を `tests/enterprise/data/config_initial.json` へ逐語でコピーし、**実データがそのまま通ること**と `model_dump(mode="json")` のラウンドトリップ一致（キー順込み）をテストで固定。~~**T-14 のフォールバック（xlsx が入手できない場合の初期 config）はこのファイルを本番位置へ移して使う。**~~ → **2026-08-14: xlsx を入手したのでフォールバックは不要になった。** このファイルは **T-14 の受け入れ基準**（xlsx から起こした config と全キー比較する相手）として使っている。
   - クロスフィールド制約（Σweight==100 / 降順整合 / 参照整合）は**この層では意図的に弾かない**。`test_cross_field_rules_are_not_enforced_here` で境界を明示済み。T-05 が担当。
 
 #### - [x] T-05: クロスフィールドバリデータ
@@ -595,10 +595,10 @@ flowchart TD
 
 ### P4. 移行（設計書 §10 ／ 仕様書 §15-10）
 
-#### - [ ] T-14: xlsx → config.json 初期マイグレーション CLI
+#### - [x] T-14: xlsx → config.json 初期マイグレーション CLI
 - **対応**: §10.2・§10.3・§10.4
 - **依存**: T-05, T-11
-- **成果物**: `backend/src/adapter/cli/migrate_config.py`, `backend/Makefile`（ターゲット追加）, テスト
+- **成果物**: `backend/src/adapter/cli/migrate_config.py`, `backend/Makefile`（`migrate-config`）, `docs/source/weekly_ai_intelligence_requirements.xlsx`（初期投入元）, `backend/tests/adapter/test_migrate_config_cli.py`, `README.md`（実行手順）
 - **完了条件**: §10.3 の手順どおり：
   1. `weekly_ai_intelligence_requirements.xlsx` の4シート（`情報カテゴリ`/`必須タグ`/`除外ルール`/`スコアリング軸`）を読む
   2. 日本語 → ID（英小文字スネークケース）へ正規化。priority 表記「中〜高」→ `mid_high`（§5.3）
@@ -609,7 +609,22 @@ flowchart TD
   7. マイグレーションレポート（差分・警告）を出力
   - **dry モードが既定**（既存 config があれば revision を維持して diff レポートのみ）／再実行可能
   - 検証（手順4-5）失敗時は**書き込まず中断**
-- **備考**: ⚠️ **`weekly_ai_intelligence_requirements.xlsx` の実ファイルがリポジトリに無い**（§5 要確認事項）。着手前に入手すること。入手できない場合は §5.2 の確定 JSON を直接初期 config として投入するフォールバックを用意する。
+- **備考**: ~~⚠️ **`weekly_ai_intelligence_requirements.xlsx` の実ファイルがリポジトリに無い**（§5 要確認事項）。着手前に入手すること。入手できない場合は §5.2 の確定 JSON を直接初期 config として投入するフォールバックを用意する。~~ → **2026-08-14 入手済み**（要確認事項 #2 解消）。§5.2 フォールバックは不要。
+  - **突き合わせ結果**（着手前に実施）：件数（7 / 10 / 6 / 13）・カテゴリID・priority（`中〜高`→`mid_high`）・description・severity 5値・除外ルール名／具体例・軸の配点（25/20/20/15/10/10＝100）・評価観点・`合計=100` 行は **§5.2 と完全一致**。**文言差分は2件のみ**（`required_tags[].purpose` 6件の語尾／`scoring_axes[reliability].bands[2]` の「プレスリリース」vs「PR」）→ **要確認事項 #9**。
+  - **xlsx に列が無く §5.2 から補う項目**：`required_tags[].id` / `.required` / `.value_source`、`scoring_axes[].id`、`meta`、`enums`、`tunable_thresholds`、`source_whitelist_hint`。うち **`id` は日本語→英字の機械変換では作れない**（「業務領域」→`business_area` 等）ため、**§5.2 の確定 ID を正とする対応表を CLI に持つ**（§10.2 の「日本語→ID」はこの対応表を指すものと解釈する）。
+- **備考**（実績 2026-08-14）: `make migrate-config`（既定 dry）／`ARGS="--apply"` で書き込み。テスト25件。手元で `--apply` を実行し、**生成された `config.json` が §5.2 実データと `meta.updated_at` 以外で完全一致**することを確認済み。
+  - **xlsx の置き場は `docs/source/` にしてコミットした。** 仕様書 §5 が xlsx を「初期投入元、以後の正は `config.json`」と位置づけているため、**実行時成果物（`artifact_root`）と同じ場所に置かない**（パイプラインが誤って xlsx を読む経路を作らない）。コミットする判断は、15KB・秘密情報なし・**CI で「実ファイルから §5.2 が再現できる」ことを固定できる**ため。テスト `test_the_generated_config_matches_the_spec_data` が実ファイルを入力に §5.2 と全キー比較している。
+  - **文言差分は `SPEC_TEXT_NORMALIZATIONS`（7行）で §5.2 へ寄せ、寄せたことを必ず警告に出す**（要確認事項 #9 の決定）。**未適用の行も警告に出す**ので、xlsx 側が §5.2 に揃えられたら表を掃除できる。⚠️ **この表に「意味を変える」変換を足さないこと**（§5.2 の要約・略記に追随するためだけの表）。
+  - **書き込みは `ConfigRepository.create_initial()` の1本だけ**（直接 `open()` しない）。`revision=1` / `updated_by=null` / `updated_at` の打刻・改訂履歴・原子的書き込みが T-11・T-02 に集約されている。`test_apply_goes_through_the_repository_and_records_the_revision` が「履歴行が残る」ことで経路を固定している（直接書いていたら履歴が空になる）。
+  - **終了コードで「読めなかった」と「検証に落ちた」を分けた**：`3`=xlsx の不備（シート・列の欠落／未知の日本語表記）、`2`=手順4-5 の検証失敗、`1`=既存 config があって `--apply` を拒否、`0`=正常（dry も含む）。前者は xlsx を直す話、後者は §5.2 との突き合わせの話で、対処が別なので混ぜない。
+  - **未知の日本語表記は推測せず落とす**（`低優先または除外` を `low_priority` に寄せたりしない）。severity の取り違えはフィルタ挙動（§5.4）が静かに変わる事故になる。
+  - **列は見出し名で引く**（順序に依存しない）。見出し行も「1列目が `No`」で探すので、xlsx のタイトル行が増減しても壊れない。
+  - ⚠️ **得点帯（`bands`）の区切りは ` / `（前後に空白）**。`9-10:公式/政府一次情報` のように**帯の文言に `/` が入る**ため、単独の `/` で割ると帯が壊れる（テストで固定）。
+  - ⚠️ **xlsx の「合計」セルは数式（`=SUM(C5:C10)`）**。原本には計算結果が保存されているので満点=100 を突き合わせできるが、openpyxl で書き出し直した xlsx では値が取れない。その場合は**中断せず警告に留める**（満点の主張が読めないことと、満点が違うことは別。後者は `scoring_total` の issue で落とす）。
+  - **`enums` のうち型で固定できるものは `Literal` / `StrEnum` から起こした**（写しを2つ持たない）。`industry` / `business_area` / `source_whitelist_hint` / `tunable_thresholds` は自由文字列・xlsx 外なので §5.2 の逐語コピーで、一致は T-05 `validate_initial_config` と上記の全キー比較テストが独立に確かめる。
+  - **ミューテーションで確認済み**：手順5（`validate_initial_config`）を外すと1件、文言正規化を無効化すると4件、dry の早期 return を外すと2件のテストが落ちる。
+  - ⚠️ **スコープ外の発見（未修正）**：`backend/.gitignore` に `artifacts/` が無く、`ArtifactStore` の書き込み先（`artifacts/config.json`・生成HTML・中間xlsx）が **git の追跡対象になる**。`make migrate-config ARGS="--apply"` を実行すると `git status` に生成物が出る。**成果物は実行時状態なのでコミットすべきではない**（→ T-02 側の修正が必要）。今回は手元の `artifacts/` を汚さないよう、`--apply` の実測は `ARTIFACT_ROOT` / `SQLITE_PATH` を一時ディレクトリへ向けて行った。
+  - 初期投入では**監査ログ（`audit_logs`）に行を作らない**（`create_initial()` の設計どおり。実行者は `config_revisions.updated_by=null` で表現される）。§4.4 の監査対象は admin の config 更新なので現状で整合しているが、「初期投入も誰かが実行した操作」と見なすなら T-10 の対象を広げる判断が要る（今回は §10 の記述どおり行を作らない側に寄せた）。
 
 ---
 
@@ -1018,10 +1033,11 @@ flowchart TD
 | # | 内容 | 影響タスク | 担当 | 期限 |
 |---|---|---|---|---|
 | 1 | **カテゴリ色マップの補完4色**（`enterprise_ai_case` / `industry_ai_trend` / `ai_training_org_change` / `ai_implementation_ops`）— 実サンプルHTMLに存在せず設計書 §7.2 で近縁色を補完済み。ブランド確認が必要 | T-23, T-24 | | |
-| 2 | **`weekly_ai_intelligence_requirements.xlsx` の実ファイル**がリポジトリに無い — 移行 CLI の入力。入手できない場合は §5.2 の確定 JSON を直接投入するフォールバックで進める | T-14 | | |
+| 2 | ~~**`weekly_ai_intelligence_requirements.xlsx` の実ファイル**がリポジトリに無い — 移行 CLI の入力~~ → **2026-08-14 入手済み**（実ファイルを受領。§5.2 のフォールバックは不要になった）。置き場は **`docs/source/`（コミット済み）** ＝「初期投入元は仕様の出典であって実行時入力ではない」ため成果物（`artifact_root`）とは分ける。4シート（`情報カテゴリ`/`必須タグ`/`除外ルール`/`スコアリング軸`）の構成・件数（**7 / 10 / 6 / 13**）・ID・配点は §5.2 と一致。文言差分2件は **§5.2 を正**として解決（要確認事項 #9） | T-14 | | 解消済 |
 | 3 | ~~**Anthropic API キーの発行と利用枠** — crawl / filter が Claude API に依存~~ → **2026-08-14 決定**。パイプラインの AI 呼び出しは **Claude Code CLI（`claude -p`）** を使い、認証は**会社の Team 契約**（APIキー不要）。上司の許可取得済み。**APIキーの発行は本番（AWS 展開）で API へ切り替えるときまで不要**（§1.1「備考：AI呼び出し方式」） | T-15, T-16, T-19 | | 決定済 |
 | 8 | **Claude Code CLI の実行前提** — `claude -p` は CLI がインストールされ**ログイン済みの PC**が起動していることが前提。本番の無人運用に持ち込めないため、**AWS 展開時に Anthropic API 実装へ切り替える**判断が必要（切り替えは T-15 の AIクライアント層の差し替えで対応）。着手時に `--model` / 構造化出力の指定方法・エラー時の終了コードを実測すること | T-15, T-16, T-19 | | |
 | 4 | ~~**既存 SSO との連携方式** — 認証スタブの差し替え先。社内IT担当へ確認~~ → **2026-08-13 解消**。SSO 連携はやらず **ID/PW 認証を自前実装**する方針が確定（§1.1「備考：SSO 前提からの差分」）。**社内IT担当への確認は不要になった**。SSO は将来の選択肢として [future-roadmap.md](./docs/future-roadmap.md) 構想3 へ格下げ | — | — | 解消済 |
 | 5 | **ホスティング環境**（README「次のタスク 1」）— 外部 cron の登録方法、成果物ストレージ（ローカルFS or オブジェクトストレージ）に影響。**認証にも影響**：フロントとバックが別オリジンになる場合、Cookie の `SameSite` 設定と CSRF 対策の見直しが必要（T-40・T-43） | T-02, T-28, T-40, T-43 | | |
 | 6 | ~~**自己登録を誰に開放するか**~~ → **2026-08-13 決定**。**メールドメイン許可リストで `sapeet.com` に絞る**（`auth_allowed_email_domains` の既定値）。T-40 で許可リストの仕組みと既定値を実装し、**許可外ドメインからの登録が拒否されることをテストで固定**する | T-40 | | 決定済 |
 | 7 | ~~**仕様書 §1.3 / 設計書 §3.1 の改訂**~~ → **2026-08-13 合意済み**。SSO をやめて ID/PW 認証を自前実装する差分を、実装が固まった時点で仕様書・設計書へ反映する。**改訂そのものは T-38 で実施**（それまでの実装方針の正は §1.1） | T-38 | | 合意済 |
+| 9 | ~~**xlsx 実ファイルと §5.2 の文言差分2件のどちらを正とするか**（2026-08-14 発見、要確認事項 #2 の突き合わせで判明）。(a) `required_tags[].purpose` — xlsx は語尾つき（例「レポート全体の分類軸になる」）、§5.2 は語尾を落とした形（「レポート全体の分類軸」）で **10件中6件**が相違（No.1/2/4/6/9/10）。(b) `scoring_axes[reliability].bands[2]` — xlsx「`5-6:ブログ・プレスリリース要確認`」、§5.2「`5-6:ブログ・PR要確認`」~~ → **2026-08-14 決定：§5.2 を正とし、移行 CLI が寄せて警告に出す**。仕様書・T-04 のテストデータは無変更。実装は `migrate_config.SPEC_TEXT_NORMALIZATIONS`（7行）で、適用のたびに警告としてレポートへ出す。**未適用の行もレポートに出す**ので、xlsx が §5.2 に揃えられたら気づける | T-14 | | 決定済 |

@@ -26,8 +26,13 @@ cd backend
 uv sync --all-extras --dev
 cp .env.example .env
 make migrate-all    # DB(SQLite)を作成してマイグレーション適用
+make migrate-config              # 判断基準の初期投入を検証（dry。書き込まない）
+make migrate-config ARGS="--apply"   # artifacts/config.json を作成（初回だけ）
 make dev            # http://localhost:8000  (/healthz, /readyz)
 ```
+
+`make migrate-config` は [`docs/source/weekly_ai_intelligence_requirements.xlsx`](./docs/source/weekly_ai_intelligence_requirements.xlsx)（初期投入元）から
+`config.json` を起こす。以後の正は `config.json` で、変更は管理画面（`PUT /config`）から行う。
 
 ### フロントエンド
 
