@@ -127,6 +127,10 @@ DENIAL_LABEL_LIMIT = 200
 # 防ぐだけの安全弁。実際の出力は先頭かフェンス直後から始まるので、通常は1回で済む。
 JSON_SCAN_LIMIT = 64
 
+# 実施された web 検索の回数が入るキー（`modelUsage[<model>]` の中）。
+# ⚠️ **封筒トップの `server_tool_use` ではなくここに出る**（2026-08-14 実測）。
+WEB_SEARCH_REQUESTS_KEY = "webSearchRequests"
+
 # JSON 値の開始文字。⚠️ オブジェクトと配列だけを見る（`raw_articles.json` は
 # トップレベルが array。設計書 §2.3）。裸の数値・文字列は本文中の数字を拾うので見ない。
 JSON_VALUE_STARTS = "{["
@@ -304,6 +308,27 @@ class ClaudeCliEnvelope(BaseModel):
         return tuple(self.usage_by_model or ())
 
     @property
+    def web_search_requests(self) -> int | None:
+        """実施された web 検索の回数（`modelUsage[].webSearchRequests` の合計）。
+
+        ⚠️ **報告が無いときは `None` を返す（`0` にしない）。** 「検索していない」と
+        「回数が分からない」は別の事実で、crawl（T-16）はどちらも失敗として扱うが、
+        原因が違えば対処も違う（前者は許可・プロンプト、後者は CLI の版差）。
+        """
+        total = 0
+        reported = False
+        for entry in (self.usage_by_model or {}).values():
+            if not isinstance(entry, Mapping):
+                continue
+            value = entry.get(WEB_SEARCH_REQUESTS_KEY)
+            # ⚠️ `bool` は `int` の派生。`true` を1回と数えない。
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            reported = True
+            total += value
+        return total if reported else None
+
+    @property
     def denied_tools(self) -> tuple[str, ...]:
         """拒否されたツールの名前（診断用）。拒否が無ければ空タプル。
 
@@ -368,8 +393,16 @@ class ClaudeCliClient:
         cls,
         settings: Settings | None = None,
         *,
+        extra_args: Sequence[str] = (),
         runner: CommandRunner | None = None,
     ) -> "ClaudeCliClient":
+        """
+        Args:
+            settings: 実行設定。既定は `get_settings()`
+            extra_args: CLI へ足す引数（web 検索の許可など）。⚠️ **上位が組み立てる
+                ものではない**。呼ぶのは `adapter.llm.get_ai_client()` だけ
+            runner: サブプロセスの実行方法（テストで差し替える）
+        """
         settings = settings or get_settings()
         return cls(
             command=settings.ai_cli_command,
@@ -377,6 +410,7 @@ class ClaudeCliClient:
             default_timeout_seconds=float(settings.ai_timeout_seconds),
             max_attempts=settings.ai_max_attempts,
             retry_backoff_seconds=settings.ai_retry_backoff_seconds,
+            extra_args=extra_args,
             runner=runner,
         )
 
@@ -442,6 +476,7 @@ class ClaudeCliClient:
                     duration_ms=envelope.duration_ms,
                     total_cost_usd=envelope.total_cost_usd,
                     session_id=envelope.session_id,
+                    web_search_requests=envelope.web_search_requests,
                 ),
             )
 

@@ -214,7 +214,18 @@ curl -X POST http://localhost:8000/run/weekly -H "Authorization: Bearer <生ト�
 
 上位（crawl / filter）が渡すのは**プロンプトと出力スキーマだけ**で、呼び出し先が
 CLI か API かを知らない。構造化出力は「JSON Schema を添えて JSON のみを出力させる
-＋ `result` を Pydantic で検証 ＋ 不一致ならパースエラーを載せて再依頼」で担保する。
+＋ `result` から**最初の完全な JSON 値を取り出して** Pydantic で検証 ＋ 不一致なら
+パースエラーを載せて再依頼」で担保する（実測では、指示してもコードフェンスと
+後続の説明文が付いて返ることがある）。
+
+web 検索が要る呼び出し（crawl / PROMPT-1）は `get_ai_client(web_search=True)` を使う。
+**上位が言えるのはここまで**で、CLI 固有の `--allowedTools` はこの層が付ける。
+
+> ⚠️ **許可を渡さないと「成功に見える失敗」になる。** 封筒は `is_error=false` /
+> `subtype="success"` のまま `permission_denials` に拒否記録が入り、`result` は
+> 「権限がないので実行できない」旨の文になる（実測）。CLI 実装はこれを
+> `AIResponseError` にする。crawl はさらに **実際に検索したか**
+> （`AICallMeta.web_search_requests`）も確かめる。
 
 ### 設定（環境変数）
 
@@ -242,13 +253,38 @@ CLI か API かを知らない。構造化出力は「JSON Schema を添えて J
 | `AITimeoutError` | 制限時間を超えた（プロセスは kill 済み） |
 | `AIProcessError` | 終了コードが非0（**未ログインはここに出る想定** — 未実測） |
 | `AIProtocolError` | 標準出力が `--output-format json` の封筒として読めない |
-| `AIResponseError` | 封筒が失敗を申告（`is_error` / `subtype` / `api_error_status` / `stop_reason=refusal`） |
+| `AIResponseError` | 応答を成功として扱えない（`is_error` / `subtype` / `api_error_status` / `stop_reason=refusal` / **`permission_denials` が非空**） |
 | `AIOutputParseError` | 出力が期待スキーマに合わない（上限まで再試行した後） |
 
 > ⚠️ **成功判定を終了コード0だけに頼らない。** 実測では成功時に 0 が返るが、
 > **失敗時の終了コード・出力形式は未実測**。封筒の申告と終了コードが矛盾したら
 > 失敗側（安全側）へ倒す。**リトライするのはスキーマ不一致だけ**で、
 > プロセス失敗・タイムアウトはジョブ単位の再実行に委ねる。
+>
+> ⚠️ **封筒が「成功」と言っていることも当てにしない。** 上記のツール拒否は
+> `is_error=false` / `subtype="success"` のまま起きる（実測）。
+
+## クローリング収集（crawl / PROMPT-1）
+
+`raw_articles_{period}.json` を作る最初の段（[`src/application/usecases/crawl.py`](src/application/usecases/crawl.py) ／ 仕様書 §13.2 ／ T-16）。
+
+```python
+worker = CrawlWorker(
+    client=get_ai_client(web_search=True),   # ← web 検索の許可はここで付く
+    store=ArtifactStore.from_settings(),
+    config=config,                            # 実行開始時に固定した revision
+)
+result = await worker.crawl("2026-W31")       # or "2026-07"
+```
+
+- **この段では判断しない**（スコアリング・除外・タグ確定・重複統合はすべて次段）
+- **重複しうる記事も落とさない**（同じ発表をどの媒体が報じたかが `ソース` 欄に要る）
+- タイムアウトは既定で **`AI_CRAWL_TIMEOUT_SECONDS`（30分）**
+
+> ⚠️ **web 検索が実施されていない収集結果は受け取らない**（`SearchNotPerformedError`）。
+> 検索なしの記事一覧は**モデルの記憶からの推測**になりうるが、形の上ではスキーマを
+> 通ってしまう。回数が **0 のときも、報告が無い（`None`）ときも失敗**にし、
+> **成果物を書く前に**落とす。
 
 ## データベース
 

@@ -199,6 +199,13 @@ class AICallMeta:
         duration_ms: 成功した試行の所要時間（封筒 `duration_ms`）
         total_cost_usd: 成功した試行の費用（封筒 `total_cost_usd`）
         session_id: 成功した試行のセッションID（封筒 `session_id`。調査用）
+        web_search_requests: **実際に行われた web 検索の回数**。
+            `None` は「実装が報告しなかった＝分からない」で、**`0`（検索して
+            いない）とは別の事実**。crawl（T-16）は web 検索を前提にするので、
+            0 も None も失敗として扱う（`crawl.SearchNotPerformedError`）。
+            ⚠️ **API 実装へ差し替えるときは `server_tool_use.web_search_requests`
+            からここを埋めること。** 埋め忘れると crawl が失敗し続ける
+            （黙って「検索なしの収集結果」を通すよりは安全側）
     """
 
     requested_model: str
@@ -208,6 +215,7 @@ class AICallMeta:
     duration_ms: int | None = None
     total_cost_usd: float | None = None
     session_id: str | None = None
+    web_search_requests: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,4 +306,5 @@ def meta_to_audit_payload(meta: AICallMeta) -> dict[str, Any]:
         "duration_ms": meta.duration_ms,
         "total_cost_usd": meta.total_cost_usd,
         "session_id": meta.session_id,
+        "web_search_requests": meta.web_search_requests,
     }

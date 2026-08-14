@@ -668,10 +668,10 @@ flowchart TD
   - ⚠️ **テストデータについて**：追加した封筒2件は上記の実測事実（拒否時のフィールドの出方／フェンスと後続文の付き方）を反映したもの。**`session_id` / `tool_use_id` / 所要時間・費用・文面の細部は記録から起こした値**で、判定には使っていない（判定に使うのは「`permission_denials` が空でないこと」と「テキストから JSON 値を取り出せること」だけ）。
   - **申し送り（未確認・T-16 で決める）**：~~①**web 検索の有効化方法**~~ → **2026-08-14 解決**（`--allowedTools "WebSearch"` を `ClaudeCliClient(extra_args=...)` で DI。プロトコルには漏らしていない）。②**プロンプトは argv で渡している**（実測がこの形）ので、OS の引数長上限（macOS で合計1MB程度）に当たる規模になったら標準入力経由へ変える必要がある（その形は未実測。**残件**）。③**`cwd` を指定していない**ので、CLI は起動時の作業ディレクトリのプロジェクト設定（`CLAUDE.md` 等）を読みうる。→ **2026-08-14 T-16 で方針決定**（T-16 備考「cwd を固定しない判断」）。
 
-#### - [ ] T-16: crawl ワーカー
+#### - [x] T-16: crawl ワーカー
 - **対応**: §8.2・仕様書 §13.2（PROMPT-1）
 - **依存**: T-06, T-15
-- **成果物**: `backend/src/application/usecases/crawl.py`, テスト
+- **成果物**: `backend/src/application/usecases/crawl.py`, `backend/tests/application/test_crawl.py`, `backend/src/adapter/llm/__init__.py`（`get_ai_client(web_search=...)`）, `backend/README.md`（「クローリング収集」）
 - **完了条件**:
   - 入力 `period`（`2026-W31` or `2026-07`）から PROMPT-1 を組み立て、Claude + `web_search` サーバーツールで収集
   - 出力は `raw_articles_{period}.json`（T-06 のスキーマ、T-02 経由で書き込み）
@@ -679,6 +679,22 @@ flowchart TD
   - **重複しうる記事も落とさない**（統合判定は filter）
   - 優先ソース（TechCrunch / VentureBeat / Ledge.ai / ITmedia / 公式PR / 政府・公的機関）をプロンプトに反映。個人ブログ・SNS単独・まとめアフィリエイトは収集しない
   - 7カテゴリを網羅するよう広く収集する指示を含む
+- **備考**（実績 2026-08-14）: 入口は `CrawlWorker(client=..., store=..., config=...).crawl(period)` の1本。AI 呼び出しは **T-15 の `AIClient.complete()` だけ**で、CLI 固有の引数は持ち込まない。
+  - ⚠️ **web 検索が実施されていない収集結果は受け取らない**（`SearchNotPerformedError`）。検索なしの記事一覧は**モデルの記憶からの推測**（実在しない URL・作り話）になりうるのに、**形の上では T-06 のスキーマを通ってしまう**。呼び出し後に `AICallMeta.web_search_requests` を見て、**0 のときも `None`（実装が報告していない）のときも失敗**にする。⚠️ **`None` も失敗にしたのは自分の判断**：許可した理由は「報告フィールドの名前が変わった／API 実装で埋め忘れた」ときに**この歯止めが黙って無効化される**のを防ぐため（安全側は止まる方）。⚠️ **検査は成果物を書く前に行う**（推測の結果をファイルに残さない。`test_the_artifact_is_not_written_when_the_search_did_not_happen`）。
+  - **歯止めは二重**：①CLI へ許可を渡し忘れると封筒は成功のまま `permission_denials` に拒否記録が入る → `AIResponseError`（T-15 補強）。②許可はあるが実際には検索しなかった → ここの `SearchNotPerformedError`。①だけでは②を、②だけでは①の原因を捉えられない。
+  - **web 検索の有効化は `adapter.llm.get_ai_client(web_search=True)`**。⚠️ **上位が言えるのは「web 検索を使う」までで、`--allowedTools "WebSearch"` という CLI 固有の書き方はこの層（`WEB_SEARCH_CLI_ARGS`）が持つ**（`AIClient` プロトコルには出さない。API 実装へ差し替えるときはここでサーバーツールを有効にし、`web_search_requests` を埋める）。
+  - **`AICallMeta.web_search_requests` を追加した**（T-15 側）。CLI では `modelUsage[].webSearchRequests` の合計で、**モデルをまたいで足す**。⚠️ **報告が無ければ `None`（0 で埋めない）**。「検索していない」と「回数が分からない」は別の事実で、原因も対処も違う。`bool` / 文字列は回数として読み替えない。
+  - **タイムアウトは crawl 用の30分（`Settings.ai_crawl_timeout_seconds`）が既定**。⚠️ 分類・採点系の10分ではない（`test_crawl_uses_the_long_timeout_not_the_scoring_one` が両方を固定）。
+  - **PROMPT-1 は §13.2 をテンプレート化**（優先ソース／個人ブログ・SNS単独・まとめアフィリエイトは収集しない／7カテゴリ網羅／週次は新規性・月次は具体的活用事例／この段階で採点・除外・タグ確定をしない／重複も落とさない）。**足したのは3つだけ**で、いずれも「モデルが推測で補う余地」を消すためのもの：①**期間の実日付**（`2026-W31` → `2026-07-27〜2026-08-02`。解釈を実行ごとに揺らさない）②**収集日**（`collected_at` はモデルが今日を知らないと埋められない）③**web 検索を必ず使う指示**。
+  - ⚠️ **7カテゴリは config から取る**（§13.2 自身が「config.json の7カテゴリ」と書いている）。名前を写すと admin の変更に追随しない（`test_a_renamed_category_follows_into_the_prompt`）。**crawl が config から見るのは情報カテゴリだけ**で、しきい値・配点・除外ルールは見ない（この段で判断しないから）。
+  - ⚠️ **対象業界（`target_industry`）はプロンプトに渡さない。** この段は網羅に徹する（§13.2）。業界で絞るのは顧客関連度の採点（T-19）と除外（T-17）の担当で、ここで絞ると**後段が判断する材料自体が消える**（`test_the_prompt_does_not_narrow_the_collection_to_the_target_industry`）。
+  - ⚠️ **出力形式（「JSON だけを出せ」＋ JSON Schema）の指示はプロンプトに書かない**（`AIClient` の実装が付ける。二重指示になり、API へ差し替えたときに片方だけ残る）。`test_the_prompt_leaves_the_output_format_to_the_ai_client` が固定。
+  - **period は実日付へ開いて検証する**（`period_span()`）。表記が合っているだけの `2026-13` / 53週を持たない年の `-W53` はここで落とす（そのままプロンプトへ載せるとモデルが適当な期間を補う）。⚠️ 正規表現は **T-18（`enterprise.services.dedup`）のものを使い回した**（`adapter.storage.artifact_store` にも同じ検証があり、3つ目の写しを作らないため）。**共通の period 値オブジェクトを作るのは T-21 の担当**（T-18 備考の申し送りに合流）。
+  - **0件でも落とさない**（§13.2 は件数を約束していない）が、`logger.warning` は出す（静かに0件を通すと、空のレポートまで気づかれない）。
+  - **`cwd` 固定の要否（T-15 申し送り③）→ 今は固定しない。** 理由：(1) **CLI がどのスコープの設定を cwd からどう読むかは未実測**で、固定先を空ディレクトリにする変更は「推測で挙動を変える」ことになる（このプロジェクトの原則に反する）。(2) **実行場所は backend/ の1箇所**（`Makefile` / uvicorn の起動位置）で、リポジトリの root・backend には `CLAUDE.md` も `.claude/` も無い（`frontend/CLAUDE.md` は backend の親ではない）＝**今は project スコープの設定を拾わない**ことを確認済み。(3) 仮に拾って挙動が変わっても、**この段の失敗は黙って通らない**（ツールが拒否されれば `permission_denials`、検索されなければ `webSearchRequests=0` で落ちる）。⚠️ **前提が崩れる条件は「backend/ かその親に `CLAUDE.md` / `.claude/settings.json` を置いたとき」**。置くなら `cwd` の固定（`ClaudeCliClient` へ `cwd` を足す）を先に決めること。
+  - **テストは実際に `claude` を起動しない**（`AIClient` を `FakeAIClient` へ差し替え）。テスト36件（`make test` 全体 1438件）。
+  - **ミューテーションで確認済み**：検索実施の検査を外すと3件、検査を書き出しの**後ろ**へ移すと1件、`None` を成功扱いにすると2件、crawl の既定タイムアウトを `ai_timeout_seconds` にすると1件、週次・月次の重心を両方出すと2件、カテゴリを config から取らず固定文にすると2件が落ちる。
+  - ⚠️ **スコープ外（未着手）**：`ScreenedArticle` の事実（`matched_rule_nos` / 顧客関連度の見込み / 合計見込み / `is_stale`）を誰が作るかは**依然として未決**（要確認事項 #10）。T-16 の完了条件は「この段階でスコアリング・除外判定・タグ確定を行わない」なので、**crawl には足していない**。選別（screening）用の AI 呼び出しを T-21 か新規タスクで置くのが素直（T-19 備考の申し送りと同じ）。
 - **備考**: 週次は「今週」の新規性、月次は「先進企業の具体的活用事例」を重視（§13.2）。
   - **T-15 からの申し送り**：AI 呼び出しは `adapter.llm.get_ai_client()` から取った `AIClient.complete(prompt=..., output_schema=RAW_ARTICLES_ADAPTER, prompt_version=..., timeout=...)` の1本だけを使う（CLI 固有の引数を上位へ持ち込まない）。⚠️ **crawl は `Settings.ai_crawl_timeout_seconds`（30分）を明示的に渡す**（既定10分は分類・採点系向け）。⚠️ **web 検索の有効化方法は未確認**。CLI 側で許可指定が必要なら `ClaudeCliClient(extra_args=...)` を DI で渡す形にする（プロトコルには出さない）。返り値の `meta`（使用モデル・`prompt_version`）は `meta_to_audit_payload()` で監査／validation メタに載せられる（T-30）。
 

@@ -11,6 +11,7 @@ import pytest
 from pydantic import BaseModel, TypeAdapter
 
 from adapter.llm import (
+    WEB_SEARCH_CLI_ARGS,
     AICallMeta,
     AIClient,
     AIClientError,
@@ -51,6 +52,29 @@ def test_the_di_hook_returns_the_claude_cli_implementation() -> None:
 
 def test_the_cli_client_satisfies_the_protocol() -> None:
     assert isinstance(get_ai_client(), AIClient)
+
+
+async def test_the_web_search_capability_is_resolved_by_this_layer() -> None:
+    """⚠️ 上位（T-16 crawl）が言うのは「web 検索を使う」までで、
+    `--allowedTools` という CLI 固有の書き方はこの層から出さない。"""
+    runner = FakeRunner(outcomes=[stdout_of(envelope())])
+    client = ClaudeCliClient.from_settings(
+        Settings(_env_file=None), extra_args=WEB_SEARCH_CLI_ARGS, runner=runner
+    )
+
+    await client.complete(prompt="q", output_schema=Answer)
+
+    assert runner.calls[0].argv[-2:] == ["--allowedTools", "WebSearch"]
+
+
+async def test_without_the_capability_no_tool_is_allowed() -> None:
+    """既定では許可を足さない（分類・採点はツールを使わない）。"""
+    runner = FakeRunner(outcomes=[stdout_of(envelope())])
+    client = ClaudeCliClient.from_settings(Settings(_env_file=None), runner=runner)
+
+    await client.complete(prompt="q", output_schema=Answer)
+
+    assert "--allowedTools" not in runner.calls[0].argv
 
 
 async def test_the_upper_layers_can_depend_on_the_protocol_alone() -> None:

@@ -245,6 +245,68 @@ async def test_the_model_actually_used_comes_from_model_usage() -> None:
     assert meta.models_used == ("claude-opus-5",)
 
 
+async def test_the_web_search_count_comes_from_model_usage() -> None:
+    """⚠️ **実測**: 実施回数は封筒トップの `server_tool_use` ではなく
+    `modelUsage[].webSearchRequests` に出る。crawl（T-16）がここを見る。"""
+    client, _, _ = build_client(
+        [
+            stdout_of(
+                envelope(
+                    modelUsage={
+                        "claude-opus-5": {"costUSD": 0.1, "webSearchRequests": 7},
+                        "claude-haiku-4-5-20251001": {
+                            "costUSD": 0.01,
+                            "webSearchRequests": 2,
+                        },
+                    }
+                )
+            )
+        ]
+    )
+
+    meta = (await client.complete(prompt="q", output_schema=Answer)).meta
+
+    assert meta.web_search_requests == 9  # モデルをまたいで合計する
+
+
+async def test_a_reported_zero_search_count_is_kept_as_zero() -> None:
+    """許可はあるが検索しなかった場合。⚠️ `None`（報告なし）と混ぜない。"""
+    client, _, _ = build_client(
+        [stdout_of(envelope(modelUsage={"claude-opus-5": {"webSearchRequests": 0}}))]
+    )
+
+    meta = (await client.complete(prompt="q", output_schema=Answer)).meta
+
+    assert meta.web_search_requests == 0
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"claude-opus-5": {"costUSD": 0.1}},  # キーが無い（実測の成功封筒がこの形）
+        {"claude-opus-5": {"webSearchRequests": True}},  # bool は回数ではない
+        {"claude-opus-5": {"webSearchRequests": "3"}},  # 文字列も読み替えない
+        {"claude-opus-5": "使えません"},  # 要素が dict ですらない
+    ],
+)
+async def test_an_unreported_search_count_stays_unknown(usage: dict[str, Any]) -> None:
+    """⚠️ 報告が無いことを 0 と書かない（「していない」と「分からない」は別）。"""
+    client, _, _ = build_client([stdout_of(envelope(modelUsage=usage))])
+
+    meta = (await client.complete(prompt="q", output_schema=Answer)).meta
+
+    assert meta.web_search_requests is None
+
+
+async def test_the_measured_success_envelope_reports_no_search_count() -> None:
+    """実測の成功封筒（`1+1`）には `webSearchRequests` が無い＝不明。"""
+    client, _, _ = build_client([stdout_of(envelope())])
+
+    meta = (await client.complete(prompt="q", output_schema=Answer)).meta
+
+    assert meta.web_search_requests is None
+
+
 async def test_an_unknown_model_is_not_filled_in_with_the_requested_one() -> None:
     """`modelUsage` が無いときに指定値で埋めない（別の事実を混ぜない）。"""
     client, _, _ = build_client([stdout_of(envelope(modelUsage=_ABSENT))])

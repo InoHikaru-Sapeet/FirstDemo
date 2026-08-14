@@ -40,8 +40,20 @@ from adapter.llm.ai_client import (
 from adapter.llm.claude_cli_client import ClaudeCliClient
 from config import get_settings
 
+WEB_SEARCH_CLI_ARGS = ("--allowedTools", "WebSearch")
+"""web 検索を有効にする CLI 引数（2026-08-14 実測）。
 
-def get_ai_client() -> AIClient:
+⚠️ **これは CLI 固有の書き方なので、この層より上へ出さない。** 上位（T-16 crawl）が
+言えるのは `get_ai_client(web_search=True)` までで、`--allowedTools` を知らない。
+
+⚠️ **許可を渡さないと「成功に見える失敗」になる。** 封筒は `is_error=false` /
+`subtype="success"` のまま `permission_denials` に拒否記録が入る（`ClaudeCliClient`
+冒頭の実測）。CLI 実装はそれを `AIResponseError` にし、crawl は別途
+`modelUsage[].webSearchRequests` が 0 でないことも確かめる（二重の歯止め）。
+"""
+
+
+def get_ai_client(*, web_search: bool = False) -> AIClient:
     """⚠️ **AI 呼び出し先の差し替え口はここ1箇所。**
 
     現在は Claude Code CLI（`claude -p`）実装ひとつだけ。**これは試作段階の手段**で、
@@ -50,8 +62,17 @@ def get_ai_client() -> AIClient:
 
     ⚠️ **この差し替え口があること＝本番対応済み、ではない。** CLI 実装は
     「ログイン済みの PC が起動していること」を前提にしている。
+
+    Args:
+        web_search: web 検索を使う呼び出しか（crawl / PROMPT-1 は前提にしている）。
+            **「何ができる必要があるか」だけを言う引数**で、実現方法（CLI の
+            `--allowedTools` / API のサーバーツール定義）はこの層が持つ。
+            API 実装へ差し替えるときは、ここで web 検索ツールを有効にし、
+            `AICallMeta.web_search_requests` を埋めること
     """
-    return ClaudeCliClient.from_settings(get_settings())
+    return ClaudeCliClient.from_settings(
+        get_settings(), extra_args=WEB_SEARCH_CLI_ARGS if web_search else ()
+    )
 
 
 __all__ = [
@@ -65,6 +86,7 @@ __all__ = [
     "AIResult",
     "AITimeoutError",
     "AIUnavailableError",
+    "WEB_SEARCH_CLI_ARGS",
     "ClaudeCliClient",
     "OutputSchema",
     "describe_models",
