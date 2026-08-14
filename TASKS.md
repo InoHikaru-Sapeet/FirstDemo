@@ -429,7 +429,7 @@ flowchart TD
   - メール形式の判定を `is_valid_email_format()` / `email_domain()` として `models/user.py` へ切り出し、**自己登録（T-40）と CLI（T-41）で同じ判定**にした（挙動は変えていない）。CLI は**ドメイン許可リスト（`auth_allowed_email_domains`）を課さない**：ブートストラップは運用者の判断で行う経路で、社内ドメイン外の管理者を作る余地を残す（自己登録は従来どおり制限される）。
   - `.env.example` は**ガードレールにより AI が編集できない**（T-01 備考）。`SERVICE_TOKEN_HASH` の追記ブロックを提示済み。未設定のままでも動く（system 経路が無効なだけ）。
 
-#### - [ ] T-09: RBAC ミドルウェアと権限マトリクス
+#### - [x] T-09: RBAC ミドルウェアと権限マトリクス
 - **対応**: §4.2・§3.1（→ 仕様書 §6.2）
 - **依存**: T-08
 - **成果物**: `backend/src/adapter/http/fastapi/auth/rbac.py`, `backend/tests/adapter/test_rbac.py`
@@ -451,6 +451,16 @@ flowchart TD
   - ⚠️ **網羅テストの範囲（2026-08-14 決定）**：**マトリクス定数は §6.2 の全行を定義する**（`GET /reports/{period}`・`POST /run/{type}` を含む）が、**テストは実装済みエンドポイントに限定する**。`/reports`・`/run` はルーターが存在しない（T-27 未着手）ため、HTTP 経由の網羅テストが書けない。**この2行のテストは T-27 で追加する**（T-27 の完了条件に明記済み）。定数そのものの内容検証（§6.2 と1:1）は、実装済み・未実装を問わず**全行を対象にする**。
   - ⚠️ **`/users` 3本を `system`（サービストークン）で叩くテストが存在しない**（2026-08-14 調査で判明）。完了条件に「`system` も 403」と明記しているが、`tests/adapter/test_users_router.py` に `Bearer` の呼び出しが1件も無い。**T-09 の網羅テストで必ず塞ぐこと。**
   - **引き継ぎ時の誤認について（記録）**：T-43 のコミット `e5da6bb`（「T-43完了: ログイン・登録画面(フロントエンド、P2完了)」）が「P2完了」と記載していたため、引き継ぎメモで P2 が完了扱いになっていた。**実際は T-09・T-10 が未完了**（2026-08-14 の調査で確認）。T-43 は P10 のタスクであり、P2 の完了判定とは無関係。
+  - **実績（2026-08-14）**: `make lint` / `make type-check` / `make test` すべて通過。テストは **848件**（T-09 で追加したのは 116件：マトリクスの内容検証 45 / 判定関数 10 / アプリ配線 5 / HTTP 網羅 55 / サービストークン 1）。
+  - **`require_admin()` の置き換え方**：`require_permission`（マトリクス由来の汎用判定）を新設し、**`require_admin` はその薄い別名**にした。`config.py` / `users.py` の **import も使い方も変えていない**（呼び出し側6本は既存テスト115件が無変更で通ることを確認済み）。判定の正は `rbac.py` の1箇所に集約された。
+  - **オペレーションの解決はルートのテンプレートで行う**（`/users/{user_id}/role`）。FastAPI が routing 時に `scope["route"]` へ APIRoute を入れる（`fastapi/routing.py` の `APIRoute.matches`）ので、そこから prefix 込みのパスを取る。実パス（`/users/usr_123/role`）で引くと ID ごとに別キーになる。
+  - ⚠️ **マトリクスに行の無いルートは 403（fail-closed）**。「登録し忘れ」と「許可されていない」は実行時に区別できないため、通す側へ倒さない。登録漏れは `test_every_route_is_covered_by_the_matrix` が名指しで落とす（`/healthz` `/readyz` だけは明示的に対象外）。
+  - ⚠️ **`internal_only` を HTTP で通さない**（`system` の `GET /config` は 403）。§6.2 は「内部のみ」、§4.2 の擬似コードは `internal_only and caller.is_internal()` を許可としているが、設計書 §3.1 の「`system` は内部読込のみで**外部レスポンス経路を持たない**」が正で、**HTTP はその「内部」ではない**（パイプラインが `ArtifactStore` 経由でファイルを直接読む経路のこと）。`Principal.is_internal` をこの判定に使うと cron が config を読めてしまう。**マトリクス上は `deny` へ丸めず `internal_only` のまま保持**している（§6.2 が「×」と「内部のみ」を書き分けているため）。
+  - ⚠️ **`POST /auth/logout` は public（未認証でも 204）として定義した。** T-09 の完了条件は logout を `/auth/me` と同じ「認証済みの全ロール可」に分類しているが、**T-40 の完了条件「べき等」**が実装・テストとして確定しているのでそちらを正とした。**T-09 の完了条件の分類のほうを実態に合わせるべき差分**（→ T-38）。
+  - **`/auth/me` と `/auth/password` は `require_principal`（ロールを見ない）のまま**にした。マトリクス上この2つは4ロールすべて `allow` なので判定結果が同じになることを `test_the_authenticated_auth_routes_allow_every_role` で固定してある。ここがずれたら `require_permission` へ寄せること。
+  - **★ 調査で判明していた穴を塞いだ**：`/users` 3本を**サービストークン（`system`）で叩いて 403** になることをテストで固定（`test_a_service_token_cannot_reach_the_user_management_api`）。加えて「不正トークンなら 401・有効トークンなら 403」で**認証と認可の切り分け**も固定した。ここが通ると cron のトークンだけで任意のユーザーを admin へ昇格できる。
+  - **既存のルーターテストは削っていない。** 役割を分けた：`test_rbac.py` は「全エンドポイント × 全ロール」の網羅と配線、`test_config_router.py` / `test_users_router.py` は各ルーター固有の要件（config の存在を 403 の差で悟らせない・denial が config 構造を漏らさない等）。
+  - **実効性はミューテーションで確認済み**：`GET /users` から `require_admin` を外すと8件（★ の system テスト含む）、マトリクスの `GET /users` × system を `allow` に変えると6件が落ちることを実測した。
 
 #### - [ ] T-10: 監査ログ書き込みサービス
 - **対応**: §4.4（→ 仕様書 §6.1・§14）
@@ -483,7 +493,7 @@ flowchart TD
   - 「最後の admin を守る」チェックは**トランザクション内で件数を数える**こと。2人の admin が同時に相手を降格させると 0 人になりうる。
   - **実績（2026-08-13）**: `make lint` / `make type-check` / `make test` すべて通過。テストは **615件**（T-42 で追加したのは 45件：ユースケース 24 / ルーター 21）。
   - ⚠️ **依存の T-09（RBAC）・T-10（監査ログ書き込みサービス）が未着手のまま着手した。** T-42 は admin 限定の認可判定なしには成立しないため、**必要な最小限だけを先取りした**：
-    - **認可**: `auth/dependencies.py` に `require_admin()` を追加（未認証 401／admin 以外 403。`system` も 403）。**T-09 で `auth/rbac.py` を作ったら、この関数を §6.2 の権限マトリクスから導出する形へ寄せること。** 判定の正が2箇所に分かれたままだと、マトリクスを直しても API が追随しない。
+    - **認可**: `auth/dependencies.py` に `require_admin()` を追加（未認証 401／admin 以外 403。`system` も 403）。~~**T-09 で `auth/rbac.py` を作ったら、この関数を §6.2 の権限マトリクスから導出する形へ寄せること。**~~ → **2026-08-14 実施済み（T-09）**。`require_admin` は `require_permission`（マトリクス由来）の薄い別名になり、**このファイルの import と使い方は変えていない**。
     - **監査ログ**: T-41 と同じく**モデルへ直接積んでいる**。T-10 で監査サービスを作ったら `ManageUsersUsecase._record_audit()` をそちらへ寄せること。
   - ⚠️ **`AuditEventType.USER_STATUS_CHANGE` を追加した**（設計書 §4.4 の enum への差分。完了条件は `user_role_change` しか挙げていない）。**admin の停止は実質的な権限剥奪**（ログインできない＝管理者として機能しない）なので、降格と同じ重みで記録しないと「誰が admin を無力化したか」が追えない。`event_type` は文字列カラムなのでマイグレーションは不要。**§4.4 の表の更新が必要（→ T-38）**。`tests/adapter/test_models.py::test_event_types_match_the_design` の期待値も更新済み。
   - **「最後の admin」は *有効な*（`is_active=true`）admin で数える。** ⚠️ **T-41 の `count_admins()`（停止中も数える）とは意図的に異なる**。T-41 は「2人目の初期 admin を CLI で作らせない」ための判定で、停止中を除外すると admin を停止するだけで2人目を作れてしまう。T-42 は「締め出されない」ための判定で、逆に停止中を数えると**最後の有効な admin を停止する操作が通ってしまい**、誰も管理画面へ入れなくなる。目的が違うので数え方も違う（両方テストで固定）。
@@ -536,7 +546,7 @@ flowchart TD
   - **非admin は 403 のみでボディに config 情報を含まない**（エラーメッセージからも推測できないこと）
   - OpenAPI にレスポンススキーマが出る（T-31 の型生成の入力になる）
 - **備考**（実績 2026-08-14）: `make lint` / `make type-check` / `make test` すべて通過。テストは **732件**（T-12・T-13 で追加したのは 89件：ルーター 70 / patch 許可リスト 19）。
-  - ⚠️ **依存の T-09（RBAC）が未着手のまま着手した。** T-42 と同じく `auth/dependencies.py` の `require_admin()` を使っている。**T-09 で `auth/rbac.py` を作ったら、config ファミリ4行（`GET /config`・`PUT /config`・`GET /config/history`・`POST /config/dry-run`）も権限マトリクスから導出する形へ寄せ、網羅テストの対象に含めること。**
+  - ⚠️ **依存の T-09（RBAC）が未着手のまま着手した。** T-42 と同じく `auth/dependencies.py` の `require_admin()` を使っている。~~**T-09 で `auth/rbac.py` を作ったら、config ファミリ4行も権限マトリクスから導出する形へ寄せ、網羅テストの対象に含めること。**~~ → **2026-08-14 実施済み（T-09）**。config ファミリ3行（実装済み分）は `test_rbac.py` の網羅テストに入った。`POST /config/dry-run` はマトリクスに行だけあり、HTTP テストは T-29 で足す。
   - **「存在も中身も見せない」の担保は「認可をハンドラの手前で終わらせる」こと。** `require_admin` は依存として解決され、**ボディ検証より先に**走る（FastAPI が sub-dependency を先に解決するため。実測でテスト固定済み）。結果として非 admin のリクエストは **`config.json` を一度も読まない**。これが次の2つを同時に満たす：
     1. **存在の秘匿**：config が有る場合と無い場合で、非 admin への応答が**ステータス・本文とも完全に同一**（`test_the_denial_is_identical_whether_or_not_the_config_exists`）。状態依存にすると 403/404 の差で存在が分かる。
     2. **構造の秘匿**：非 admin の `PUT` は patch の中身（固定項目・未知キー・不正 revision）に関わらず応答が1種類（`test_a_denied_update_never_reveals_the_config_structure`）。項目別 422 を返すと config のキー構成が漏れる。
