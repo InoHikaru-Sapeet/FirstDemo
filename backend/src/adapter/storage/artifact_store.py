@@ -31,6 +31,7 @@ HISTORY_DIRNAME = "_history"
 SCRATCH_DIRNAME = "scratch"
 DRY_RUN_DIRNAME = "dry-run"
 
+CONFIG_FILENAME = "config.json"
 WEEKLY_REPORT_FILENAME = "weekly_ai_intelligence_report.xlsx"
 MONTHLY_CASES_FILENAME = "monthly_ai_leading_cases.xlsx"
 
@@ -116,6 +117,18 @@ class ArtifactStore:
     @property
     def scratch_root(self) -> Path:
         return self.root / SCRATCH_DIRNAME
+
+    def config_path(self) -> Path:
+        """判断基準ファイル `config.json`（設計書 §2.1・§8。T-11）。
+
+        **期間に紐づかない唯一の正規成果物。** 読み書きは `ConfigRepository`
+        （T-11）だけが行い、他は API 経由で参照する。
+
+        ⚠️ **`archive()` による世代退避は使わない。** config の改訂履歴は DB
+        （`config_revisions.config_snapshot`）が正で、`archive()` は period 単位の
+        中間生成物向けだから（config に対応する period が無い）。
+        """
+        return self.root / CONFIG_FILENAME
 
     def weekly_report_path(self) -> Path:
         """週次の中間xlsx。ISO週ごとのシートを内部に持つ固定名ファイル。"""

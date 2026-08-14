@@ -458,10 +458,10 @@ flowchart TD
 
 ### P3. Config API（設計書 §3 ／ 仕様書 §15-3）
 
-#### - [ ] T-11: ConfigRepository（読み書き・revision・履歴記録）
+#### - [x] T-11: ConfigRepository（読み書き・revision・履歴記録）
 - **対応**: §4.3・§6.3
 - **依存**: T-02, T-03, T-04
-- **成果物**: `backend/src/adapter/config_repository.py`, テスト
+- **成果物**: `backend/src/adapter/config_repository.py`, `backend/src/adapter/storage/artifact_store.py`（`config_path()` 追加）, `backend/tests/adapter/test_config_repository.py`, `docs/future-roadmap.md`（AWS 移行時の申し送り）
 - **完了条件**:
   - `config.json`（ファイルが正）の読み込み／検証済み書き込み
   - `revision` の採番（成功時 `revision++`、`updated_at`/`updated_by` 更新）
@@ -470,6 +470,20 @@ flowchart TD
   - 書き込み成功時に `config_revision` テーブルへスナップショットと `diff_summary` を記録
   - **実行時の revision ピン留め**：`get_pinned(revision)` でジョブ開始時点の config を固定参照できる（§6.3）
 - **備考**: 実行中ジョブが config 変更の影響を受けないことは §14 の再現性要件そのもの。
+  - **実績（2026-08-13）**: `make lint` / `make type-check` / `make test` すべて通過。テストは **643件**（T-11 で追加したのは 28件：置き場 2 / 読み込み 4 / 初期投入 5 / 保存・楽観ロック 7 / ピン留め 3 / 履歴一覧 2 / 差分 5）。
+  - **方針の再確認（2026-08-13 決定）**: `config.json` は **DB に入れず、`ArtifactStore` 経由のファイル**として保存する。DB に入れるのは **監査ログ・config 改訂履歴・ユーザー／セッションのみ**という §1.1「永続化」の切り分けを維持した。
+  - ⚠️ **`ArtifactStore` に `config_path()` を追加した**（T-02 の完了条件のパス一覧に `config.json` が無かったため）。他の成果物と違い **period に紐づかない**ので、`archive()` による世代退避は使わない（config の履歴は `config_revisions` が正）。理由は `config_path()` の docstring に記載。
+  - **書き込み順序は「履歴行を flush → ファイルを原子的に書く → commit」**。ファイル書き込みが失敗したら rollback して履歴を残さない。ファイルが正なので「履歴にはあるが実体が無い revision」を作らない側を優先した（`get_pinned()` が実在しない config を返すのを防ぐ）。逆順にする変異でテストが落ちることを実測済み。
+  - **`meta` はサーバが打つ**（`revision` / `updated_at` / `updated_by`）。呼び出し元が送ってきた `meta` は無視する。revision を偽装できると楽観ロックが成立しないため。`test_the_caller_cannot_dictate_the_revision_or_the_author` で固定。
+  - **読み込みはモデル検証まで。クロスフィールド検証（T-05）を通さない。** 手編集で Σweight が崩れた config を読めなくすると `GET /config` が 500 になり、**admin が管理画面から直せなくなる**（直す手段がファイル編集だけになる）。書き込みは必ず `ensure_valid_config()` を通るので、この経路から壊れた config は入らない。境界をテストで明示（`test_a_hand_broken_cross_field_rule_can_still_be_read`）。
+  - **差分（`diff_configs` / `summarize_diff` / `flatten_config`）をこのモジュールに置いた。** 形は §4.4 の監査ログ `diff`（`{path: {"before","after"}}`）に合わせてあるので、**T-10 / T-13 はそのまま `audit_log.diff` に使える**。パス表記は `ConfigIssue.path`（T-05）と同じドット区切り。`meta.*` は差分から除く（保存のたびに必ず3件出て、実際に変わった判断基準が埋もれるため）。スカラーだけの配列（`enums.industry` / `bands`）は1つの値として比較する（要素展開すると1件挿入で全要素が変更に見える）。
+  - ⚠️ **`diff_summary` はフルパスで書く**（`scoring_axes.0.weight 25→30`）。設計書 §3.3 の例はセクション名を省いた `min_total_score_to_publish 60→62` だが、`weight 25→30` では6軸のどれか分からず履歴として役に立たないため。
+  - ⚠️ **設計書 §3.3 の `PUT /config` 例（`min_total_score_to_publish` を 62 へ）は、そのままだと §2.1.1-2 の降順整合に違反する**（§5.2 の `share_only` が 60 なので `60 ≥ 62` が成り立たない）。T-05 の検証が正しく 422 を返すことをテスト実装中に実測した。**§3.3 の例を直すか、`share_only` も上げる例に変える必要がある（→ T-38）**。
+  - `save()` のほかに **`create_initial()`** を用意した（§10.3 手順6 の `revision=1` / `updated_by=null`）。**T-14 はこれを呼ぶ**こと。既存 config があれば `ConfigAlreadyExistsError` で拒否する（§10.4 の冪等性。既存の判断基準を黙って上書きしない）。
+  - `list_revisions()` は **`config_snapshot` 列を SELECT しない**。返り値の `RevisionSummary` にも中身のフィールドを持たせていないので、**T-12 の `GET /config/history` が誤って config を載せられない**（§3.3 の items は4項目）。中身を返す経路は `get_pinned()` の1本だけ。
+  - ファイルは Asia/Tokyo（`+09:00`）で書き、DB は `UtcDateTime` で UTC 保存。同じ瞬間を指すことをテストで固定（§14）。
+  - ⚠️ **現状はアプリ・DB・`config.json` がすべて同一ホスト（開発者の PC）にあるため、事実上 config を編集できるのは1人だけ。** 楽観ロックは実装済みだが、競合が実際に起きるのは共有ストレージへ移した後。**会社展開（本番 AWS）で `config.json` を S3 等へ移すと複数管理者が同一 config を編集できるようになる**（切り替えは `ArtifactStore` の実装差し替えで対応）。同時編集の競合対策（後勝ち・楽観ロックの強化等）は AWS 移行時に検討＝**現時点では未実装でよい**。詳細は [future-roadmap.md](./docs/future-roadmap.md)「`config.json` の置き場」に記録した。
+  - 主要な性質はミューテーションテストで実効性を確認済み：楽観ロックの比較を外す／commit をファイル書き込みより前に出す／呼び出し元の `meta` をそのまま採用する、の3改変でそれぞれ対応するテストが落ちることを実測した。
 
 #### - [ ] T-12: `GET /config` / `GET /config/history`
 - **対応**: §3.2・§3.3
@@ -874,6 +888,7 @@ flowchart TD
     - 設計書 §3.1「認証は既存 SSO 前提。ロールはトークンのクレームから解決」→ **セッション Cookie ＋ DB のユーザー行からロールを解決**へ改訂
     - 設計書 §4.4 監査ログの `event_type` に `user_registered` / `user_role_change` を追加（T-10）
     - 設計書 §3.2 エンドポイント一覧に `/auth/*` と `/users/*` の行を追加（T-09 のマトリクスと1:1）
+  - ⚠️ **設計書 §3.3 の `PUT /config` リクエスト例を直す**（T-11 で判明）：例は `min_total_score_to_publish` を 62 にしているが、§5.2 の `share_only` が 60 なので **§2.1.1-2 の降順整合（`share_only ≥ min_total_score_to_publish`）に違反し、実装は 422 を返す**。値を下げるか、`adoption_class_score_map` も併せて上げる例に差し替える
   - **認証まわりの運用手順**を README に明記：初回セットアップ（`make migrate-all` → `make create-admin` → ログイン）／ユーザーの昇格手順／サービストークンの設定
   - **`AuthenticationBackend` の差し替え口**（どのプロトコルを実装し、どこで DI を差し替えるか）を README と CLAUDE.md に明記。**「SSO は現時点でやらない。これは将来の余地であって対応済みではない」**ことも併記（§1.1 備考）
   - **「TODO: 本番 cron 登録」**の項（T-28 と重複しないよう相互参照）
