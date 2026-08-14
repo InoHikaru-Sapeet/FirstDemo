@@ -32,9 +32,29 @@ class Settings(BaseSettings):
     db_password: str = "password"
     db_name: str = "ai_intelligence"
 
-    # AI（Claude API）。crawl / filter が利用する（設計書 §6・§9）。
+    # AI。crawl / filter が利用する（設計書 §6・§9）。
+    # 呼び出し経路は **Claude Code CLI（`claude -p`）**（TASKS.md §1.1・T-15）。
+    # 認証は会社の Team 契約でログイン済みの CLI セッションで、**APIキーは使わない**
+    # （CLI 実装は子プロセスの環境から `ANTHROPIC_API_KEY` を除いて渡す）。
+    # ⚠️ `anthropic_api_key` は**削除しない**。本番（AWS 展開）で Anthropic API 実装へ
+    # 差し替えるときにそのまま使う。`anthropic_model` は CLI の `--model` へ流用する。
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-5"
+
+    # Claude Code CLI の呼び出し（T-15）。
+    ai_cli_command: str = "claude"
+
+    # ⚠️ **タイムアウトの既定を短くしないこと。** 些細なプロンプト（1+1）でも
+    # 実測で約131秒かかっている（CLI の起動・初期化のオーバーヘッド。T-15 備考）。
+    # 分類・採点系は 10分、crawl は 30分を既定にしてある。用途に応じて呼び出し側が
+    # `complete(timeout=...)` で選ぶ（crawl は `ai_crawl_timeout_seconds`）。
+    ai_timeout_seconds: int = 600
+    ai_crawl_timeout_seconds: int = 1800
+
+    # 構造化出力の担保（JSON のみ出力を指示 → Pydantic で検証 → 不一致は再依頼）。
+    # ⚠️ リトライするのはスキーマ不一致だけ。1回あたり数分かかるので上限は控えめに。
+    ai_max_attempts: int = 3
+    ai_retry_backoff_seconds: float = 2.0
 
     # 成果物ストレージ。config.json / 中間xlsx / 生成HTML はファイルが正。
     # 正規名は上書きし、旧版は履歴へ退避する（設計書 §11 設計判断B）。

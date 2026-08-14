@@ -14,6 +14,11 @@ from config import Settings
 ENV_KEYS = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_MODEL",
+    "AI_CLI_COMMAND",
+    "AI_TIMEOUT_SECONDS",
+    "AI_CRAWL_TIMEOUT_SECONDS",
+    "AI_MAX_ATTEMPTS",
+    "AI_RETRY_BACKOFF_SECONDS",
     "ARTIFACT_ROOT",
     "HISTORY_MAX_GENERATIONS",
     "SCRATCH_TTL_HOURS",
@@ -39,6 +44,33 @@ def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
 def test_ai_defaults(settings: Settings) -> None:
     assert settings.anthropic_api_key == ""
     assert settings.anthropic_model == "claude-opus-5"
+
+
+def test_the_cli_is_the_current_ai_call_path(settings: Settings) -> None:
+    """呼び出し経路は Claude Code CLI（TASKS.md §1.1・T-15）。"""
+    assert settings.ai_cli_command == "claude"
+    assert settings.ai_max_attempts == 3
+    assert settings.ai_retry_backoff_seconds == 2.0
+
+
+def test_the_ai_timeouts_account_for_the_cli_startup_overhead(
+    settings: Settings,
+) -> None:
+    """⚠️ 些細なプロンプトでも実測 約131秒。既定を短くしないこと（T-15 備考）。
+
+    分類・採点系は10分、crawl は30分。crawl の方を短くしない。
+    """
+    assert settings.ai_timeout_seconds == 600
+    assert settings.ai_crawl_timeout_seconds == 1800
+    assert settings.ai_crawl_timeout_seconds > settings.ai_timeout_seconds
+
+
+def test_the_ai_timeouts_are_overridable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AI_TIMEOUT_SECONDS", "900")
+    monkeypatch.setenv("AI_CRAWL_TIMEOUT_SECONDS", "3600")
+    settings = Settings(_env_file=None)
+    assert settings.ai_timeout_seconds == 900
+    assert settings.ai_crawl_timeout_seconds == 3600
 
 
 def test_artifact_defaults(settings: Settings) -> None:

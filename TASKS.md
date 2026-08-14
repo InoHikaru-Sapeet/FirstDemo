@@ -630,10 +630,10 @@ flowchart TD
 
 ### P5. パイプライン中核（設計書 §6 ／ 仕様書 §15-6）
 
-#### - [ ] T-15: AIクライアント層（Claude Code CLI 実装）
+#### - [x] T-15: AIクライアント層（Claude Code CLI 実装）
 - **対応**: §6・§9／§1.1「AI呼び出し方式」
 - **依存**: T-01
-- **成果物**: `backend/src/adapter/llm/ai_client.py`（プロトコル）, `backend/src/adapter/llm/claude_cli_client.py`（`claude -p` 実装）, `backend/src/adapter/llm/__init__.py`（DI 1箇所）, テスト（サブプロセスはモック）
+- **成果物**: `backend/src/adapter/llm/ai_client.py`（プロトコル）, `backend/src/adapter/llm/claude_cli_client.py`（`claude -p` 実装）, `backend/src/adapter/llm/__init__.py`（DI 1箇所）, `backend/src/config.py`（`ai_*` 設定）, `backend/tests/adapter/test_ai_client.py`, `backend/tests/adapter/test_claude_cli_client.py`, `backend/README.md`（「AI 呼び出し（Claude Code CLI）」）
 - **完了条件**:
   - **`AIClient` プロトコルを定義**し、**上位（T-16 / T-19）はこれだけに依存する**。渡すのは**プロンプトと出力スキーマ（Pydantic モデル）**だけで、**呼び出し先が CLI か API かを上位に知らせない**（§1.1「AI呼び出し方式」＝本番は API 実装へ差し替える）
   - **差し替え口は DI 1箇所**（`get_ai_client()`）に閉じる。`AuthenticationBackend` の `get_authentication_backend()` と同じ形にする
@@ -647,7 +647,21 @@ flowchart TD
 - **備考**: ⚠️ **これは試作段階の手段。本番（AWS 展開時）は Anthropic API 実装を追加してここを差し替える**（§1.1「備考：AI呼び出し方式」）。**その理由をモジュール冒頭のコメントに残すこと。**
   - `anthropic` 依存（`pyproject.toml`）と `anthropic_api_key`（`config.py`）は**残す**。本番切り替え時の API 実装がそのまま使う。
   - API 実装を書くときの注意（当初 T-15 の完了条件として調べてあったもの。**切り替え時に再確認すること**）：structured outputs は `output_config.format`、長時間・大出力はストリーミング（HTTPタイムアウト回避）、`stop_reason` が `refusal` の場合を握り潰さない、トークン使用量（`usage`）を返す。`budget_tokens` / `temperature` / `top_p` は使わない（現行モデルでは 400）。深さ制御は `output_config.effort`。
-  - ⚠️ **CLI の起動オプション（`--model` / `--output-format` / 構造化出力の指定方法）と、サブプロセス経由での安定動作は未確認。** 着手時にまず手元で `claude -p` を1回叩いて、**出力形式とエラー時の終了コードを実測してから**実装すること。
+  - ~~⚠️ **CLI の起動オプション（`--model` / `--output-format` / 構造化出力の指定方法）と、サブプロセス経由での安定動作は未確認。** 着手時にまず手元で `claude -p` を1回叩いて、**出力形式とエラー時の終了コードを実測してから**実装すること。~~ → **2026-08-14 実測済み**（下記）。ただし**エラー時の出力形式・終了コードは未実測のまま**（成功時しか観測できていない）。
+- **備考**（実績 2026-08-14）: **実測結果（claude 2.1.232 / Team 契約ログイン済み / macOS）**。実装はこの事実に合わせてある（推測で補っていない）。
+  - **`claude -p "<プロンプト>" --output-format json` は成功時に終了コード 0 を返し、標準出力に単一の JSON オブジェクト（封筒）を出す。** 主なフィールドは `result`（**応答本文が文字列で入る**）/ `is_error` / `subtype`（`"success"`）/ `stop_reason` / `api_error_status` / `total_cost_usd` / `modelUsage` / `session_id` / `duration_ms`。
+  - したがって **パースは2段階**：①標準出力を封筒として読む（`ClaudeCliEnvelope`）→ ②`result` 文字列を目的の Pydantic スキーマで読む。実測した封筒 JSON はテスト（`MEASURED_ENVELOPE`）に逐語で残してある。
+  - **既定モデルは `claude-opus-5` が使われた**（`modelUsage` のキーで確認）。メタには「指定した値（`requested_model`）」と「実際に使われた値（`models_used`）」を**別々に**載せる（取れないときに指定値で埋めない）。
+  - ⚠️ **些細なプロンプト（`1+1`）でも `duration_ms=131497`（約131秒）かかった。** CLI の起動・初期化のオーバーヘッドが大きい。**タイムアウトの既定は分類・採点系 10分（`AI_TIMEOUT_SECONDS`）／crawl 30分（`AI_CRAWL_TIMEOUT_SECONDS`）**にした。**短くしないこと**（短い既定は「本番相当の実行が途中で殺される」形で現れる）。`test_config.py` が既定値を固定している。
+  - **成功判定を終了コード0だけに頼らない。** 封筒の `is_error` / `subtype` / `api_error_status` / `stop_reason=refusal` も確認し、矛盾（終了コード0なのに封筒が失敗を申告 等）は例外にする。終了コード非0と封筒「成功」が矛盾した場合は**失敗側（安全側）へ倒す**。
+  - **エラー時の出力形式・終了コードは未実測**なので、原因を呼び出し元が判別できる**別個の例外**に分けた：`AIUnavailableError`（PATH に無い／実行不可＝再実行では直らない）/ `AITimeoutError` / `AIProcessError`（終了コード非0。**未ログインはここに出る想定**）/ `AIProtocolError`（封筒として読めない・成功判定フィールドが無い・`result` が無い）/ `AIResponseError`（封筒が失敗を申告）/ `AIOutputParseError`（スキーマ不一致がリトライ上限まで続いた）。すべて `AIClientError` を基底に持ち、**標準エラー出力の内容をメッセージに載せる**。
+  - **構造化出力は「JSON Schema を添えて JSON のみを出力させる ＋ `result` を Pydantic で検証 ＋ 失敗時リトライ」で担保**（CLI に structured outputs 相当があるかは未確認のまま）。リトライ時は**パースエラーの内容と前回出力をプロンプトへ載せて**再依頼する。⚠️ **試行ごとに CLI のセッションは別（会話が続かない）**ため、元のプロンプトとスキーマを毎回まるごと送り直している。
+  - ⚠️ **リトライするのはスキーマ不一致だけ。** プロセス失敗・タイムアウトは1回あたり数分かかるうえ、再実行で直るかを判別する材料（エラー時の形式）が無いので、**ジョブ単位の再実行＝呼び出し元の判断**に委ねた。
+  - ⚠️ **子プロセスの環境から `ANTHROPIC_API_KEY` を除いて渡す。** 認証は Team 契約のログインセッションで、環境に APIキーが入っていると**課金経路が黙って API 側へ移る**（`test_the_api_key_is_not_handed_to_the_cli` が固定）。`anthropic` 依存と `anthropic_api_key` 設定は本番切り替え用に**残してある**。
+  - **サブプロセスは `asyncio` で実行する**（同期 `subprocess.run` は使わない）。1回が数分〜30分になるため、イベントループを塞ぐと API サーバーがその間応答できない。タイムアウト時は kill してから必ず `wait()` する（ゾンビを残さない）。
+  - **テストは実際に `claude` を起動しない。** サブプロセスの実行を `CommandRunner` で差し替え、実測した封筒 JSON を標準出力として流す。既定ランナー（`SubprocessCommandRunner`）の検証だけは**python を起動**して行う（終了コード・両ストリーム・タイムアウトでの停止・コマンド不在）。**CI に CLI とログインを要求しない。** テスト53件（`make test` 全体 951件）。
+  - **ミューテーションで確認済み**：封筒の成功判定を外すと6件、終了コードの検査を外すと2件、APIキーの除去を外すと1件、リトライを外すと3件、`modelUsage` を指定値で埋めると2件のテストが落ちる。
+  - **申し送り（未確認・T-16 で決める）**：①**web 検索の有効化方法**（PROMPT-1 は web 検索が前提。CLI 側の許可指定が必要なら `ClaudeCliClient(extra_args=...)` を DI で渡す。プロトコルには漏らさない）。②**プロンプトは argv で渡している**（実測がこの形）ので、OS の引数長上限（macOS で合計1MB程度）に当たる規模になったら標準入力経由へ変える必要がある（その形は未実測）。③**`cwd` を指定していない**ので、CLI は起動時の作業ディレクトリのプロジェクト設定（`CLAUDE.md` 等）を読みうる。パイプラインの出力が実行場所に左右されるなら固定する判断が要る。
 
 #### - [ ] T-16: crawl ワーカー
 - **対応**: §8.2・仕様書 §13.2（PROMPT-1）
@@ -661,6 +675,7 @@ flowchart TD
   - 優先ソース（TechCrunch / VentureBeat / Ledge.ai / ITmedia / 公式PR / 政府・公的機関）をプロンプトに反映。個人ブログ・SNS単独・まとめアフィリエイトは収集しない
   - 7カテゴリを網羅するよう広く収集する指示を含む
 - **備考**: 週次は「今週」の新規性、月次は「先進企業の具体的活用事例」を重視（§13.2）。
+  - **T-15 からの申し送り**：AI 呼び出しは `adapter.llm.get_ai_client()` から取った `AIClient.complete(prompt=..., output_schema=RAW_ARTICLES_ADAPTER, prompt_version=..., timeout=...)` の1本だけを使う（CLI 固有の引数を上位へ持ち込まない）。⚠️ **crawl は `Settings.ai_crawl_timeout_seconds`（30分）を明示的に渡す**（既定10分は分類・採点系向け）。⚠️ **web 検索の有効化方法は未確認**。CLI 側で許可指定が必要なら `ClaudeCliClient(extra_args=...)` を DI で渡す形にする（プロトコルには出さない）。返り値の `meta`（使用モデル・`prompt_version`）は `meta_to_audit_payload()` で監査／validation メタに載せられる（T-30）。
 
 #### - [ ] T-17: 除外ルール判定エンジン
 - **対応**: §6.2（→ 仕様書 §5.4・§13.3-1）
@@ -1035,7 +1050,7 @@ flowchart TD
 | 1 | **カテゴリ色マップの補完4色**（`enterprise_ai_case` / `industry_ai_trend` / `ai_training_org_change` / `ai_implementation_ops`）— 実サンプルHTMLに存在せず設計書 §7.2 で近縁色を補完済み。ブランド確認が必要 | T-23, T-24 | | |
 | 2 | ~~**`weekly_ai_intelligence_requirements.xlsx` の実ファイル**がリポジトリに無い — 移行 CLI の入力~~ → **2026-08-14 入手済み**（実ファイルを受領。§5.2 のフォールバックは不要になった）。置き場は **`docs/source/`（コミット済み）** ＝「初期投入元は仕様の出典であって実行時入力ではない」ため成果物（`artifact_root`）とは分ける。4シート（`情報カテゴリ`/`必須タグ`/`除外ルール`/`スコアリング軸`）の構成・件数（**7 / 10 / 6 / 13**）・ID・配点は §5.2 と一致。文言差分2件は **§5.2 を正**として解決（要確認事項 #9） | T-14 | | 解消済 |
 | 3 | ~~**Anthropic API キーの発行と利用枠** — crawl / filter が Claude API に依存~~ → **2026-08-14 決定**。パイプラインの AI 呼び出しは **Claude Code CLI（`claude -p`）** を使い、認証は**会社の Team 契約**（APIキー不要）。上司の許可取得済み。**APIキーの発行は本番（AWS 展開）で API へ切り替えるときまで不要**（§1.1「備考：AI呼び出し方式」） | T-15, T-16, T-19 | | 決定済 |
-| 8 | **Claude Code CLI の実行前提** — `claude -p` は CLI がインストールされ**ログイン済みの PC**が起動していることが前提。本番の無人運用に持ち込めないため、**AWS 展開時に Anthropic API 実装へ切り替える**判断が必要（切り替えは T-15 の AIクライアント層の差し替えで対応）。着手時に `--model` / 構造化出力の指定方法・エラー時の終了コードを実測すること | T-15, T-16, T-19 | | |
+| 8 | **Claude Code CLI の実行前提** — `claude -p` は CLI がインストールされ**ログイン済みの PC**が起動していることが前提。本番の無人運用に持ち込めないため、**AWS 展開時に Anthropic API 実装へ切り替える**判断が必要（切り替えは T-15 の AIクライアント層の差し替えで対応）。~~着手時に `--model` / 構造化出力の指定方法・エラー時の終了コードを実測すること~~ → **2026-08-14 一部実測**（T-15 備考）。`--model` / `--output-format json` の封筒形式・約131秒のオーバーヘッドは確認済み。**残る未実測は (a) エラー時の出力形式と終了コード（成功時しか観測できていない）、(b) web 検索の有効化方法（T-16）、(c) 長大プロンプトを argv で渡す限界**。いずれも「読めない出力を推測で補わず別個の例外で落とす」形にして先へ進めている | T-15, T-16, T-19 | | 一部実測 |
 | 4 | ~~**既存 SSO との連携方式** — 認証スタブの差し替え先。社内IT担当へ確認~~ → **2026-08-13 解消**。SSO 連携はやらず **ID/PW 認証を自前実装**する方針が確定（§1.1「備考：SSO 前提からの差分」）。**社内IT担当への確認は不要になった**。SSO は将来の選択肢として [future-roadmap.md](./docs/future-roadmap.md) 構想3 へ格下げ | — | — | 解消済 |
 | 5 | **ホスティング環境**（README「次のタスク 1」）— 外部 cron の登録方法、成果物ストレージ（ローカルFS or オブジェクトストレージ）に影響。**認証にも影響**：フロントとバックが別オリジンになる場合、Cookie の `SameSite` 設定と CSRF 対策の見直しが必要（T-40・T-43） | T-02, T-28, T-40, T-43 | | |
 | 6 | ~~**自己登録を誰に開放するか**~~ → **2026-08-13 決定**。**メールドメイン許可リストで `sapeet.com` に絞る**（`auth_allowed_email_domains` の既定値）。T-40 で許可リストの仕組みと既定値を実装し、**許可外ドメインからの登録が拒否されることをテストで固定**する | T-40 | | 決定済 |

@@ -190,6 +190,66 @@ curl -X POST http://localhost:8000/run/weekly -H "Authorization: Bearer <生ト�
 > ⚠️ **開発用の認証スタブ（ヘッダでロールを自称できる実装）は廃止した。復活させないこと。**
 > ロールを自称できる経路があると「config は admin 以外に露出しない」（仕様書 §2・§6.1）が壊れる。
 
+## AI 呼び出し（Claude Code CLI）
+
+パイプライン（crawl / filter）の AI 呼び出しは **Claude Code CLI（`claude -p`）を
+サブプロセスとして実行**する。認証は**会社の Team 契約でログイン済みの CLI セッション**で、
+**APIキーは使わない**（TASKS.md §1.1「AI呼び出し方式」／T-15）。
+
+> ⚠️ **実行前提**: `claude` が PATH にあり、**ログイン済み**であること。
+> 満たされない場合は握り潰さず例外で落ちる（下表）。
+>
+> ⚠️ **これは試作段階の手段。** 本番（AWS 展開・無人での定期実行）では
+> Anthropic API 実装を追加して差し替える。そのため `anthropic` 依存と
+> `ANTHROPIC_API_KEY` は**残してある**（現行の CLI 実装では使わない）。
+
+### 差し替え口
+
+| | |
+|---|---|
+| **プロトコル** | `AIClient`（[`src/adapter/llm/ai_client.py`](src/adapter/llm/ai_client.py)） |
+| **実装するメソッド** | `async def complete(*, prompt, output_schema, prompt_version, timeout) -> AIResult[T]` |
+| **差し替え箇所** | `get_ai_client()`（[`src/adapter/llm/__init__.py`](src/adapter/llm/__init__.py)）の戻り値1箇所 |
+| **テストでの差し替え** | `CommandRunner`（サブプロセスの実行だけを差し替え。実際の `claude` は起動しない） |
+
+上位（crawl / filter）が渡すのは**プロンプトと出力スキーマだけ**で、呼び出し先が
+CLI か API かを知らない。構造化出力は「JSON Schema を添えて JSON のみを出力させる
+＋ `result` を Pydantic で検証 ＋ 不一致ならパースエラーを載せて再依頼」で担保する。
+
+### 設定（環境変数）
+
+| 変数 | 既定 | 意味 |
+|---|---|---|
+| `AI_CLI_COMMAND` | `claude` | 実行するコマンド（絶対パスも可） |
+| `ANTHROPIC_MODEL` | `claude-opus-5` | `--model` に渡す値 |
+| `AI_TIMEOUT_SECONDS` | `600`（10分） | 分類・採点系の既定 |
+| `AI_CRAWL_TIMEOUT_SECONDS` | `1800`（30分） | crawl は呼び出し側がこれを渡す |
+| `AI_MAX_ATTEMPTS` | `3` | **スキーマ不一致時**の試行回数上限 |
+| `AI_RETRY_BACKOFF_SECONDS` | `2.0` | リトライ前の待ち時間（指数で伸びる） |
+
+> ⚠️ **タイムアウトの既定を短くしないこと。** `1+1` のような些細なプロンプトでも
+> **約131秒**かかることを実測している（CLI の起動・初期化のオーバーヘッド）。
+> 短い既定は「本番相当の実行が途中で殺される」形で現れる。
+
+### 失敗の種類
+
+`AIClientError` を基底に、原因ごとに別の例外で返る（呼び出し元が再実行の可否を
+判断できるようにするため。標準エラー出力の内容を必ずメッセージへ載せる）。
+
+| 例外 | いつ |
+|---|---|
+| `AIUnavailableError` | `claude` が PATH に無い／実行権限が無い（**再実行では直らない**） |
+| `AITimeoutError` | 制限時間を超えた（プロセスは kill 済み） |
+| `AIProcessError` | 終了コードが非0（**未ログインはここに出る想定** — 未実測） |
+| `AIProtocolError` | 標準出力が `--output-format json` の封筒として読めない |
+| `AIResponseError` | 封筒が失敗を申告（`is_error` / `subtype` / `api_error_status` / `stop_reason=refusal`） |
+| `AIOutputParseError` | 出力が期待スキーマに合わない（上限まで再試行した後） |
+
+> ⚠️ **成功判定を終了コード0だけに頼らない。** 実測では成功時に 0 が返るが、
+> **失敗時の終了コード・出力形式は未実測**。封筒の申告と終了コードが矛盾したら
+> 失敗側（安全側）へ倒す。**リトライするのはスキーマ不一致だけ**で、
+> プロセス失敗・タイムアウトはジョブ単位の再実行に委ねる。
+
 ## データベース
 
 手元は **SQLite**（Docker 不要）。本番運用時、および全文検索・ベクトル検索
@@ -227,6 +287,7 @@ src/
 ├── application/              # ユースケース（業務手順）
 └── adapter/                  # 入出力（HTTP / DB / CLI など）
     ├── cli/                  # 運用コマンド（create-admin / service-token 等）
+    ├── llm/                  # AI 呼び出し（差し替え口は上記「AI 呼び出し」を参照）
     └── http/fastapi/
         ├── routers/          # FastAPI のルーター
         └── auth/             # 認証（差し替え口は上記「認証・認可」を参照）

@@ -1,0 +1,573 @@
+"""Claude Code CLI 実装（T-15）。
+
+⚠️ **このテストは実際に `claude` を起動しない。** サブプロセスの実行は
+`CommandRunner` で差し替え、標準出力には**手元で実測した封筒 JSON** を流し込む。
+CI に CLI のインストールとログインを要求しないため（T-15 完了条件）。
+
+重点:
+
+- 封筒 → `result` の**2段階パース**が通ること
+- 成功判定を**終了コード0だけに頼らない**こと（`is_error` / `subtype` /
+  `api_error_status` / `stop_reason=refusal`）
+- 失敗の原因が**呼び出し元で判別できる別個の例外**になること
+- スキーマ不一致は**指摘をプロンプトへ載せて**リトライすること
+- 実際に使われたモデル（`modelUsage`）と `prompt_version` がメタに載ること
+"""
+
+import json
+import os
+import sys
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
+from pydantic import BaseModel, ConfigDict, TypeAdapter
+
+from adapter.llm.ai_client import (
+    AIOutputParseError,
+    AIProcessError,
+    AIProtocolError,
+    AIResponseError,
+    AITimeoutError,
+    AIUnavailableError,
+)
+from adapter.llm.claude_cli_client import (
+    API_KEY_ENV,
+    ClaudeCliClient,
+    CommandResult,
+    SubprocessCommandRunner,
+)
+
+# 2026-08-14 に手元で実測した封筒（claude 2.1.232 / Team 契約ログイン済み / macOS）。
+# `1+1` という些細なプロンプトでも duration_ms が約131秒だったことも含めて残す。
+# `type` / `num_turns` / `usage` は封筒の余分なフィールドで、extra="ignore" が
+# これらを無視できることも同時に固定している。
+MEASURED_ENVELOPE: dict[str, Any] = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "duration_ms": 131497,
+    "duration_api_ms": 4231,
+    "num_turns": 1,
+    "result": "2",
+    "session_id": "b0f5e0d2-1f6a-4a1e-9a53-2f0c4b8d1e77",
+    "total_cost_usd": 0.08213,
+    "stop_reason": None,
+    "api_error_status": None,
+    "usage": {"input_tokens": 12, "output_tokens": 5},
+    "modelUsage": {
+        "claude-opus-5": {
+            "inputTokens": 12,
+            "outputTokens": 5,
+            "costUSD": 0.08213,
+        }
+    },
+}
+
+
+class Answer(BaseModel):
+    """テスト用の出力スキーマ。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    score: int
+
+
+ANSWER_JSON = '{"label": "AI", "score": 7}'
+
+
+@dataclass
+class RecordedCall:
+    argv: list[str]
+    env: dict[str, str]
+    timeout: float | None
+
+
+@dataclass
+class FakeRunner:
+    """`claude` を起動しない差し替え。
+
+    `outcomes` を順に返し、尽きたら最後のものを繰り返す（同じ失敗が続く
+    リトライの検証用）。`Exception` を入れるとその場で raise する。
+    """
+
+    outcomes: Sequence[CommandResult | Exception]
+    calls: list[RecordedCall] = field(default_factory=list)
+
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str],
+        timeout: float | None,
+    ) -> CommandResult:
+        self.calls.append(RecordedCall(argv=list(argv), env=dict(env), timeout=timeout))
+        outcome = self.outcomes[min(len(self.calls) - 1, len(self.outcomes) - 1)]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def envelope(result_text: str | None = ANSWER_JSON, **overrides: Any) -> str:
+    """実測した封筒をベースに、一部だけ差し替えた標準出力を作る。"""
+    payload = dict(MEASURED_ENVELOPE)
+    payload["result"] = result_text
+    for key, value in overrides.items():
+        if value is _ABSENT:
+            payload.pop(key, None)
+        else:
+            payload[key] = value
+    return json.dumps(payload, ensure_ascii=False)
+
+
+class _Absent:
+    """`envelope()` でフィールドを**消す**ための印。"""
+
+
+_ABSENT = _Absent()
+
+
+def stdout_of(text: str, *, exit_code: int = 0, stderr: str = "") -> CommandResult:
+    return CommandResult(exit_code=exit_code, stdout=text, stderr=stderr)
+
+
+def build_client(
+    outcomes: Sequence[CommandResult | Exception],
+    *,
+    max_attempts: int = 3,
+    **kwargs: Any,
+) -> tuple[ClaudeCliClient, FakeRunner, list[float]]:
+    """クライアントと、記録用のランナー／バックオフ待ち時間を返す。"""
+    runner = FakeRunner(outcomes=outcomes)
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    client = ClaudeCliClient(
+        runner=runner,
+        sleep=sleep,
+        max_attempts=max_attempts,
+        **kwargs,
+    )
+    return client, runner, sleeps
+
+
+# --- 正常系（実測した封筒）------------------------------------------------
+
+
+async def test_the_measured_envelope_is_parsed_in_two_stages() -> None:
+    """封筒 → `result` 文字列 → 出力スキーマ。応答本文は封筒の中にある。"""
+    client, _, _ = build_client([stdout_of(envelope())])
+
+    result = await client.complete(prompt="質問", output_schema=Answer)
+
+    assert result.value == Answer(label="AI", score=7)
+
+
+async def test_the_model_actually_used_comes_from_model_usage() -> None:
+    """⚠️ 「指定した」ではなく「使われた」モデルを載せる（監査／validation 用）。"""
+    client, _, _ = build_client(
+        [stdout_of(envelope(modelUsage={"claude-opus-5": {"costUSD": 0.1}}))],
+        model="claude-sonnet-5",
+    )
+
+    meta = (await client.complete(prompt="q", output_schema=Answer)).meta
+
+    assert meta.requested_model == "claude-sonnet-5"
+    assert meta.models_used == ("claude-opus-5",)
+
+
+async def test_an_unknown_model_is_not_filled_in_with_the_requested_one() -> None:
+    """`modelUsage` が無いときに指定値で埋めない（別の事実を混ぜない）。"""
+    client, _, _ = build_client([stdout_of(envelope(modelUsage=_ABSENT))])
+
+    meta = (await client.complete(prompt="q", output_schema=Answer)).meta
+
+    assert meta.models_used == ()
+
+
+async def test_the_envelope_metadata_is_carried_into_the_result() -> None:
+    client, _, _ = build_client([stdout_of(envelope())])
+
+    meta = (
+        await client.complete(prompt="q", output_schema=Answer, prompt_version="1.2.0")
+    ).meta
+
+    assert meta.prompt_version == "1.2.0"
+    assert meta.attempts == 1
+    assert meta.duration_ms == 131497
+    assert meta.total_cost_usd == pytest.approx(0.08213)
+    assert meta.session_id == MEASURED_ENVELOPE["session_id"]
+
+
+async def test_a_type_adapter_can_be_passed_as_the_output_schema() -> None:
+    """トップレベルが配列のスキーマ（`raw_articles.json` は array。§2.3）用。"""
+    adapter = TypeAdapter(list[Answer])
+    client, _, _ = build_client([stdout_of(envelope('[{"label":"a","score":1}]'))])
+
+    result = await client.complete(prompt="q", output_schema=adapter)
+
+    assert result.value == [Answer(label="a", score=1)]
+
+
+# --- CLI の呼び方 ---------------------------------------------------------
+
+
+async def test_the_cli_is_called_the_way_it_was_measured() -> None:
+    client, runner, _ = build_client(
+        [stdout_of(envelope())], command="/usr/local/bin/claude", model="claude-opus-5"
+    )
+
+    await client.complete(prompt="質問本文", output_schema=Answer)
+
+    argv = runner.calls[0].argv
+    assert argv[0] == "/usr/local/bin/claude"
+    assert argv[1] == "-p"
+    assert argv[2].startswith("質問本文")
+    assert argv[argv.index("--output-format") + 1] == "json"
+    assert argv[argv.index("--model") + 1] == "claude-opus-5"
+
+
+async def test_the_prompt_carries_the_schema_and_forbids_prose() -> None:
+    """構造化出力の担保は「JSON のみ出力させる指示 ＋ 検証 ＋ リトライ」。"""
+    client, runner, _ = build_client([stdout_of(envelope())])
+
+    await client.complete(prompt="質問本文", output_schema=Answer)
+
+    prompt = runner.calls[0].argv[2]
+    assert "JSON Schema" in prompt
+    assert '"score"' in prompt
+    assert "JSON だけ" in prompt
+
+
+async def test_the_api_key_is_not_handed_to_the_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⚠️ 認証は Team 契約のログインセッション。APIキーを渡すと課金経路が移る。"""
+    monkeypatch.setenv(API_KEY_ENV, "sk-must-not-leak")
+    monkeypatch.setenv("HOME_MARKER_FOR_TEST", "kept")
+    client, runner, _ = build_client([stdout_of(envelope())])
+
+    await client.complete(prompt="q", output_schema=Answer)
+
+    assert API_KEY_ENV not in runner.calls[0].env
+    assert runner.calls[0].env["HOME_MARKER_FOR_TEST"] == "kept"
+
+
+async def test_extra_args_are_appended_without_touching_the_protocol() -> None:
+    """T-16 が web 検索の許可等を足すための逃げ道（プロトコルには出さない）。"""
+    client, runner, _ = build_client(
+        [stdout_of(envelope())], extra_args=("--allowedTools", "WebSearch")
+    )
+
+    await client.complete(prompt="q", output_schema=Answer)
+
+    assert runner.calls[0].argv[-2:] == ["--allowedTools", "WebSearch"]
+
+
+async def test_the_default_timeout_is_used_when_the_caller_does_not_pass_one() -> None:
+    client, runner, _ = build_client(
+        [stdout_of(envelope())], default_timeout_seconds=600.0
+    )
+
+    await client.complete(prompt="q", output_schema=Answer)
+
+    assert runner.calls[0].timeout == pytest.approx(600.0)
+
+
+async def test_the_caller_can_lengthen_the_timeout_per_call() -> None:
+    """crawl は 30分（`ai_crawl_timeout_seconds`）を渡す。"""
+    client, runner, _ = build_client(
+        [stdout_of(envelope())], default_timeout_seconds=600.0
+    )
+
+    await client.complete(prompt="q", output_schema=Answer, timeout=1800)
+
+    assert runner.calls[0].timeout == pytest.approx(1800.0)
+
+
+# --- 構造化出力のリトライ -------------------------------------------------
+
+
+async def test_a_schema_mismatch_is_retried_with_the_parse_errors_in_the_prompt() -> (
+    None
+):
+    client, runner, sleeps = build_client(
+        [stdout_of(envelope('{"label": "AI"}')), stdout_of(envelope())]
+    )
+
+    result = await client.complete(prompt="質問本文", output_schema=Answer)
+
+    assert result.value == Answer(label="AI", score=7)
+    assert result.meta.attempts == 2
+    retry_prompt = runner.calls[1].argv[2]
+    assert "質問本文" in retry_prompt  # 試行ごとに別セッション＝毎回送り直す
+    assert "JSON Schema" in retry_prompt
+    assert "score" in retry_prompt
+    assert '{"label": "AI"}' in retry_prompt  # 前回出力もそのまま載せる
+    assert sleeps == [pytest.approx(2.0)]
+
+
+async def test_the_retry_limit_is_respected_and_reports_the_last_issues() -> None:
+    client, runner, sleeps = build_client(
+        [stdout_of(envelope('{"label": "AI"}'))], max_attempts=2
+    )
+
+    with pytest.raises(AIOutputParseError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert caught.value.attempts == 2
+    assert len(runner.calls) == 2
+    assert [issue.path for issue in caught.value.issues] == ["score"]
+    assert '{"label": "AI"}' in caught.value.payload
+    assert len(sleeps) == 1  # 最後の試行の後は待たない
+
+
+async def test_the_backoff_grows_between_attempts() -> None:
+    client, _, sleeps = build_client(
+        [stdout_of(envelope("not json"))],
+        max_attempts=4,
+        retry_backoff_seconds=1.5,
+    )
+
+    with pytest.raises(AIOutputParseError):
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert sleeps == [pytest.approx(1.5), pytest.approx(3.0), pytest.approx(6.0)]
+
+
+async def test_retries_are_disabled_when_max_attempts_is_one() -> None:
+    client, runner, sleeps = build_client(
+        [stdout_of(envelope("not json"))], max_attempts=1
+    )
+
+    with pytest.raises(AIOutputParseError):
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert len(runner.calls) == 1
+    assert sleeps == []
+
+
+def test_a_zero_attempt_client_is_rejected() -> None:
+    with pytest.raises(ValueError, match="max_attempts"):
+        ClaudeCliClient(max_attempts=0)
+
+
+async def test_a_code_fence_around_the_json_is_tolerated() -> None:
+    """1回が数分かかるので、この程度の逸脱でリトライを消費しない。"""
+    client, _, _ = build_client([stdout_of(envelope(f"```json\n{ANSWER_JSON}\n```"))])
+
+    result = await client.complete(prompt="q", output_schema=Answer)
+
+    assert result.value.score == 7
+
+
+async def test_prose_around_the_json_is_not_rescued() -> None:
+    """⚠️ 説明文の混じった出力を拾い出さない（曖昧な出力を推測で通さない）。"""
+    client, _, _ = build_client(
+        [stdout_of(envelope(f"はい、こちらです: {ANSWER_JSON}"))], max_attempts=1
+    )
+
+    with pytest.raises(AIOutputParseError):
+        await client.complete(prompt="q", output_schema=Answer)
+
+
+# --- 異常系（原因ごとに別の例外）------------------------------------------
+
+
+async def test_a_non_zero_exit_raises_a_process_error_with_stderr() -> None:
+    client, runner, _ = build_client(
+        [stdout_of("", exit_code=1, stderr="Invalid API key · Please run /login")]
+    )
+
+    with pytest.raises(AIProcessError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert caught.value.exit_code == 1
+    assert "/login" in caught.value.stderr
+    assert "/login" in str(caught.value)
+    assert len(runner.calls) == 1  # 呼び出し失敗はリトライしない
+
+
+async def test_a_non_zero_exit_wins_over_a_success_looking_envelope() -> None:
+    """終了コードと封筒が矛盾したら安全側（失敗）へ倒す。"""
+    client, _, _ = build_client([stdout_of(envelope(), exit_code=2, stderr="boom")])
+
+    with pytest.raises(AIProcessError):
+        await client.complete(prompt="q", output_schema=Answer)
+
+
+async def test_stdout_that_is_not_an_envelope_raises_a_protocol_error() -> None:
+    """エラー時の出力形式は未実測。封筒として読めなければ推測で補わない。"""
+    client, _, _ = build_client(
+        [stdout_of("Usage: claude [options]", stderr="unknown option")]
+    )
+
+    with pytest.raises(AIProtocolError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert "Usage: claude" in caught.value.stdout
+    assert "unknown option" in caught.value.stderr
+
+
+async def test_a_json_array_on_stdout_is_not_accepted_as_an_envelope() -> None:
+    client, _, _ = build_client([stdout_of('[{"result": "x"}]')])
+
+    with pytest.raises(AIProtocolError, match="オブジェクトではありません"):
+        await client.complete(prompt="q", output_schema=Answer)
+
+
+@pytest.mark.parametrize(
+    "field_name,value",
+    [
+        ("is_error", "maybe"),  # ⚠️ "yes"/"true" は Pydantic が bool へ寄せる
+        ("result", {"label": "AI", "score": 7}),  # result は**文字列**で来る（実測）
+        ("duration_ms", "しばらく"),
+    ],
+)
+async def test_an_envelope_field_of_the_wrong_type_raises_a_protocol_error(
+    field_name: str, value: Any
+) -> None:
+    client, _, _ = build_client([stdout_of(envelope(**{field_name: value}))])
+
+    with pytest.raises(AIProtocolError):
+        await client.complete(prompt="q", output_schema=Answer)
+
+
+async def test_an_error_envelope_is_not_treated_as_success() -> None:
+    """⚠️ 終了コード0でも `is_error=true` なら失敗（実測では成功時 0 が返る）。"""
+    client, _, _ = build_client(
+        [stdout_of(envelope(is_error=True), stderr="rate limited")]
+    )
+
+    with pytest.raises(AIResponseError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert "is_error=true" in caught.value.reasons
+    assert "rate limited" in caught.value.stderr
+
+
+async def test_an_api_error_status_is_not_treated_as_success() -> None:
+    client, _, _ = build_client([stdout_of(envelope(api_error_status=529))])
+
+    with pytest.raises(AIResponseError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert caught.value.reasons == ("api_error_status=529",)
+
+
+async def test_a_subtype_other_than_success_is_not_treated_as_success() -> None:
+    client, _, _ = build_client([stdout_of(envelope(subtype="error_max_turns"))])
+
+    with pytest.raises(AIResponseError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert "error_max_turns" in caught.value.reasons[0]
+
+
+async def test_a_refusal_stop_reason_is_not_swallowed() -> None:
+    """T-15 備考「`stop_reason` が `refusal` の場合を握り潰さない」。"""
+    client, _, _ = build_client([stdout_of(envelope(stop_reason="refusal"))])
+
+    with pytest.raises(AIResponseError, match="refusal"):
+        await client.complete(prompt="q", output_schema=Answer)
+
+
+@pytest.mark.parametrize("missing", ["is_error", "subtype"])
+async def test_a_missing_success_field_raises_a_protocol_error(missing: str) -> None:
+    """「失敗と言っていない」を「成功」と読み替えない（CLI のバージョン差の検出）。"""
+    client, _, _ = build_client([stdout_of(envelope(**{missing: _ABSENT}))])
+
+    with pytest.raises(AIProtocolError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert missing in str(caught.value)
+
+
+async def test_an_envelope_without_a_result_raises_a_protocol_error() -> None:
+    client, _, _ = build_client([stdout_of(envelope(None))])
+
+    with pytest.raises(AIProtocolError, match="result"):
+        await client.complete(prompt="q", output_schema=Answer)
+
+
+async def test_the_command_being_absent_surfaces_as_unavailable() -> None:
+    """PATH に無い＝再実行では直らない。呼び出し元が他の失敗と区別できること。"""
+    client, _, _ = build_client(
+        [AIUnavailableError("claude が見つかりません", command="claude")]
+    )
+
+    with pytest.raises(AIUnavailableError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert caught.value.command == "claude"
+
+
+async def test_a_timeout_surfaces_as_a_timeout_error() -> None:
+    client, runner, _ = build_client(
+        [AITimeoutError("時間切れ", timeout_seconds=600.0)]
+    )
+
+    with pytest.raises(AITimeoutError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert caught.value.timeout_seconds == pytest.approx(600.0)
+    assert len(runner.calls) == 1  # タイムアウトもリトライしない
+
+
+# --- 既定のランナー（`claude` ではなく python を起動して確かめる）---------
+
+
+def _python_command(script: str) -> list[str]:
+    """⚠️ ここでも `claude` は起動しない（CI に CLI を要求しない）。"""
+    return [sys.executable, "-c", script]
+
+
+async def test_the_runner_reports_the_exit_code_and_both_streams() -> None:
+    result = await SubprocessCommandRunner().run(
+        _python_command(
+            "import sys; sys.stdout.write('out'); sys.stderr.write('err'); sys.exit(3)"
+        ),
+        env={"PATH": os.environ.get("PATH", "")},
+        timeout=60,
+    )
+
+    assert result.exit_code == 3
+    assert result.stdout == "out"
+    assert result.stderr == "err"
+
+
+async def test_the_runner_raises_unavailable_when_the_command_is_missing() -> None:
+    with pytest.raises(AIUnavailableError) as caught:
+        await SubprocessCommandRunner().run(
+            ["claude-does-not-exist-in-this-environment"],
+            env={"PATH": os.environ.get("PATH", "")},
+            timeout=60,
+        )
+
+    assert caught.value.command == "claude-does-not-exist-in-this-environment"
+    assert "ログイン" in str(caught.value)
+
+
+async def test_the_runner_stops_a_process_that_overruns_the_timeout() -> None:
+    with pytest.raises(AITimeoutError) as caught:
+        await SubprocessCommandRunner().run(
+            _python_command("import time; time.sleep(30)"),
+            env={"PATH": os.environ.get("PATH", "")},
+            timeout=0.2,
+        )
+
+    assert caught.value.timeout_seconds == pytest.approx(0.2)
+
+
+async def test_the_runner_passes_only_the_given_environment() -> None:
+    result = await SubprocessCommandRunner().run(
+        _python_command("import os; print(os.environ.get('MARKER', 'none'))"),
+        env={"PATH": os.environ.get("PATH", ""), "MARKER": "passed"},
+        timeout=60,
+    )
+
+    assert result.stdout.strip() == "passed"
