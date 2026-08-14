@@ -677,7 +677,7 @@ flowchart TD
 - **備考**: 週次は「今週」の新規性、月次は「先進企業の具体的活用事例」を重視（§13.2）。
   - **T-15 からの申し送り**：AI 呼び出しは `adapter.llm.get_ai_client()` から取った `AIClient.complete(prompt=..., output_schema=RAW_ARTICLES_ADAPTER, prompt_version=..., timeout=...)` の1本だけを使う（CLI 固有の引数を上位へ持ち込まない）。⚠️ **crawl は `Settings.ai_crawl_timeout_seconds`（30分）を明示的に渡す**（既定10分は分類・採点系向け）。⚠️ **web 検索の有効化方法は未確認**。CLI 側で許可指定が必要なら `ClaudeCliClient(extra_args=...)` を DI で渡す形にする（プロトコルには出さない）。返り値の `meta`（使用モデル・`prompt_version`）は `meta_to_audit_payload()` で監査／validation メタに載せられる（T-30）。
 
-#### - [ ] T-17: 除外ルール判定エンジン
+#### - [x] T-17: 除外ルール判定エンジン
 - **対応**: §6.2（→ 仕様書 §5.4・§13.3-1）
 - **依存**: T-04, T-07
 - **成果物**: `backend/src/enterprise/services/exclusion.py`, `backend/tests/enterprise/test_exclusion.py`
@@ -692,6 +692,19 @@ flowchart TD
   - 除外時は必ず除外ログ行（6列）を生成
   - **13ルール × 各 severity の分岐を網羅するテスト**
 - **備考**: ここが「決定的 Python で強制」の中核。LLM の判断で severity 分岐を上書きさせない。
+- **備考**（実績 2026-08-14）: 判定は `evaluate_exclusions(ScreenedArticle, IntelligenceConfig)` の1本。**この層は config と記事データしか見ない**（AIClient を呼ばない）。
+  - **「どのルールに当たるか」は上流からの申告（`ScreenedArticle.matched_rule_nos`）として受け取る。** ルール本文（「アフィリエイト・広告色の強いツール紹介記事」等）は自然文で、当たり判定そのものには意味理解が要るため決定的には書けない。⚠️ **申告できるのはルール番号までで、そこから先（除外か低優先か採用か）は渡さない。** 同じ申告でも admin が `severity` を変えれば結果が変わることを `test_the_same_signals_follow_the_config_severity` が固定している。
+  - ⚠️ **`ScreenedArticle` に「除外すべき／採用すべき」に相当するフィールドを足さないこと。** 足した瞬間に上流（LLM）が severity 分岐を上書きできる。`test_screened_article_carries_facts_only` がフィールド集合を固定していて、足すと落ちる（落ちたときに何を判断すべきかは docstring に書いてある）。持ってよいのは事実だけ：`matched_rule_nos` / `customer_relevance` / `estimated_total_score` / `is_stale`。
+  - **鮮度（`is_stale`）を日付から計算しない判断**：ルール13の `examples` が **「同一日付は新しいが中身が古いまとめ」** と明記しており、**日付を見ても判定できない**のが仕様の前提。加えて config に鮮度のしきい値が無く、日数を決め打ちすると「config に無いしきい値」が生まれる。よって事実として受け取る（既定 `False`）。
+  - **最初に当たった1件で打ち切る**（設計書 §6.2 の擬似コードどおり）。後ろにより強い severity のルールがあっても評価しない。順序は **config の配列順ではなく `no` 昇順**（`enabled_rules_in_order()`）。config.json の要素順が入れ替わっても判定が変わらない。
+  - **例外採用は「未判定なら適用しない」（安全側＝原則どおり除外）。** `customer_relevance` / `estimated_total_score` が `None` のときに例外採用へ倒すと、採点前で情報が無いほど通りやすくなる。境界は `≥`（しきい値ちょうどは採用。`test_the_exception_needs_the_score_to_reach_the_threshold`）。
+  - **`除外区分` は severity 由来の3語だけをこのモジュールが持つ**（`完全除外` / `原則除外` / `低優先/除外`）。`統合` は T-18（§11.3）、`フォーマット不備` は T-20（§12.2）、`低スコア/信頼性不足` は T-21（§13.3-5）が持つ。§2.2.2 が「等」と書いて閉じていないため enum 化していない。
+  - **`merge` は除外ではない**ので `除外区分` を埋めない（統合されるかは T-18 が決める）。除外以外の判定で除外ログ行を作ろうとすると `ExclusionError`（本編と除外ログの両方に載る事故を防ぐ）。
+  - **降格 `downgrade_adoption_class()` もこのモジュールに置いた**（`low_priority` 分岐の効果そのもので、分岐と降格幅が離れると片方だけ変わるため）。**適用は採点後なので呼ぶのは T-21**。§5.4 が「**採用はするが**下げる」なので **1段だけ下げ、下限は `共有のみ`**（降格で `不採用` にはしない）。
+  - 除外ログ行は T-07 の `EXCLUSION_LOG_COLUMNS` だけを見て組み立てる（列名・列順をここに書かない）。**URL は収集したまま**を記録する（正規化は T-18 の内部処理で、ログは「何を見て落としたか」の記録）。
+  - テスト124件（**13ルール × 5 severity の65通りを総当たり**。条件つきの2分岐は同じテスト内で両枝を確認）。`make test` 全体 1075件。
+  - **ミューテーションで確認済み**：`no` 昇順ソートを外すと1件、`enabled` のスキップを外すと14件、例外採用の境界を `>=`→`>` にすると14件、`is_stale` 分岐を外すと13件、顧客関連度の条件を外すと5件、降格の下限を外すと3件、除外ログのガードを外すと3件が落ちる。
+  - **申し送り（T-19 / T-21）**：①`matched_rule_nos` を作るのは上流（分類・選別）。**config の13ルールを提示して「当たった番号」だけを返させる**形にすること（severity・採否を返させない）。②`estimated_total_score` は見込み値で、確定した合計は採点後に6軸の和として計算し直す（T-19）。③`low_priority` の記事は採点後に `downgrade_adoption_class()` を通す（§6.1 の 4）。
 
 #### - [ ] T-18: 重複検知・統合
 - **対応**: §6.3（→ 仕様書 §11）
