@@ -623,7 +623,7 @@ flowchart TD
   - ⚠️ **xlsx の「合計」セルは数式（`=SUM(C5:C10)`）**。原本には計算結果が保存されているので満点=100 を突き合わせできるが、openpyxl で書き出し直した xlsx では値が取れない。その場合は**中断せず警告に留める**（満点の主張が読めないことと、満点が違うことは別。後者は `scoring_total` の issue で落とす）。
   - **`enums` のうち型で固定できるものは `Literal` / `StrEnum` から起こした**（写しを2つ持たない）。`industry` / `business_area` / `source_whitelist_hint` / `tunable_thresholds` は自由文字列・xlsx 外なので §5.2 の逐語コピーで、一致は T-05 `validate_initial_config` と上記の全キー比較テストが独立に確かめる。
   - **ミューテーションで確認済み**：手順5（`validate_initial_config`）を外すと1件、文言正規化を無効化すると4件、dry の早期 return を外すと2件のテストが落ちる。
-  - ⚠️ **スコープ外の発見（未修正）**：`backend/.gitignore` に `artifacts/` が無く、`ArtifactStore` の書き込み先（`artifacts/config.json`・生成HTML・中間xlsx）が **git の追跡対象になる**。`make migrate-config ARGS="--apply"` を実行すると `git status` に生成物が出る。**成果物は実行時状態なのでコミットすべきではない**（→ T-02 側の修正が必要）。今回は手元の `artifacts/` を汚さないよう、`--apply` の実測は `ARTIFACT_ROOT` / `SQLITE_PATH` を一時ディレクトリへ向けて行った。
+  - ~~⚠️ **スコープ外の発見（未修正）**：`backend/.gitignore` に `artifacts/` が無く、`ArtifactStore` の書き込み先（`artifacts/config.json`・生成HTML・中間xlsx）が **git の追跡対象になる**。`make migrate-config ARGS="--apply"` を実行すると `git status` に生成物が出る。**成果物は実行時状態なのでコミットすべきではない**（→ T-02 側の修正が必要）。~~ → **2026-08-14 対応済み**（T-15 着手前に修正）。`backend/.gitignore` に `artifacts/` を追加し、`config.json`・生成HTML・中間xlsx・`_history/`・`scratch/` が追跡されないことを `git check-ignore` で確認した。**初期投入元の xlsx は成果物ではない**ので `docs/source/` のコミット済みのままで影響を受けない。なお T-14 当時の `--apply` 実測は、手元の `artifacts/` を汚さないよう `ARTIFACT_ROOT` / `SQLITE_PATH` を一時ディレクトリへ向けて行った。
   - 初期投入では**監査ログ（`audit_logs`）に行を作らない**（`create_initial()` の設計どおり。実行者は `config_revisions.updated_by=null` で表現される）。§4.4 の監査対象は admin の config 更新なので現状で整合しているが、「初期投入も誰かが実行した操作」と見なすなら T-10 の対象を広げる判断が要る（今回は §10 の記述どおり行を作らない側に寄せた）。
 
 ---

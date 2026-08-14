@@ -13,6 +13,12 @@ var/
 *.db
 *.sqlite3
 
+# 成果物（ArtifactStore の書き込み先＝`Settings.artifact_root` の既定）。
+# config.json / 生成HTML / 中間xlsx / _history/ / scratch/ はすべて**実行時状態**で、
+# ソースではないのでコミットしない（設計書 §8「ファイルが正」＝正は実行環境のファイル）。
+# ⚠️ 初期投入元の xlsx は成果物ではないので `docs/source/` にコミットしてある（T-14）。
+artifacts/
+
 # 環境変数（雛形の .env.example はコミットする）
 .env
 
