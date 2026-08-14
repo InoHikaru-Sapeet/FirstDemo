@@ -6,3 +6,10 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 .idea/
+
+# 成果物（ArtifactStore の書き込み先＝`Settings.artifact_root` の既定）。
+# `backend/.gitignore` にも同じ行があるが、既定値は相対パス `artifacts` なので
+# **リポジトリルートから起動すると `./artifacts/` が生える**（`backend/` 配下の
+# 無視指定は届かない）。実行場所によって成果物がコミット対象になったりならなかったり
+# しないよう、ルート側でも無視する。中身は実行時状態でソースではない（設計書 §8）。
+artifacts/
