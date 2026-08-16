@@ -332,6 +332,12 @@
         "treat_same_url_as_duplicate": {
           "title": "Treat Same Url As Duplicate",
           "type": "boolean"
+        },
+        "monthly_lookback_months": {
+          "default": 3,
+          "minimum": 1,
+          "title": "Monthly Lookback Months",
+          "type": "integer"
         }
       },
       "required": [

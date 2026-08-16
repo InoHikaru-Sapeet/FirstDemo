@@ -82,6 +82,9 @@ EDITABLE_PATHS: frozenset[str] = frozenset(
         "tunable_thresholds.dedup.lookback_weeks",
         "tunable_thresholds.dedup.title_similarity_threshold",
         "tunable_thresholds.dedup.treat_same_url_as_duplicate",
+        # 月次の重複遡り月数（2026-08-16 の決定2 で config へ足した鍵）。
+        # §7.2 の「重複判定パラメータ `dedup.*`」の行に含まれると読める。
+        "tunable_thresholds.dedup.monthly_lookback_months",
         # ⚠️ ここから4件は **§7.2 の表に行が無い**が `tunable_thresholds` に
         # 属する項目。§7.2 の見出しが「§5.2 の**可変項目**にマップ」であり、
         # 可変項目の定義（仕様書 §5.1 ／ T-04）は `tunable_thresholds` を

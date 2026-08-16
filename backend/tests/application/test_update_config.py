@@ -70,6 +70,8 @@ def test_the_allow_list_matches_spec_7_2() -> None:
             "tunable_thresholds.dedup.lookback_weeks",
             "tunable_thresholds.dedup.title_similarity_threshold",
             "tunable_thresholds.dedup.treat_same_url_as_duplicate",
+            # §5.2 に無い鍵（2026-08-16 の決定2。§11.1 の月次遡り月数）
+            "tunable_thresholds.dedup.monthly_lookback_months",
             # §7.2 の表に行が無いが可変（→ T-38 で表へ追記）
             "tunable_thresholds.min_reliability_score_to_publish",
             "tunable_thresholds.weekly.point_of_week_required",

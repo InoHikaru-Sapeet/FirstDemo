@@ -159,6 +159,25 @@ def test_confirmed_initial_thresholds(raw: dict[str, Any]) -> None:
     assert tunable.dedup.lookback_weeks == 8
     assert tunable.dedup.title_similarity_threshold == 0.85
     assert tunable.dedup.treat_same_url_as_duplicate is True
+    # ⚠️ §5.2 に無い鍵（2026-08-16 の決定2。§11.1 の月次「直近数ヶ月」）。
+    assert tunable.dedup.monthly_lookback_months == 3
+
+
+def test_a_config_without_the_monthly_lookback_key_still_loads(
+    raw: dict[str, Any],
+) -> None:
+    """`monthly_lookback_months` を持たない既存 config.json を読めなくしないこと。
+
+    この鍵は 2026-08-16 の決定2 で足したもので、それ以前に書かれた
+    `config.json`（§5.2 そのまま）には無い。必須にすると
+    `ConfigRepository.load()` が落ち、**admin が管理画面から直せなくなる**
+    （T-11 が load でクロスフィールド検証を通さないのと同じ理由）。
+    """
+    del raw["tunable_thresholds"]["dedup"]["monthly_lookback_months"]
+
+    config = IntelligenceConfig.model_validate(raw)
+
+    assert config.tunable_thresholds.dedup.monthly_lookback_months == 3
 
 
 def test_round_trip_reproduces_the_source_json(initial_raw: dict[str, Any]) -> None:
@@ -362,6 +381,9 @@ def test_industry_and_business_area_accept_new_values(raw: dict[str, Any]) -> No
         ("tunable_thresholds.dedup.lookback_weeks", -1),
         ("tunable_thresholds.dedup.title_similarity_threshold", 1.01),
         ("tunable_thresholds.dedup.title_similarity_threshold", -0.01),
+        # 月次の遡り月数は **1以上**（0 は「当月だけ」で §11.1 を満たさない）
+        ("tunable_thresholds.dedup.monthly_lookback_months", 0),
+        ("tunable_thresholds.dedup.monthly_lookback_months", -1),
     ],
 )
 def test_out_of_range_values_are_rejected(
@@ -395,6 +417,7 @@ def test_out_of_range_values_are_rejected(
         ("tunable_thresholds.monthly.require_editorial_and_closing", False),
         ("tunable_thresholds.dedup.title_similarity_threshold", 0.9),
         ("tunable_thresholds.dedup.treat_same_url_as_duplicate", False),
+        ("tunable_thresholds.dedup.monthly_lookback_months", 6),
     ],
 )
 def test_editable_parameters_stay_editable(

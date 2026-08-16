@@ -137,7 +137,8 @@
     "dedup": {
       "lookback_weeks": 8,
       "title_similarity_threshold": 0.85,
-      "treat_same_url_as_duplicate": true
+      "treat_same_url_as_duplicate": true,
+      "monthly_lookback_months": 3
     }
   },
 

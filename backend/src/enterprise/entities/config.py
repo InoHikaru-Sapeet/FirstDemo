@@ -263,6 +263,18 @@ class DedupThresholds(_StrictModel):
     lookback_weeks: int = Field(ge=0)
     title_similarity_threshold: float = Field(ge=0, le=1)
     treat_same_url_as_duplicate: bool
+    # ⚠️ **仕様書 §5.2 の確定 JSON に無いキー**（2026-08-16 の決定2 で追加）。
+    # §11.1 の月次「当月＋直近数ヶ月」の月数が仕様書・設計書のどちらにも無く、
+    # T-18 は「config に無いしきい値を作らない」ために月数を呼び出し側から受け取る
+    # 形にしてあった。その受け取り先が T-21 なので、決め打ちの代わりに config へ
+    # 足す（→ TASKS.md T-21 備考・T-38 の改訂対象）。
+    #
+    # **既定値を持たせてあるのは、この鍵を持たない既存の `config.json` を読めなく
+    # しないため**（`ConfigRepository.load()` が落ちると admin が管理画面から
+    # 直せなくなる＝T-11 の load が検証を緩めているのと同じ理由）。
+    # 下限は 1（0 だと「当月だけ」になり、`lookback_months=0` を渡すのと区別が
+    # 付かないうえ、§11.1 の「直近数ヶ月」を満たさない）。
+    monthly_lookback_months: int = Field(default=3, ge=1)
 
 
 class TunableThresholds(_StrictModel):

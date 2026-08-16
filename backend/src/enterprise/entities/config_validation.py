@@ -156,6 +156,9 @@ INITIAL_TUNABLE_THRESHOLDS: dict[str, Any] = {
     "tunable_thresholds.dedup.lookback_weeks": 8,
     "tunable_thresholds.dedup.title_similarity_threshold": 0.85,
     "tunable_thresholds.dedup.treat_same_url_as_duplicate": True,
+    # ⚠️ **§5.2 に無い鍵**（2026-08-16 の決定2 で追加。既定 3）。値域（1以上の
+    # 整数）は T-04 のモデルが持つ。ここは「初期値が 3 であること」の固定。
+    "tunable_thresholds.dedup.monthly_lookback_months": 3,
 }
 
 # 採用区分しきい値の降順チェーン（設計書 §2.1.1-2 ／ 仕様書 §7.4）。

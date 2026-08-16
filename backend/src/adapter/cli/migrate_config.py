@@ -281,6 +281,9 @@ SPEC_TUNABLE_THRESHOLDS: dict[str, Any] = {
         "lookback_weeks": 8,
         "title_similarity_threshold": 0.85,
         "treat_same_url_as_duplicate": True,
+        # ⚠️ **仕様書 §5.2 に無い鍵**（2026-08-16 の決定2。§11.1 の月次
+        # 「直近数ヶ月」＝3。→ TASKS.md T-21 備考・T-38）。
+        "monthly_lookback_months": 3,
     },
 }
 
