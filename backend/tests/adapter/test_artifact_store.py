@@ -33,6 +33,7 @@ def test_canonical_paths_use_the_names_the_spec_fixes(store: ArtifactStore) -> N
     assert store.monthly_cases_path().name == "monthly_ai_leading_cases.xlsx"
     assert store.raw_articles_path("2026-W31").name == "raw_articles_2026-W31.json"
     assert store.validation_path("2026-W31").name == "validation_2026-W31.json"
+    assert store.narrative_path("2026-W31").name == "narrative_2026-W31.json"
     assert (
         store.weekly_html_path("不動産", "2026-W31").name
         == "weekly_ai_intelligence_newsletter_不動産_2026-W31.html"
@@ -46,6 +47,7 @@ def test_every_artifact_stays_under_the_root(store: ArtifactStore) -> None:
         store.monthly_cases_path(),
         store.raw_articles_path("2026-W31"),
         store.validation_path("2026-07"),
+        store.narrative_path("2026-07"),
         store.weekly_html_path("不動産", "2026-W31"),
         store.monthly_html_path("2026-07"),
         store.dry_run_dir("dry_abc"),

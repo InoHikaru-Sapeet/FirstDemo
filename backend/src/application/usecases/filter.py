@@ -2,10 +2,26 @@
 
 `raw_articles_{period}.json`（T-16 の出力）を入力に、除外・重複統合・分類採点・
 採否・§12 検証を通し、**中間xlsx へ書ける形の行**（週次22列 / 月次8列）と
-**除外ログ行**（6列）と `validation_{period}.json` を作る。
+**除外ログ行**（6列）と `validation_{period}.json` と `narrative_{period}.json` を
+作る。
 
 **xlsx を書くのは T-22。** この層は「何を書くか」までを決め、ファイルとして書くのは
-`validation_{period}.json` だけ（T-20 申し送り③。シリアライズは T-06、置き場は T-02）。
+`validation_{period}.json`（T-20 申し送り③）と `narrative_{period}.json`（決定3・
+T-44）だけ（シリアライズは T-06、置き場は T-02）。
+
+---
+
+**⚠️ 生成テキストもこの段で作る**（2026-08-16 の決定3 ／ T-44）
+
+設計書 §7.3・§7.4 が「（生成テキスト）」としている今週のポイント・示唆ボックス・
+巻頭言・章導入文・むすびは、**中間xlsx の列（§8 の確定値）には入らない**。
+render は §1.1 により AI を呼べないので、**採用記事・事例が確定した後**に
+この層で生成し、`narrative_{period}.json` として渡す
+（`application.usecases.narrative`）。
+
+⚠️ **段は増やしていない**（crawl → filter → render の3段構成のまま。§3.1 の
+3プロンプトとの1:1 対応・T-26 の状態機械 §8.4）。増えるのは **period ごとに
+AI 往復1回**だけで、記事ごとの往復は足していない（T-15 備考の CLI オーバーヘッド）。
 
 ---
 
@@ -73,7 +89,12 @@ from application.usecases.monthly_cases import (
     MonthlyCaseBuilder,
     select_case_candidates,
 )
+from application.usecases.narrative import NarrativeBuilder
 from enterprise.entities.config import IntelligenceConfig
+from enterprise.entities.narrative import (
+    NarrativeDocument,
+    dump_narrative,
+)
 from enterprise.entities.period import Period, PeriodError, parse_period
 from enterprise.entities.raw_article import RawArticle, parse_raw_articles
 from enterprise.entities.report_columns import (
@@ -160,9 +181,12 @@ class FilterResult:
         exclusion_log: 除外ログ6列の行（発生順）
         validation: `validation_{period}.json` の中身
         validation_path: 実際に書き出した先
+        narrative: `narrative_{period}.json` の中身（生成テキスト。決定3・T-44）
+        narrative_path: 実際に書き出した先
         classified: `articles` と同じ並びの分類結果（監査・T-24 の手がかり）
         monthly_cases: `cases` の組み立て前の形（章・段落を持つ）
-        ai_calls: 行った AI 呼び出しのメタ（記事1件につき1回＋月次の事例ぶん）
+        ai_calls: 行った AI 呼び出しのメタ（記事1件につき1回＋月次の事例ぶん
+            ＋生成テキストの1回）
     """
 
     period: Period
@@ -172,6 +196,8 @@ class FilterResult:
     exclusion_log: list[dict[str, Any]]
     validation: ValidationReport
     validation_path: Path
+    narrative: NarrativeDocument
+    narrative_path: Path
     classified: list[ClassifiedArticle] = field(default_factory=list)
     monthly_cases: list[MonthlyCase] = field(default_factory=list)
     ai_calls: tuple[AICallMeta, ...] = ()
@@ -248,6 +274,9 @@ class FilterWorker:
         self._case_builder = MonthlyCaseBuilder(
             client=client, config=self._config, timeout=timeout
         )
+        self._narrator = NarrativeBuilder(
+            client=client, config=self._config, timeout=timeout
+        )
 
     @property
     def config(self) -> IntelligenceConfig:
@@ -259,11 +288,14 @@ class FilterWorker:
         """固定参照している config の revision（§9.2 の記録対象）。"""
         return self._config.meta.revision
 
-    async def run(self, period: str) -> FilterResult:
+    async def run(self, period: str, *, run_id: str | None = None) -> FilterResult:
         """1つの period をフィルタする（モジュール冒頭の手順）。
 
         Args:
             period: `2026-W31`（週次）または `2026-07`（月次）
+            run_id: ジョブ実行ID（T-26）。`narrative_{period}.json` を上書きする
+                前の退避先の名前に使う（設計判断B）。**`None` なら退避しない**
+                （手元での単発実行。退避先のディレクトリ名を作れないため）
 
         Returns:
             中間xlsx へ書ける行・除外ログ・検証レポート
@@ -350,7 +382,14 @@ class FilterWorker:
         cases = await self._build_cases(records, classified_articles, parsed)
         metas.extend(self._case_builder.ai_calls)
 
+        # ⚠️ **生成テキストは採用が確定した後**（決定3・T-44）。採否・重複・
+        # フォーマット不備で外れた記事の示唆を書かせない（無駄な出力であるうえ、
+        # 載らない記事の文章がファイルに残ると混乱する）。
+        narrative = await self._build_narrative(records, cases, parsed)
+        metas.extend(self._narrator.ai_calls)
+
         validation_path = self._write_validation(check.report, parsed)
+        narrative_path = self._write_narrative(narrative, parsed, run_id=run_id)
 
         logger.info(
             "filter finished (period=%s, adopted=%d, cases=%d, excluded=%d, ok=%s)",
@@ -368,6 +407,8 @@ class FilterWorker:
             exclusion_log=exclusion_log,
             validation=check.report,
             validation_path=validation_path,
+            narrative=narrative,
+            narrative_path=narrative_path,
             classified=classified_articles,
             monthly_cases=cases,
             ai_calls=tuple(metas),
@@ -450,10 +491,47 @@ class FilterWorker:
             )
         return await self._case_builder.build(candidates, period=period.text)
 
+    async def _build_narrative(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        cases: Sequence[MonthlyCase],
+        period: Period,
+    ) -> NarrativeDocument:
+        """生成テキストを作る（決定3・T-44。**period ごとに AI 1往復**）。
+
+        週次は当週シートの行から（今週のポイント＋記事ごとの示唆）、月次は
+        事例から（巻頭言・章導入文・むすび）。**どちらか一方だけ**を作る
+        （週次実行に巻頭言は要らず、月次実行に今週のポイントは要らない）。
+        """
+        if period.is_weekly:
+            return await self._narrator.build_weekly(records, period=period)
+        return await self._narrator.build_monthly(cases, period=period)
+
     def _write_validation(self, report: ValidationReport, period: Period) -> Path:
         """`validation_{period}.json` を書く（T-20 申し送り③）。"""
         path = self._store.validation_path(period.text)
         self._store.write_text(path, dump_validation_report(report))
+        return path
+
+    def _write_narrative(
+        self, document: NarrativeDocument, period: Period, *, run_id: str | None
+    ) -> Path:
+        """`narrative_{period}.json` を書く（決定3・T-44）。
+
+        ⚠️ **退避が先**（設計判断B。T-22 の `_save()`・T-24 の `render()` と同じ
+        順序）。上書きしてから退避すると、退避されるのは新しい内容になる。
+        """
+        path = self._store.narrative_path(period.text)
+        archived = (
+            self._store.archive(
+                path, period=period.text, revision=self.revision, run_id=run_id
+            )
+            if run_id is not None
+            else None
+        )
+        self._store.write_text(path, dump_narrative(document))
+
+        logger.info("narrative written (path=%s, archived=%s)", path, archived)
         return path
 
 

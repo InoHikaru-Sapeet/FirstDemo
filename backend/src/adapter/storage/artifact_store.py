@@ -1,7 +1,8 @@
 """成果物ファイルの置き場を一元管理する。
 
 このアプリは `config.json` / 中間xlsx / 生成HTML / `raw_articles.json` /
-`validation_*.json` を「ファイルが正」として扱う（設計書 §8・§13.4）。
+`validation_*.json` / `narrative_*.json` を「ファイルが正」として扱う
+（設計書 §8・§13.4。最後の1つは 2026-08-16 の決定3＝T-44 で足したもの）。
 成果物のパス解決・読み書きはすべてこの層を経由し、他のコードが直接 `open()`
 しないようにする。将来クラウドストレージへ移す場合も、差し替えはここだけで済む。
 
@@ -147,6 +148,19 @@ class ArtifactStore:
 
     def validation_path(self, period: str) -> Path:
         return self.root / f"validation_{validate_period(period)}.json"
+
+    def narrative_path(self, period: str) -> Path:
+        """生成テキスト `narrative_{period}.json`（決定3 ／ T-44）。
+
+        今週のポイント・示唆ボックス・巻頭言・章導入文・むすび（仕様書 §9.2・
+        §10.2）の置き場。**中間xlsx の列（§8 の確定値）には入らない**ので、
+        filter が書き render が読む受け渡しファイルとして独立している。
+
+        ⚠️ **`archive()` による世代退避の対象**（設計判断B）。同じ period を
+        再実行すると本文が丸ごと書き換わるため、「どの revision のどの実行が
+        どの文章を出したか」が追えなくなる（HTML と同じ扱い）。
+        """
+        return self.root / f"narrative_{validate_period(period)}.json"
 
     def weekly_html_path(self, industry: str, period: str) -> Path:
         _validate_segment(industry, label="industry")

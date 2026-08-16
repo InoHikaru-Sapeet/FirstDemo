@@ -16,12 +16,14 @@
 
 import copy
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from adapter.html.weekly_renderer import render_weekly_html
 from adapter.llm.ai_client import (
     AICallMeta,
     AIResult,
@@ -46,8 +48,17 @@ from application.usecases.filter import (
     RawArticlesNotFoundError,
 )
 from application.usecases.monthly_cases import CHAPTER_LABEL_FORMAT
+from application.usecases.narrative import (
+    WEEKLY_NARRATIVE_PROMPT_VERSION,
+    to_weekly_narrative,
+)
 from enterprise.entities.config import IntelligenceConfig
 from enterprise.entities.json_document import parse_json_document
+from enterprise.entities.narrative import (
+    MonthlyNarrativeDocument,
+    WeeklyNarrativeDocument,
+    parse_narrative,
+)
 from enterprise.entities.raw_article import RawArticle, dump_raw_articles
 from enterprise.entities.report_columns import (
     EXCLUSION_LOG_COLUMNS,
@@ -175,6 +186,39 @@ def classification(
     }
 
 
+POINT_OF_WEEK_SENTENCES = [
+    "今週はAIエージェントの実務投入が相次いだ。",
+    "契約や審査など定型度の高い業務から広がっている。",
+    "不動産では現場の運用設計が論点になる。",
+]
+
+
+def weekly_narrative_draft(urls: list[str]) -> dict[str, Any]:
+    """今週のポイント＋記事ごとの示唆（T-44。**宛先はプロンプトの URL**）。"""
+    return {
+        "point_of_week_sentences": POINT_OF_WEEK_SENTENCES,
+        "insights": [
+            {"url": url, "insight": f"{url} を自社ではこう捉える。"} for url in urls
+        ],
+    }
+
+
+def monthly_narrative_draft(chapters: list[str]) -> dict[str, Any]:
+    """巻頭言・章導入文・むすび（T-44）。"""
+    return {
+        "editorial_subtitle": "『導入したか』ではなく『作り直したか』が問われた月",
+        "editorial_overview": "俯瞰の段落。",
+        "editorial_analysis": "共通する変化の段落。",
+        "editorial_takeaway": "持ち帰る視点の段落。",
+        "chapter_intros": [
+            {"chapter": chapter, "intro": f"{chapter} には…を集めた。"}
+            for chapter in chapters
+        ],
+        "closing_summary": "今月の総括。",
+        "closing_outlook": "来月への視点。",
+    }
+
+
 def case_draft(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "organizations": ["大手不動産"],
@@ -199,10 +243,14 @@ class Call:
 class ScriptedAIClient:
     """`AIClient` のテストダブル。**出力スキーマの形で用途を見分ける。**
 
-    filter は1回の実行で3種類の呼び出しをする（分類・採点／月次の事例本文／章の
-    束ね直し）ので、順番に pop する形だと読みづらい。ここでは
+    filter は1回の実行で4種類の呼び出しをする（分類・採点／月次の事例本文／章の
+    束ね直し／生成テキスト＝T-44）ので、順番に pop する形だと読みづらい。ここでは
     「どのスキーマで聞かれたか」で応答を選び、記事ごとの応答は**プロンプトに
     載っている記事タイトル**で引く（本物と同じく、渡された出力スキーマで検証する）。
+
+    生成テキストの宛先（記事URL・章ラベル）は `Literal` で閉じられているので、
+    **プロンプトに載っている値をそのまま拾って**応答を組み立てる（宛先を取り違えた
+    応答はスキーマで落ちる＝本物と同じ挙動になる）。
     """
 
     def __init__(
@@ -261,6 +309,10 @@ class ScriptedAIClient:
             if self.chapters is None:
                 raise AssertionError("章の束ね直しは呼ばれない想定です")
             return self.chapters
+        if "point_of_week_sentences" in fields:
+            return weekly_narrative_draft(_urls_in(prompt))
+        if "editorial_subtitle" in fields:
+            return monthly_narrative_draft(_chapters_in(prompt))
         return self._by_title(prompt, self.cases) or self.default_case
 
     @staticmethod
@@ -274,11 +326,31 @@ class ScriptedAIClient:
 
     @property
     def classification_calls(self) -> int:
+        return self._calls_with(TAGS_FIELD)
+
+    @property
+    def narrative_calls(self) -> int:
+        """生成テキストの往復（T-44。**period ごとに1回**であること）。"""
+        return self._calls_with("point_of_week_sentences") + self._calls_with(
+            "editorial_subtitle"
+        )
+
+    def _calls_with(self, field_name: str) -> int:
         return sum(
             1
             for call in self.calls
-            if TAGS_FIELD in set(call.output_schema.model_fields)
+            if field_name in set(call.output_schema.model_fields)
         )
+
+
+def _urls_in(prompt: str) -> list[str]:
+    """プロンプトに載っている記事URL（示唆の宛先）。"""
+    return re.findall(r"URL: (\S+)", prompt)
+
+
+def _chapters_in(prompt: str) -> list[str]:
+    """プロンプトに載っている章ラベル（章導入文の宛先）。"""
+    return list(dict.fromkeys(re.findall(r"^\[(.+?)\] CASE ", prompt, re.MULTILINE)))
 
 
 class RecordingHistoryReader:
@@ -748,6 +820,201 @@ async def test_the_validation_report_is_written_through_the_store(
     assert written == result.validation
 
 
+# --- 生成テキスト（決定3 ／ T-44）--------------------------------------------
+
+
+async def test_the_narrative_is_written_through_the_store(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """`narrative_{period}.json` を T-02 経由で書く（xlsx の列には入れない）。"""
+    write_articles(store, [article()], WEEKLY_PERIOD)
+
+    result = await worker(config, store, ScriptedAIClient()).run(WEEKLY_PERIOD)
+
+    assert result.narrative_path == store.narrative_path(WEEKLY_PERIOD)
+    written = parse_narrative(
+        store.read_text(result.narrative_path), period=result.period
+    )
+    assert written == result.narrative
+
+
+async def test_the_generated_text_is_not_in_the_xlsx_columns(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """⚠️ 週次22列は §8.1 の確定値。生成テキストの正は別JSON（決定3）。"""
+    write_articles(store, [article()], WEEKLY_PERIOD)
+
+    result = await worker(config, store, ScriptedAIClient()).run(WEEKLY_PERIOD)
+
+    assert list(result.articles[0]) == [
+        column.name for column in WEEKLY_ARTICLE_COLUMNS
+    ]
+    assert POINT_OF_WEEK_SENTENCES[0] not in json.dumps(
+        result.articles, ensure_ascii=False
+    )
+
+
+async def test_the_weekly_narrative_covers_the_adopted_articles(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """⚠️ 生成は**採用が確定した後**（落ちた記事の示唆を書かせない）。"""
+    write_articles(
+        store,
+        [
+            article(title="採用される記事", url="https://example.com/kept"),
+            article(title="落ちる記事", url="https://example.com/dropped"),
+        ],
+        WEEKLY_PERIOD,
+    )
+    client = ScriptedAIClient(
+        classifications={
+            "採用される記事": classification(),
+            "落ちる記事": classification(rules=[1]),
+        }
+    )
+
+    result = await worker(config, store, client).run(WEEKLY_PERIOD)
+
+    assert isinstance(result.narrative, WeeklyNarrativeDocument)
+    assert list(result.narrative.insights) == ["https://example.com/kept"]
+    assert result.narrative.point_of_week is not None
+
+
+async def test_the_narrative_costs_one_round_trip_per_run(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """⚠️ 記事ごとに往復しない（採用11件でも生成テキストの往復は1回）。"""
+    write_articles(
+        store,
+        [
+            article(title="記事A", url="https://example.com/a"),
+            article(title="記事B", url="https://example.com/b"),
+            article(title="記事C", url="https://example.com/c"),
+        ],
+        WEEKLY_PERIOD,
+    )
+    client = ScriptedAIClient()
+
+    result = await worker(config, store, client).run(WEEKLY_PERIOD)
+
+    assert client.classification_calls == 3
+    assert client.narrative_calls == 1
+    assert len(result.narrative.insights) == 3
+
+
+async def test_the_monthly_narrative_carries_editorial_intros_and_closing(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """§10.2-2／§10.2-4／§10.2-5 の生成テキストを1往復で作る。"""
+    write_articles(store, [article()], MONTHLY_PERIOD)
+
+    result = await worker(config, store, ScriptedAIClient()).run(MONTHLY_PERIOD)
+
+    narrative = result.narrative
+    assert isinstance(narrative, MonthlyNarrativeDocument)
+    assert len(narrative.editorial_paragraphs) == 3
+    assert len(narrative.closing_paragraphs) == 2
+    assert list(narrative.chapter_intros) == [result.cases[0]["トピック(章)"]]
+
+
+async def test_a_weekly_run_makes_no_monthly_narrative(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """週次実行に巻頭言は要らない（どちらか一方だけを作る）。"""
+    write_articles(store, [article()], WEEKLY_PERIOD)
+    client = ScriptedAIClient()
+
+    result = await worker(config, store, client).run(WEEKLY_PERIOD)
+
+    assert isinstance(result.narrative, WeeklyNarrativeDocument)
+    assert client.narrative_calls == 1
+
+
+async def test_an_empty_run_still_writes_a_narrative(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """採用0件でもファイルは書く（「無い」と「まだ作っていない」を分ける）。
+
+    ⚠️ 空の narrative を渡された週刊は、`point_of_week_required=true` の config で
+    レンダラが落ちる（T-24 の意図した挙動）。ここで黙って埋めない。
+    """
+    write_articles(store, [article()], WEEKLY_PERIOD)
+    client = ScriptedAIClient(default_classification=classification(rules=[1]))
+
+    result = await worker(config, store, client).run(WEEKLY_PERIOD)
+
+    assert result.articles == []
+    assert client.narrative_calls == 0
+    assert store.exists(result.narrative_path)
+    assert result.narrative.point_of_week is None
+
+
+async def test_the_previous_narrative_is_archived_before_the_overwrite(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """設計判断B：正規名は上書き、旧版は `_history/` へ退避（run_id が要る）。"""
+    write_articles(store, [article()], WEEKLY_PERIOD)
+    subject = worker(config, store, ScriptedAIClient())
+
+    first = await subject.run(WEEKLY_PERIOD, run_id="run-0001")
+    before = store.read_text(first.narrative_path)
+    await subject.run(WEEKLY_PERIOD, run_id="run-0002")
+
+    generation = (
+        store.history_root / WEEKLY_PERIOD / f"{first.config_revision}_run-0002"
+    )
+    assert (generation / first.narrative_path.name).read_text(
+        encoding="utf-8"
+    ) == before
+
+
+async def test_without_a_run_id_nothing_is_archived(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """手元の単発実行（退避先のディレクトリ名を作れない）。書き込みは行う。"""
+    write_articles(store, [article()], WEEKLY_PERIOD)
+    subject = worker(config, store, ScriptedAIClient())
+
+    await subject.run(WEEKLY_PERIOD)
+    result = await subject.run(WEEKLY_PERIOD)
+
+    assert store.exists(result.narrative_path)
+    assert not store.history_root.exists()
+
+
+async def test_the_narrative_prompt_version_is_reported(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """§9.2：生成テキストの往復も監査へ載る（`prompt_version` を持つ）。"""
+    write_articles(store, [article()], WEEKLY_PERIOD)
+
+    result = await worker(config, store, ScriptedAIClient()).run(WEEKLY_PERIOD)
+
+    assert WEEKLY_NARRATIVE_PROMPT_VERSION in [
+        meta.prompt_version for meta in result.ai_calls
+    ]
+
+
+async def test_the_narrative_feeds_the_weekly_renderer(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """T-24 は無変更で繋がる（filter の出力2つをそのまま渡すだけ）。"""
+    write_articles(store, [article()], WEEKLY_PERIOD)
+
+    result = await worker(config, store, ScriptedAIClient()).run(WEEKLY_PERIOD)
+
+    assert isinstance(result.narrative, WeeklyNarrativeDocument)
+    markup = render_weekly_html(
+        period=WEEKLY_PERIOD,
+        articles=result.articles,
+        config=config,
+        narrative=to_weekly_narrative(result.narrative),
+    )
+
+    assert POINT_OF_WEEK_SENTENCES[0] in markup
+    assert "自社ではこう捉える" in markup
+
+
 async def test_the_intermediate_xlsx_is_not_written_here(
     config: IntelligenceConfig, store: ArtifactStore
 ) -> None:
@@ -793,7 +1060,11 @@ async def test_the_revision_is_reported_for_the_audit_log(
     result = await worker(config, store, ScriptedAIClient()).run(WEEKLY_PERIOD)
 
     assert result.config_revision == config.meta.revision
-    assert [meta.prompt_version for meta in result.ai_calls] == ["0.2.0"]
+    # 記事1件ぶんの分類（0.2.0）＋生成テキスト1回（T-44）。
+    assert [meta.prompt_version for meta in result.ai_calls] == [
+        "0.2.0",
+        WEEKLY_NARRATIVE_PROMPT_VERSION,
+    ]
 
 
 # --- 月次（事例昇格・章束ね・解説3段落）--------------------------------------
@@ -907,7 +1178,8 @@ async def test_a_weekly_run_has_no_cases(
     result = await worker(config, store, client).run(WEEKLY_PERIOD)
 
     assert result.cases == []
-    assert client.classification_calls == len(client.calls)  # 事例の往復が無い
+    # 往復は「記事1件の分類」＋「生成テキスト1回」だけ＝事例の往復が無い。
+    assert client.classification_calls + client.narrative_calls == len(client.calls)
 
 
 # --- T-22（中間xlsx ライタ）との接続 -----------------------------------------
