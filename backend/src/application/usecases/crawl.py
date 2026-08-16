@@ -63,19 +63,21 @@ API へ差し替えたときに片方だけ残る）。
     result = await worker.crawl("2026-W31")
 """
 
-import calendar
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Literal
 
 from adapter.llm import AIClient
 from adapter.llm.ai_client import AICallMeta
 from adapter.storage.artifact_store import ArtifactStore
 from config import Settings, get_settings
 from enterprise.entities.config import IntelligenceConfig
+
+# period の表記検証と実日付への展開は `enterprise.entities.period` が唯一の定義
+# （T-21 で共通の値オブジェクトへ寄せた。T-16 / T-18 備考の申し送り）。
+from enterprise.entities.period import Period, PeriodError, parse_period
 from enterprise.entities.raw_article import (
     RAW_ARTICLES_ADAPTER,
     PrimaryOrSecondary,
@@ -83,12 +85,6 @@ from enterprise.entities.raw_article import (
     RegionHint,
     dump_raw_articles,
 )
-
-# ⚠️ period 表記の正規表現は T-18（`enterprise.services.dedup`）のものを使い回す。
-# 同じ表記の検証が `adapter.storage.artifact_store` にもあるが、3つ目の写しを
-# 作らないため。共通の period 値オブジェクトを作るのは T-21 の担当
-# （TASKS.md T-18 備考の申し送り）。
-from enterprise.services.dedup import MONTHLY_PERIOD_RE, WEEKLY_PERIOD_RE
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +120,10 @@ NO_JUDGEMENT_NOTICE = (
 )
 NO_DEDUP_NOTICE = "重複しうる記事もこの段階では落とさず全て残す（次段で統合判定する）。"
 
-type PeriodKind = Literal["weekly", "monthly"]
+# period の値オブジェクトは `enterprise.entities.period.Period`（T-21 で共通化）。
+# 以前ここにあった `PeriodSpan` はその別名で、既存の呼び出し（`span.kind` /
+# `span.start` / `span.end` / `span.is_weekly`）はそのまま動く。
+PeriodSpan = Period
 
 
 class CrawlError(Exception):
@@ -150,29 +149,6 @@ class SearchNotPerformedError(CrawlError):
     def __init__(self, message: str, *, requested: int | None) -> None:
         self.requested = requested
         super().__init__(message)
-
-
-@dataclass(frozen=True, slots=True)
-class PeriodSpan:
-    """対象期間の実体（週次なら ISO 週の月〜日、月次なら1日〜末日）。
-
-    プロンプトへ**日付の範囲を明示する**ために持つ。`2026-W31` だけでは
-    どの日から どの日までかが読み手（モデル）に委ねられ、実行のたびに解釈が
-    揺れうる（§14 再現性）。
-
-    Attributes:
-        kind: 週次か月次か（重心の指示が分かれる。§13.2）
-        start: 期間の初日
-        end: 期間の最終日（両端を含む）
-    """
-
-    kind: PeriodKind
-    start: date
-    end: date
-
-    @property
-    def is_weekly(self) -> bool:
-        return self.kind == "weekly"
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,38 +311,24 @@ def ensure_search_was_performed(meta: AICallMeta, *, period: str) -> None:
         )
 
 
-def period_span(period: str) -> PeriodSpan:
+def period_span(period: str) -> Period:
     """`2026-W31` / `2026-07` を実際の日付範囲に開く。
 
     ⚠️ **実在しない期間はここで落とす**（`2026-13` / 53週を持たない年の `-W53`）。
     表記が合っているだけの period をそのままプロンプトへ載せると、モデルが適当な
     期間を補って収集してしまう。
 
+    判定そのものは `enterprise.entities.period.parse_period()`（唯一の定義）で、
+    ここは失敗を **crawl の例外へ包み直す**だけ（呼び出し元が工程で判別できる形を
+    保つ）。
+
     Raises:
         CrawlError: 週次・月次のどちらの表記でもない、または実在しない期間
     """
-    if matched := WEEKLY_PERIOD_RE.match(period):
-        year, week = int(matched.group(1)), int(matched.group(2))
-        try:
-            monday = date.fromisocalendar(year, week, 1)
-        except ValueError as exc:  # 53週を持たない年の `-W53` など
-            raise CrawlError(f"実在しない週です: {period!r}") from exc
-        return PeriodSpan(
-            kind="weekly", start=monday, end=date.fromisocalendar(year, week, 7)
-        )
-
-    if matched := MONTHLY_PERIOD_RE.match(period):
-        year, month = int(matched.group(1)), int(matched.group(2))
-        if not 1 <= month <= 12:
-            raise CrawlError(f"実在しない月です: {period!r}")
-        last_day = calendar.monthrange(year, month)[1]
-        return PeriodSpan(
-            kind="monthly", start=date(year, month, 1), end=date(year, month, last_day)
-        )
-
-    raise CrawlError(
-        f"period は 'YYYY-Www'（週次）または 'YYYY-MM'（月次）が必要です: {period!r}"
-    )
+    try:
+        return parse_period(period)
+    except PeriodError as exc:
+        raise CrawlError(str(exc)) from exc
 
 
 def build_crawl_prompt(

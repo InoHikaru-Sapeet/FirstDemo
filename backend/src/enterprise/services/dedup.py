@@ -43,11 +43,9 @@
 同じ実行の中で先に採用した記事との突き合わせは `deduplicate()` が別に行う。
 """
 
-import re
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
 from difflib import SequenceMatcher
 from enum import StrEnum
 from typing import Any
@@ -56,6 +54,13 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict
 
 from enterprise.entities.config import DedupThresholds
+from enterprise.entities.period import (
+    PeriodError,
+    monthly_period_of,
+    monthly_periods_including,
+    preceding_weekly_periods,
+    weekly_period_of,
+)
 from enterprise.entities.raw_article import RawArticle
 from enterprise.entities.report_columns import (
     EXCLUSION_LOG_COLUMNS,
@@ -72,12 +77,36 @@ MERGE_SUFFIX = "(統合)"
 CATEGORY_MERGED = "統合"
 REASON_DUPLICATE = "重複・転載記事"
 
-# period の表記（仕様書 §4・§8）。
-# ⚠️ 同じ表記の検証が `adapter.storage.artifact_store` にもあるが、**enterprise 層は
-# adapter に依存できない**（依存の向き）ため、ここでは自前で持つ。共通の period 値
-# オブジェクトを作るなら T-21 の担当（→ TASKS.md T-18 備考）。
-WEEKLY_PERIOD_RE = re.compile(r"^(\d{4})-W(\d{2})$")
-MONTHLY_PERIOD_RE = re.compile(r"^(\d{4})-(\d{2})$")
+# period の表記・実日付への展開・週/月の割り出しは `enterprise.entities.period` が
+# 唯一の定義（T-21 で3箇所にあった写しを寄せた）。`weekly_period_of` /
+# `monthly_period_of` は履歴を組み立てる側（T-21 / T-22）がここから使う流れなので
+# 再輸出する（`__all__` に載せているので import は未使用ではない）。
+__all__ = [
+    "CATEGORY_MERGED",
+    "MERGE_SUFFIX",
+    "REASON_DUPLICATE",
+    "DedupError",
+    "DedupHistory",
+    "DedupResult",
+    "DuplicateRecord",
+    "DuplicateVerdict",
+    "KnownArticle",
+    "KnownOrigin",
+    "MatchedBy",
+    "Representative",
+    "deduplicate",
+    "detect_duplicate",
+    "duplicate_log_entry",
+    "duplicate_log_row",
+    "merged_source_text",
+    "monthly_period_of",
+    "monthly_periods_in_scope",
+    "normalize_title",
+    "normalize_url",
+    "title_similarity",
+    "weekly_period_of",
+    "weekly_periods_in_scope",
+]
 
 
 class DedupError(Exception):
@@ -178,21 +207,6 @@ def title_similarity(left: str, right: str) -> float:
 # --- 参照範囲（仕様書 §11.1）------------------------------------------------
 
 
-def weekly_period_of(day: date) -> str:
-    """日付が属する週次 period（`YYYY-Www`）。ISO 週（月曜始まり）。
-
-    除外ログの行は `収集日` しか持たない（6列。§2.2.2）ので、履歴へ積むときに
-    どの週の情報かを決めるのに使う。
-    """
-    iso = day.isocalendar()
-    return f"{iso.year:04d}-W{iso.week:02d}"
-
-
-def monthly_period_of(day: date) -> str:
-    """日付が属する月次 period（`YYYY-MM`）。"""
-    return f"{day.year:04d}-{day.month:02d}"
-
-
 def weekly_periods_in_scope(period: str, lookback_weeks: int) -> list[str]:
     """週次の参照範囲（§11.1「直近 `lookback_weeks` 週」）。
 
@@ -209,30 +223,21 @@ def weekly_periods_in_scope(period: str, lookback_weeks: int) -> list[str]:
     Raises:
         DedupError: period が週次の表記でない、または実在しない週の場合
     """
-    if lookback_weeks < 0:
-        raise DedupError(f"lookback_weeks が負です: {lookback_weeks}")
-    matched = WEEKLY_PERIOD_RE.match(period)
-    if not matched:
-        raise DedupError(f"週次 period は 'YYYY-Www' 形式が必要です: {period!r}")
-
-    year, week = int(matched.group(1)), int(matched.group(2))
     try:
-        monday = date.fromisocalendar(year, week, 1)
-    except ValueError as exc:  # 53週を持たない年の `-W53` など
-        raise DedupError(f"実在しない週です: {period!r}") from exc
-
-    return [
-        weekly_period_of(monday - timedelta(weeks=back))
-        for back in range(1, lookback_weeks + 1)
-    ]
+        return preceding_weekly_periods(period, lookback_weeks)
+    except PeriodError as exc:
+        # 層をまたいで例外型を漏らさない（呼び出し側は工程で失敗を判別する）。
+        raise DedupError(str(exc)) from exc
 
 
 def monthly_periods_in_scope(period: str, lookback_months: int) -> list[str]:
     """月次の参照範囲（§11.1「当月＋直近数ヶ月」）。
 
-    ⚠️ **「直近数ヶ月」の月数は仕様書にも設計書にも数字が無く、config にも
-    しきい値が無い。** ここで決め打ちすると「config に無いしきい値」が生まれるため、
-    `lookback_months` を必ず呼び出し側から受け取る（→ TASKS.md T-18 備考の要確認）。
+    ⚠️ **「直近数ヶ月」の月数は仕様書にも設計書にも数字が無い。** ここで決め打ち
+    すると「config に無いしきい値」が生まれるため、`lookback_months` は必ず
+    呼び出し側から受け取る。2026-08-16 の決定2 で config に
+    `tunable_thresholds.dedup.monthly_lookback_months`（既定3）が入ったので、
+    **T-21 はその値を渡す**（この層は渡された値に従うだけ、という関係は変えない）。
 
     §11.1 は月次だけ **当月を含む**（当月の cases と対応する週次記事を見る）。
     ただし当月の cases は当該実行の出力そのものなので、**再実行時に自分の出力を
@@ -249,21 +254,10 @@ def monthly_periods_in_scope(period: str, lookback_months: int) -> list[str]:
     Raises:
         DedupError: period が月次の表記でない場合
     """
-    if lookback_months < 0:
-        raise DedupError(f"lookback_months が負です: {lookback_months}")
-    matched = MONTHLY_PERIOD_RE.match(period)
-    if not matched:
-        raise DedupError(f"月次 period は 'YYYY-MM' 形式が必要です: {period!r}")
-
-    year, month = int(matched.group(1)), int(matched.group(2))
-    if not 1 <= month <= 12:
-        raise DedupError(f"実在しない月です: {period!r}")
-
-    periods = []
-    for back in range(lookback_months + 1):
-        total = year * 12 + (month - 1) - back
-        periods.append(f"{total // 12:04d}-{total % 12 + 1:02d}")
-    return periods
+    try:
+        return monthly_periods_including(period, lookback_months)
+    except PeriodError as exc:
+        raise DedupError(str(exc)) from exc
 
 
 # --- 履歴 -------------------------------------------------------------------

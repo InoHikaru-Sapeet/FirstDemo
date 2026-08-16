@@ -1,0 +1,603 @@
+"""filter オーケストレーション（設計書 §6.1 ／ 仕様書 §13.3 ／ T-21）。
+
+`raw_articles_{period}.json`（T-16 の出力）を入力に、除外・重複統合・分類採点・
+採否・§12 検証を通し、**中間xlsx へ書ける形の行**（週次22列 / 月次8列）と
+**除外ログ行**（6列）と `validation_{period}.json` を作る。
+
+**xlsx を書くのは T-22。** この層は「何を書くか」までを決め、ファイルとして書くのは
+`validation_{period}.json` だけ（T-20 申し送り③。シリアライズは T-06、置き場は T-02）。
+
+---
+
+**⚠️ 手順の順序（2026-08-16 の決定1。§6.1 の擬似コードとの差分）**
+
+    1. 分類・10タグ・6軸採点 ＋ 除外判定に要る事実の申告（AI 1往復・T-19）
+    2. 除外判定（T-17）              → 除外なら除外ログへ
+    3. 重複・統合判定（T-18）        → 重複なら代表へ統合し除外ログへ
+    4. 採否（§13.3-5）               → 低スコア／信頼性不足なら除外ログへ
+       （合計・区分決定・`low_priority` の降格は T-19 の `decide_adoption()`）
+    5. フォーマットチェック（T-20）  → error なら本編から外し除外ログへ
+    6. 合計スコア降順で整列 → 週次22列 ／ 月次は事例へ昇格して8列
+
+§6.1 は除外判定（1）を分類（3）より前に置いているが、**除外判定に要る事実
+（当たったルール番号・鮮度）を作れるのは AI だけ**で、その AI 呼び出しが分類・採点
+そのもの。選別用の呼び出しを別に立てると1記事あたりの往復が2倍になる（1回数分。
+T-15 備考）ので、同じ1往復にまとめた（→ TASKS.md T-21 備考・T-38）。
+
+この順序では `default_exclude` の例外採用（§5.4）の判定に **確定した合計点**を
+渡せる（§6.2 の `estimate_total(a)`＝合計見込みの代用が要らない）。
+
+---
+
+**config は実行開始時に固定する**（§6.3・§14）
+
+`FilterWorker` は渡された config を**深いコピーで抱え込む**。実行中に admin が
+保存しても、また呼び出し元が同じオブジェクトを書き換えても、判断基準は動かない
+（`test_the_config_is_pinned_for_the_whole_run`）。revision は結果に載せて監査へ
+渡す（§9.2 の「`prompt_version` と `config.revision` を記録」の後者）。
+
+---
+
+**⚠️ 既知の割り切り**
+
+- **`validation_{period}.json` の行番号は「整列後・不備除外前」の並びで数える**
+  （T-20 の `check_articles()` の仕様）。フォーマット不備で外れた記事があると、
+  実際の週次シートの行とその件数ぶんずれる。ずれを消すには検証レポート側に記事の
+  識別子が要るが、§2.4 のスキーマは `{row, field, reason}` しか持たない（→ T-38）。
+- **除外ログは週次ブックの `除外ログ` シートに一本化する**（§8.1 が除外ログを
+  週次ブックの構成として定義しているため）。月次実行で出た除外もここへ積む。
+  分けると重複判定（§11.1）の参照元が2箇所に割れる。
+- **月次の参照範囲から対象月そのものを外す**。§11.1 は当月を含むと書いているが、
+  当月の cases は**この実行の出力**なので、含めると再実行で全件が「既出」になる
+  （§14 冪等性。T-18 が呼び出し側の責任としている点）。
+"""
+
+import logging
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Protocol
+
+from adapter.llm import AIClient
+from adapter.llm.ai_client import AICallMeta
+from adapter.storage.artifact_store import ArtifactStore
+from application.usecases.classify_and_score import (
+    AnalyzedArticle,
+    ArticleClassifier,
+    ClassifiedArticle,
+    total_score,
+)
+from application.usecases.monthly_cases import (
+    CaseCandidate,
+    MonthlyCase,
+    MonthlyCaseBuilder,
+    select_case_candidates,
+)
+from enterprise.entities.config import IntelligenceConfig
+from enterprise.entities.period import Period, PeriodError, parse_period
+from enterprise.entities.raw_article import RawArticle, parse_raw_articles
+from enterprise.entities.report_columns import (
+    EXCLUSION_LOG_COLUMNS,
+    WEEKLY_ARTICLE_COLUMNS,
+    format_row,
+)
+from enterprise.entities.validation_report import (
+    ValidationReport,
+    dump_validation_report,
+)
+from enterprise.services.dedup import (
+    DedupHistory,
+    deduplicate,
+    duplicate_log_entry,
+    monthly_periods_in_scope,
+    weekly_periods_in_scope,
+)
+from enterprise.services.exclusion import (
+    ExclusionVerdict,
+    ScreenedArticle,
+    evaluate_exclusions,
+    exclusion_log_entry,
+)
+from enterprise.services.format_check import (
+    check_articles,
+    format_error_log_entry,
+)
+
+logger = logging.getLogger(__name__)
+
+# 採否（§13.3-5）で外した記事の `除外区分`。§2.2.2 は除外区分を「等」と書いて
+# 閉じていないので enum にしない（`完全除外` 等は T-17、`統合` は T-18、
+# `フォーマット不備` は T-20 がそれぞれ持つ）。
+CATEGORY_LOW_SCORE = "低スコア/信頼性不足"
+
+# 採否の理由（除外ログの `除外理由`）。**しきい値と実測値の両方を残す**
+# （config を変えたときに「どの基準で落ちたか」が後から読めるように）。
+REASON_TOTAL_BELOW = "合計スコア {total} < {threshold}"
+REASON_RELIABILITY_BELOW = "信頼性点 {score} < {threshold}"
+REASON_SEPARATOR = " / "
+
+# 信頼性の軸ID（§13.3-5 の「信頼性点」）。config の `scoring_axes[].id`。
+RELIABILITY_AXIS_ID = "reliability"
+
+
+class FilterError(Exception):
+    """フィルタに使えない入力（period 表記の誤り・入力ファイルが無い等）。
+
+    ⚠️ **AI 呼び出しの失敗はこれに包まない。** `AIClientError` とその
+    サブクラス（T-15）が原因ごとに分かれており、ジョブの再実行判断に使うため
+    そのまま呼び出し元へ通す。
+    """
+
+
+class RawArticlesNotFoundError(FilterError):
+    """`raw_articles_{period}.json` が無い（crawl が未実行）。"""
+
+
+class HistoryReader(Protocol):
+    """既出記事（過去週のシート＋除外ログ）を読む口（§11.1 の参照範囲）。
+
+    実体は中間xlsx のリーダ（T-22）。**この層は xlsx の構造を知らない**
+    （enterprise 層が読み書きの形を持たないのと同じ理由で、差し替え口にしてある）。
+    """
+
+    def read_history(self, periods: Sequence[str]) -> DedupHistory:
+        """指定 period の既出記事を、**新しい period から順**に返す。
+
+        順序がそのまま代表の優先順になる（設計書 §6.3。T-18 申し送り②）。
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class FilterResult:
+    """filter の結果（T-22 が xlsx へ、T-26 が監査ログへ使う）。
+
+    Attributes:
+        period: 対象期間
+        config_revision: 実行中に固定していた config の revision（§9.2）
+        articles: 週次22列の行（**合計スコア降順**・§12 を通ったものだけ）
+        cases: 月次8列の行（`No` 昇順＝章グルーピング順）。週次実行では空
+        exclusion_log: 除外ログ6列の行（発生順）
+        validation: `validation_{period}.json` の中身
+        validation_path: 実際に書き出した先
+        classified: `articles` と同じ並びの分類結果（監査・T-24 の手がかり）
+        monthly_cases: `cases` の組み立て前の形（章・段落を持つ）
+        ai_calls: 行った AI 呼び出しのメタ（記事1件につき1回＋月次の事例ぶん）
+    """
+
+    period: Period
+    config_revision: int
+    articles: list[dict[str, Any]]
+    cases: list[dict[str, Any]]
+    exclusion_log: list[dict[str, Any]]
+    validation: ValidationReport
+    validation_path: Path
+    classified: list[ClassifiedArticle] = field(default_factory=list)
+    monthly_cases: list[MonthlyCase] = field(default_factory=list)
+    ai_calls: tuple[AICallMeta, ...] = ()
+
+    @property
+    def article_count(self) -> int:
+        return len(self.articles)
+
+    @property
+    def excluded_count(self) -> int:
+        return len(self.exclusion_log)
+
+    def exclusion_log_rows(self) -> list[list[str | int | None]]:
+        """除外ログを xlsx の列順（6列）に並べる（T-22 のライタへ渡す形）。"""
+        return [
+            format_row(EXCLUSION_LOG_COLUMNS, entry) for entry in self.exclusion_log
+        ]
+
+    def article_rows(self) -> list[list[str | int | None]]:
+        """週次22列を xlsx の列順に並べる（T-22 のライタへ渡す形）。"""
+        return [format_row(WEEKLY_ARTICLE_COLUMNS, record) for record in self.articles]
+
+
+@dataclass(frozen=True, slots=True)
+class _Kept:
+    """除外を通り抜けた記事1件（重複判定の前）。"""
+
+    analyzed: AnalyzedArticle
+    verdict: ExclusionVerdict
+
+
+class FilterWorker:
+    """1つの period を通しでフィルタする（設計書 §6.1 の手順）。
+
+    組み立て方（T-26 のジョブから使う想定）:
+
+        worker = FilterWorker(
+            client=get_ai_client(),
+            store=ArtifactStore.from_settings(),
+            config=await repo.get_pinned(revision),   # ← 実行開始時に固定
+            history_reader=reader,                    # ← 中間xlsx のリーダ（T-22）
+        )
+        result = await worker.run("2026-W31")
+    """
+
+    def __init__(
+        self,
+        *,
+        client: AIClient,
+        store: ArtifactStore,
+        config: IntelligenceConfig,
+        history_reader: HistoryReader | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """
+        Args:
+            client: AI クライアント（`adapter.llm.get_ai_client()`）。
+                ⚠️ web 検索は要らない（収集は済んでいる）
+            store: 成果物の置き場（T-02）
+            config: 実行開始時に固定参照している config。**深いコピーを取る**
+            history_reader: 既出記事を読む口。`None` なら履歴なしで動く
+                （初回実行。過去週との重複が検出できない旨を警告に出す）
+            timeout: 1回の AI 呼び出しの制限時間（秒）。`None` なら実装の既定
+                （`Settings.ai_timeout_seconds` = 10分）。⚠️ crawl 用の30分ではない
+        """
+        # ⚠️ 深いコピー。呼び出し元が同じオブジェクトを持ち回して書き換えても、
+        # 実行中に判断基準が変わらないようにする（§6.3・§14 の「固定参照」）。
+        self._config = config.model_copy(deep=True)
+        self._store = store
+        self._history_reader = history_reader
+        self._classifier = ArticleClassifier(
+            client=client, config=self._config, timeout=timeout
+        )
+        self._case_builder = MonthlyCaseBuilder(
+            client=client, config=self._config, timeout=timeout
+        )
+
+    @property
+    def config(self) -> IntelligenceConfig:
+        """固定参照している config（実行中に差し替わらない）。"""
+        return self._config
+
+    @property
+    def revision(self) -> int:
+        """固定参照している config の revision（§9.2 の記録対象）。"""
+        return self._config.meta.revision
+
+    async def run(self, period: str) -> FilterResult:
+        """1つの period をフィルタする（モジュール冒頭の手順）。
+
+        Args:
+            period: `2026-W31`（週次）または `2026-07`（月次）
+
+        Returns:
+            中間xlsx へ書ける行・除外ログ・検証レポート
+
+        Raises:
+            FilterError: period の表記が不正／実在しない期間
+            RawArticlesNotFoundError: crawl の出力が無い
+            DocumentParseError: `raw_articles_{period}.json` が壊れている
+            AIClientError: AI 呼び出しの失敗（原因ごとのサブクラス。握り潰さない）
+        """
+        parsed = self._parse(period)
+        articles = self._load_articles(parsed)
+        history = self._load_history(parsed)
+
+        logger.info(
+            "filter started (period=%s, revision=%d, articles=%d, history=%d)",
+            parsed.text,
+            self.revision,
+            len(articles),
+            len(history),
+        )
+
+        exclusion_log: list[dict[str, Any]] = []
+        metas: list[AICallMeta] = []
+
+        # 1〜2) 分類・採点＋事実申告（AI 1往復）→ 除外判定
+        kept: list[_Kept] = []
+        for article in articles:
+            analyzed = await self._classifier.analyze(article)
+            metas.append(analyzed.meta)
+            screened = screened_article(analyzed, self._config)
+            verdict = evaluate_exclusions(screened, self._config)
+            if verdict.is_excluded:
+                exclusion_log.append(exclusion_log_entry(screened, verdict))
+                continue
+            kept.append(_Kept(analyzed=analyzed, verdict=verdict))
+
+        # 3) 重複・統合判定
+        dedup_result = deduplicate(
+            [item.analyzed.article for item in kept],
+            history,
+            self._config.tunable_thresholds.dedup,
+            period=parsed.text,
+        )
+        for duplicate in dedup_result.duplicates:
+            exclusion_log.append(duplicate_log_entry(duplicate))
+
+        # ⚠️ 代表 → 分析結果の対応は**オブジェクトの同一性**で引く。同じ内容の
+        # 記事が2件あっても（crawl は重複を落とさない）取り違えない。
+        analyzed_by_article = {id(item.analyzed.article): item for item in kept}
+
+        # 4) 採否（合計・区分決定・降格は T-19 の `decide_adoption()` 経由）
+        pairs: list[tuple[dict[str, Any], ClassifiedArticle]] = []
+        for representative in dedup_result.representatives:
+            item = analyzed_by_article[id(representative.article)]
+            classified = self._classifier.finalize(item.analyzed, verdict=item.verdict)
+            if reason := rejection_reason(classified, self._config):
+                exclusion_log.append(
+                    low_score_log_entry(representative.article, reason)
+                )
+                continue
+            pairs.append(
+                (
+                    weekly_record(classified, source_text=representative.source_text),
+                    classified,
+                )
+            )
+
+        # 6) 合計スコア降順で整列（§8.1）。**5) の前に行う**のは、§12 の行番号が
+        # 週次シートの行位置だから（T-20 申し送り①「降順に整列した後の一覧を渡す」）。
+        # 同点は入力順＝収集順のまま（安定ソート）。
+        pairs.sort(key=lambda pair: -int(pair[0]["合計スコア"]))
+
+        # 5) フォーマットチェック（error のある記事は本編から外す）
+        check = check_articles([record for record, _ in pairs], self._config)
+        rejected_ids = {id(rejected.record) for rejected in check.rejected}
+        for rejected in check.rejected:
+            exclusion_log.append(format_error_log_entry(rejected.record))
+
+        accepted = [pair for pair in pairs if id(pair[0]) not in rejected_ids]
+        records = [record for record, _ in accepted]
+        classified_articles = [classified for _, classified in accepted]
+
+        cases = await self._build_cases(records, classified_articles, parsed)
+        metas.extend(self._case_builder.ai_calls)
+
+        validation_path = self._write_validation(check.report, parsed)
+
+        logger.info(
+            "filter finished (period=%s, adopted=%d, cases=%d, excluded=%d, ok=%s)",
+            parsed.text,
+            len(records),
+            len(cases),
+            len(exclusion_log),
+            check.report.ok,
+        )
+        return FilterResult(
+            period=parsed,
+            config_revision=self.revision,
+            articles=records,
+            cases=[case.to_row() for case in cases],
+            exclusion_log=exclusion_log,
+            validation=check.report,
+            validation_path=validation_path,
+            classified=classified_articles,
+            monthly_cases=cases,
+            ai_calls=tuple(metas),
+        )
+
+    # --- 内部 -------------------------------------------------------------
+
+    def _parse(self, period: str) -> Period:
+        try:
+            return parse_period(period)
+        except PeriodError as exc:
+            raise FilterError(str(exc)) from exc
+
+    def _load_articles(self, period: Period) -> list[RawArticle]:
+        """crawl の出力を読む（**この層は直接 `open()` しない**。T-02 経由）。"""
+        path = self._store.raw_articles_path(period.text)
+        if not self._store.exists(path):
+            raise RawArticlesNotFoundError(
+                f"{path} がありません。先に crawl（T-16）を実行してください"
+            )
+        return parse_raw_articles(self._store.read_text(path))
+
+    def _load_history(self, period: Period) -> DedupHistory:
+        """§11.1 の参照範囲ぶんの既出記事を読む。
+
+        ⚠️ **対象 period は含めない。** 週次は `weekly_periods_in_scope()` が
+        そもそも手前しか返さない。月次は §11.1 が当月を含むと書いているが、当月の
+        cases はこの実行の出力なので外す（モジュール冒頭「既知の割り切り」）。
+        """
+        dedup = self._config.tunable_thresholds.dedup
+        if period.is_weekly:
+            periods = weekly_periods_in_scope(period.text, dedup.lookback_weeks)
+        else:
+            periods = [
+                candidate
+                for candidate in monthly_periods_in_scope(
+                    period.text, dedup.monthly_lookback_months
+                )
+                if candidate != period.text
+            ]
+
+        if self._history_reader is None:
+            logger.warning(
+                "履歴リーダが無いので過去期間との重複を検出しません"
+                "（period=%s / 参照予定 %d 期間）",
+                period.text,
+                len(periods),
+            )
+            return DedupHistory()
+        return self._history_reader.read_history(periods)
+
+    async def _build_cases(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        classified: Sequence[ClassifiedArticle],
+        period: Period,
+    ) -> list[MonthlyCase]:
+        """月次だけ、採用記事を事例へ昇格させる（§13.3 出力1）。"""
+        if not period.is_monthly:
+            return []
+
+        indexes = select_case_candidates(
+            records, [item.article for item in classified], self._config
+        )
+        candidates = [
+            CaseCandidate(
+                article=classified[index].article,
+                total_score=classified[index].total_score,
+                summary=classified[index].summary,
+            )
+            for index in indexes
+        ]
+        if not candidates:
+            logger.warning(
+                "事例へ昇格できる記事がありません（period=%s。"
+                "情報カテゴリ=%s かつ 合計スコア >= %d が条件）",
+                period.text,
+                "enterprise_ai_case",
+                self._config.tunable_thresholds.monthly.min_score_for_case,
+            )
+        return await self._case_builder.build(candidates, period=period.text)
+
+    def _write_validation(self, report: ValidationReport, period: Period) -> Path:
+        """`validation_{period}.json` を書く（T-20 申し送り③）。"""
+        path = self._store.validation_path(period.text)
+        self._store.write_text(path, dump_validation_report(report))
+        return path
+
+
+# --- 各層のつなぎ（この決定が T-21 の担当）----------------------------------
+
+
+def screened_article(
+    analyzed: AnalyzedArticle, config: IntelligenceConfig
+) -> ScreenedArticle:
+    """分類・採点の結果を除外判定（T-17）の入力へ写す。
+
+    ⚠️ **`estimated_total_score` に渡すのは確定した合計点**（6軸の和）。§6.2 の
+    擬似コードは `estimate_total(a)`＝合計見込みだが、決定1 の順序では採点が
+    先に終わっているので見積もる理由が無い。§5.4 の条件（「総合スコアがしきい値超
+    なら例外採用」）にはこちらの方が忠実（→ TASKS.md T-21 備考）。
+
+    ⚠️ **顧客関連度も確定したタグの値**（`enums.customer_relevance` のいずれか）。
+
+    Args:
+        analyzed: `ArticleClassifier.analyze()` の結果
+        config: 実行時 config（軸の集合の正）
+
+    Returns:
+        事実だけを載せた `ScreenedArticle`
+    """
+    return ScreenedArticle(
+        article=analyzed.article,
+        matched_rule_nos=analyzed.facts.matched_rule_nos,
+        customer_relevance=analyzed.tags.get("customer_relevance"),  # ty: ignore[invalid-argument-type]
+        estimated_total_score=total_score(analyzed.scores, config),
+        is_stale=analyzed.facts.is_stale,
+    )
+
+
+def weekly_record(
+    classified: ClassifiedArticle, *, source_text: str | None = None
+) -> dict[str, Any]:
+    """週次22列の1行を組み立てる（列名 → 値）。
+
+    ⚠️ **列名と順序をここに書かない。** どの列がどの軸・どのタグかは T-07 の
+    `axis_id` / `tag_id` が持っている（`WEEKLY_ARTICLE_COLUMNS`）。列が増減しても
+    この関数は追随する。
+
+    Args:
+        classified: 分類・採点・採用区分まで決まった1件
+        source_text: `ソース` 欄。統合した代表なら `A / B(統合)`（§11.3・T-18）。
+            `None` なら記事の媒体名そのまま
+
+    Returns:
+        列名 → 値（multi タグは `list`。xlsx への変換は T-07 の `format_cell`）
+
+    Raises:
+        FilterError: 列に対応する値が無い場合（列定義と組み立ての食い違い）
+    """
+    article = classified.article
+    fixed: dict[str, Any] = {
+        "収集日": article.collected_at,
+        "タイトル": article.title,
+        "一言要約": classified.summary,
+        "合計スコア": classified.total_score,
+        "ソース": article.source if source_text is None else source_text,
+        "URL": article.url,
+    }
+
+    record: dict[str, Any] = {}
+    for column in WEEKLY_ARTICLE_COLUMNS:
+        if column.axis_id is not None:
+            record[column.name] = classified.scores[column.axis_id]
+        elif column.tag_id is not None:
+            value = classified.tags[column.tag_id]
+            record[column.name] = list(value) if isinstance(value, tuple) else value
+        elif column.name in fixed:
+            record[column.name] = fixed[column.name]
+        else:  # pragma: no cover - 列が増えたら実装を足すべき、という合図
+            raise FilterError(
+                f"週次22列の {column.name!r} に入れる値が決まっていません。"
+                "T-07 の列定義を変えたら、この組み立ても合わせてください"
+            )
+    return record
+
+
+def rejection_reason(
+    classified: ClassifiedArticle, config: IntelligenceConfig
+) -> str | None:
+    """採否（§13.3-5）で外すなら、その理由を返す。
+
+    条件は2つで、**どちらか一方でも下回れば除外**:
+
+    - 合計スコア < `min_total_score_to_publish`
+    - 信頼性点 < `min_reliability_score_to_publish`
+
+    境界は `≥` が採用（しきい値ちょうどは載せる）。T-17 の例外採用・T-19 の区分
+    決定と同じ向きに揃えてある。
+
+    Returns:
+        除外理由。採用するなら `None`
+    """
+    thresholds = config.tunable_thresholds
+    reasons: list[str] = []
+
+    total = classified.total_score
+    if total < thresholds.min_total_score_to_publish:
+        reasons.append(
+            REASON_TOTAL_BELOW.format(
+                total=total, threshold=thresholds.min_total_score_to_publish
+            )
+        )
+
+    reliability = classified.scores.get(RELIABILITY_AXIS_ID)
+    if (
+        reliability is not None
+        and reliability < thresholds.min_reliability_score_to_publish
+    ):
+        reasons.append(
+            REASON_RELIABILITY_BELOW.format(
+                score=reliability,
+                threshold=thresholds.min_reliability_score_to_publish,
+            )
+        )
+
+    return REASON_SEPARATOR.join(reasons) if reasons else None
+
+
+def low_score_log_entry(article: RawArticle, reason: str) -> dict[str, Any]:
+    """採否で外した記事の除外ログ1行（§13.3-5 `除外区分=低スコア/信頼性不足`）。"""
+    return {
+        "収集日": article.collected_at,
+        "タイトル": article.title,
+        "URL": article.url,
+        "ソース": article.source,
+        "除外区分": CATEGORY_LOW_SCORE,
+        "除外理由": reason,
+    }
+
+
+__all__ = [
+    "CATEGORY_LOW_SCORE",
+    "FilterError",
+    "FilterResult",
+    "FilterWorker",
+    "HistoryReader",
+    "RawArticlesNotFoundError",
+    "low_score_log_entry",
+    "rejection_reason",
+    "screened_article",
+    "weekly_record",
+]

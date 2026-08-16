@@ -15,7 +15,6 @@
 """
 
 import os
-import re
 import shutil
 import tempfile
 from collections.abc import Iterator
@@ -24,6 +23,7 @@ from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
 
 from config import Settings, get_settings
+from enterprise.entities import period as period_entity
 
 ENCODING = "utf-8"
 
@@ -36,8 +36,12 @@ WEEKLY_REPORT_FILENAME = "weekly_ai_intelligence_report.xlsx"
 MONTHLY_CASES_FILENAME = "monthly_ai_leading_cases.xlsx"
 
 # 週次は ISO 週（2026-W31）、月次は年月（2026-07）。仕様書 §4・§8。
-WEEKLY_PERIOD_RE = re.compile(r"^\d{4}-W\d{2}$")
-MONTHLY_PERIOD_RE = re.compile(r"^\d{4}-\d{2}$")
+# ⚠️ **表記の定義は `enterprise.entities.period` が持つ**（T-21 で写しを寄せた）。
+# ここが見るのは「ファイル名へ埋めてよい文字列か」までで、**実在する期間かどうかは
+# 見ない**（`2026-W53` はパスとしては正当。実日付へ開けるかを確かめるのは
+# `parse_period()` を呼ぶ crawl / filter の責務）。
+WEEKLY_PERIOD_RE = period_entity.WEEKLY_PERIOD_RE
+MONTHLY_PERIOD_RE = period_entity.MONTHLY_PERIOD_RE
 
 
 class ArtifactStoreError(Exception):

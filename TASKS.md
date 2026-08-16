@@ -806,10 +806,10 @@ flowchart TD
   - **ミューテーションで確認済み**：非空チェックを外すと97件、軸点の上限を静的な `value_range` から取ると1件、合計スコアの一致検査を外すと6件、enum 検査を外すと10件、multi 列を要素ごとに見ないと13件、error のある記事を本編に残すと2件、要約の warning を止めると2件、`bool` を整数として通すと1件、空リストを非空とみなすと15件、行番号をヘッダ行から数えると2件が落ちる。
   - **申し送り（T-21）**：①`check_articles()` の入力は **週次22列の行**（`build_row()` の出力）で、月次8列は §12 の対象外（§12.2 は「週次フィルタリング完了時に自動実行」）。②`rejected` の各件は `format_error_log_row()` で除外ログ行になる（T-17・T-18 の除外ログ行と同じ6列）。③`report` を `dump_validation_report()` して `validation_{period}.json` へ書く。
 
-#### - [ ] T-21: filter オーケストレーション
+#### - [x] T-21: filter オーケストレーション
 - **対応**: §6.1（→ 仕様書 §13.3）
 - **依存**: T-17, T-18, T-19, T-20
-- **成果物**: `backend/src/application/usecases/filter.py`, 統合テスト
+- **成果物**: `backend/src/application/usecases/filter.py`, `backend/src/application/usecases/monthly_cases.py`, `backend/src/enterprise/entities/period.py`, `backend/tests/application/test_filter.py`, `backend/tests/application/test_monthly_cases.py`, `backend/tests/enterprise/test_period.py`
 - **完了条件**: §6.1 の擬似コードどおりの順序で実行：
   1. 除外判定（T-17）→ 除外なら除外ログへ
   2. 重複・統合判定（T-18）→ 重複なら代表へ統合し除外ログへ
@@ -829,6 +829,20 @@ flowchart TD
     - **降格（`low_priority`）は T-19 の `decide_adoption()` 経由**で、T-21 は二重実装しない（§6.1 の 4 の順序＝合算 → 区分決定 → 降格 は `decide_adoption()` が1本で持つ）。
     - ⚠️ **設計書 §6.1・仕様書 §13.3 との差分。→ T-38 の改訂対象**。
   - **決定2：月次の重複遡り月数 = 3**（`tunable_thresholds.dedup.monthly_lookback_months`）。T-18 が保留していた「config に無いしきい値」を config へ足して解決した（要確認事項 #11）。⚠️ **§5.2 の確定 JSON へのキー追加＝仕様差分。→ T-38 の改訂対象**。
+- **備考**（実績 2026-08-16）: 入口は `FilterWorker(client=..., store=..., config=..., history_reader=...).run(period)` の1本。**xlsx は書かない**（T-22 の責務）。この層がファイルとして書くのは `validation_{period}.json` だけ（T-20 申し送り③）。
+  - **`config@revision` の固定は「深いコピーを抱え込む」形にした。** 参照を持つだけだと、呼び出し元が同じオブジェクトを持ち回して書き換えたときに実行中の基準が動く。`test_the_config_is_pinned_for_the_whole_run` が「実行開始後にしきい値を100へ上げても採否が変わらない」ことを固定している。revision は `FilterResult.config_revision` に載せて監査へ渡す（§9.2）。
+  - **降格は T-19 の `decide_adoption()` 経由**（`analyze()` → 除外判定 → `finalize()`）。この層に降格幅もしきい値の比較も**写していない**。
+  - **代表 → 分析結果の対応はオブジェクトの同一性（`id()`）で引く。** crawl は重複を落とさないので、内容が完全に同じ記事が2件並びうる（T-06）。タイトルや URL を鍵にすると取り違える。
+  - ⚠️ **月次の参照範囲から対象月を外した**（§11.1 は「当月＋直近数ヶ月」）。当月の cases は**この実行の出力**なので、含めると再実行で全件が「既出」になって全滅する（§14 冪等性。T-18 が呼び出し側の責任としていた点）。
+  - ⚠️ **除外ログは週次ブックの `除外ログ` シートへ一本化する**（月次実行で出た除外もそこへ積む）。§8.1 が除外ログを週次ブックの構成として定義しており、分けると重複判定（§11.1）の参照元が2箇所に割れるため。**仕様書に月次側の除外ログの規定が無い**ことによる判断（→ T-38 で確認）。
+  - ⚠️ **`validation_{period}.json` の行番号は「整列後・不備除外前」の並び**（T-20 の `check_articles()` の仕様）。フォーマット不備で外れた記事があると実シートの行と件数ぶんずれる。消すには検証レポートに記事の識別子が要るが §2.4 は `{row, field, reason}` しか持たない（→ T-38）。
+  - ⚠️ **§12 の error は、この経路では構造的に起きない**（合計はアプリが合算、タグは config の `Literal`、空文字はスキーマが弾く＝T-19）。そのため「フォーマット不備 → 本編から外して除外ログへ」の配線は、**検査そのものを差し替えて**テストしている（`test_a_format_error_drops_the_article_and_logs_it`）。起きないこと自体も別のテストで固定した。
+  - **月次の事例昇格は決定的**（`monthly_cases.py`）。「企業・組織の具体的活用事例」は config のカテゴリ **`enterprise_ai_case`**（「企業AI活用事例／国内外企業によるAI導入・活用・業務改善・社内展開の具体事例」）そのものなので、**AI に「これは事例か」を聞かない**（聞くと config と無関係な2つ目の定義が生まれる）。条件は カテゴリ ＋ `min_score_for_case` ＋ `target_case_count` の3つで、すべて config 由来。
+  - **解説の3段落は「3つの別フィールド」で受け取る**（`\n\n` 区切りで書けと文章で頼まない）。段落数を構造で固定し、連結は T-07 の `PARAGRAPH_SEPARATOR` が行う。`出典`（`媒体（日付）`）・`掲載月`・`URL`・`No`・`第N章` はアプリが埋める（収集済みの事実と通し番号を AI に書かせない）。
+  - **章立ては「テーマ名 → 章」の対応表で受け取る。** 事例ごとに `chapter_theme` を書かせ、テーマが `chapter_count_hint` **を超えたときだけ**まとめ直しの1往復を足す。⚠️ **割り当てから漏れたテーマは自分自身を章名にして残す**（分割の網羅性を AI の出力に依存させると事例そのものが消えるため）。漏れは `logger.warning` に出す。テーマ名は `Literal` なので言い換えられない。
+  - **AI の往復は「記事1件につき1回」＋（月次のみ）「事例1件につき1回 ＋ 章の束ね直し最大1回」。** 週次は事例の往復をしない（`test_a_weekly_run_has_no_cases`）。
+  - **共通の period 値オブジェクトを作った**（`enterprise/entities/period.py`。T-16・T-18 の申し送り）。`adapter.storage.artifact_store` / `enterprise.services.dedup` / `application.usecases.crawl` に散っていた表記の正規表現と実日付への展開を1箇所へ寄せ、各層は自分の例外型（`ArtifactStoreError` / `DedupError` / `CrawlError`）へ包み直すだけにした。`test_every_layer_shares_one_definition` が写しの再発を検出する。
+  - テスト69件（filter 31 / monthly_cases 18 / period 20）。`make test` 全体 1524件。
 
 #### - [ ] T-22: 中間xlsx ライタ
 - **対応**: §2.2（→ 仕様書 §8）／設計判断B
