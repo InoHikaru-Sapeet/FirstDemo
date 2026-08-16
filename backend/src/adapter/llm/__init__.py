@@ -40,8 +40,26 @@ from adapter.llm.ai_client import (
 from adapter.llm.claude_cli_client import ClaudeCliClient
 from config import get_settings
 
-WEB_SEARCH_CLI_ARGS = ("--allowedTools", "WebSearch")
-"""web 検索を有効にする CLI 引数（2026-08-14 実測）。
+ALLOWED_TOOLS_FLAG = "--allowedTools"
+"""ツールの許可を渡す CLI のフラグ。**値は空白区切りで複数取る**（可変長引数）。"""
+
+WEB_SEARCH_TOOLS = ("WebSearch", "WebFetch")
+"""web 検索が要る呼び出し（crawl / PROMPT-1）へ許可するツール。**この2つだけ。**
+
+⚠️ **`WebFetch` も要る（2026-08-16 実測）。** `WebSearch` だけを許可して
+`make run-weekly` を通したところ、封筒の `permission_denials` に **`WebFetch` の拒否が
+3件**入って `AIResponseError` で落ちた。PROMPT-1（仕様書 §13.2）は記事本文からの
+「2〜4文の客観要約」を求めており、モデルは検索結果の**本文を読むため**に `WebFetch`
+を使う。検索の実施だけを許可しても要約の材料が取れない。
+
+⚠️ **増やさないこと。** ここに並べたツールがそのまま crawl の子プロセス（`claude`）へ
+渡る。`Bash` やファイル書き込み系を足すと、収集の一往復に**実行系の経路が生える**。
+収集に要るのは「検索する」「読む」の2つだけで、それ以外は許可しない
+（`test_only_the_two_web_tools_are_allowed`）。
+"""
+
+WEB_SEARCH_CLI_ARGS = (ALLOWED_TOOLS_FLAG, *WEB_SEARCH_TOOLS)
+"""web 検索を有効にする CLI 引数（2026-08-14 実測 ／ 2026-08-16 に `WebFetch` 追加）。
 
 ⚠️ **これは CLI 固有の書き方なので、この層より上へ出さない。** 上位（T-16 crawl）が
 言えるのは `get_ai_client(web_search=True)` までで、`--allowedTools` を知らない。
@@ -50,6 +68,8 @@ WEB_SEARCH_CLI_ARGS = ("--allowedTools", "WebSearch")
 `subtype="success"` のまま `permission_denials` に拒否記録が入る（`ClaudeCliClient`
 冒頭の実測）。CLI 実装はそれを `AIResponseError` にし、crawl は別途
 `modelUsage[].webSearchRequests` が 0 でないことも確かめる（二重の歯止め）。
+**この2つの歯止めは `WebFetch` を足しても変えていない**（許可の付け忘れも、
+許可はあるが検索しなかった場合も、これまでどおり落ちる）。
 """
 
 
@@ -66,7 +86,9 @@ def get_ai_client(*, web_search: bool = False) -> AIClient:
     Args:
         web_search: web 検索を使う呼び出しか（crawl / PROMPT-1 は前提にしている）。
             **「何ができる必要があるか」だけを言う引数**で、実現方法（CLI の
-            `--allowedTools` / API のサーバーツール定義）はこの層が持つ。
+            `--allowedTools "WebSearch" "WebFetch"` / API のサーバーツール定義）は
+            この層が持つ。**検索して本文を読むところまでが「web 検索を使う」**
+            （`WEB_SEARCH_TOOLS` の ⚠️ を参照）。
             API 実装へ差し替えるときは、ここで web 検索ツールを有効にし、
             `AICallMeta.web_search_requests` を埋めること
     """
@@ -76,6 +98,7 @@ def get_ai_client(*, web_search: bool = False) -> AIClient:
 
 
 __all__ = [
+    "ALLOWED_TOOLS_FLAG",
     "AICallMeta",
     "AIClient",
     "AIClientError",
@@ -87,6 +110,7 @@ __all__ = [
     "AITimeoutError",
     "AIUnavailableError",
     "WEB_SEARCH_CLI_ARGS",
+    "WEB_SEARCH_TOOLS",
     "ClaudeCliClient",
     "OutputSchema",
     "describe_models",

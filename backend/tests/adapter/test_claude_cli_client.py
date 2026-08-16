@@ -106,6 +106,39 @@ MEASURED_DENIAL_ENVELOPE: dict[str, Any] = {
     },
 }
 
+# 2026-08-16 の実測（初の通し実行 `make run-weekly PERIOD=2026-W33` / claude 2.1.232）:
+# **`--allowedTools "WebSearch"` だけを渡した crawl** は、約735秒走ったあと
+# `permission_denials` に **`WebFetch` の拒否3件**を載せて返り、この検査で落ちた。
+# ⚠️ **検索そのものは実施されている**（`webSearchRequests` は非0）ので、
+# T-16 の「検索したか」の検査だけでは素通りする。**捉えたのはこちらの検査だけ。**
+# → 対処は許可へ `WebFetch` を足すこと（`adapter.llm.WEB_SEARCH_TOOLS`）。
+# （ID・回数・費用の細部は記録から起こしたもので、判定には使っていない。
+#  判定に使うのは「`permission_denials` が空でないこと」だけ。）
+MEASURED_WEBFETCH_DENIAL_ENVELOPE: dict[str, Any] = {
+    **MEASURED_DENIAL_ENVELOPE,
+    "duration_ms": 735412,
+    "result": (
+        "WebFetch ツールの使用権限が無いため、記事本文を読んで要約することが"
+        "できませんでした。"
+    ),
+    "permission_denials": [
+        {
+            "tool_name": "WebFetch",
+            "tool_use_id": f"toolu_01WebFetchDenied{index}",
+            "tool_input": {"url": f"https://example.com/news/{index}"},
+        }
+        for index in (1, 2, 3)
+    ],
+    "modelUsage": {
+        "claude-opus-5": {
+            "inputTokens": 24180,
+            "outputTokens": 1420,
+            "costUSD": 0.61,
+            "webSearchRequests": 7,
+        }
+    },
+}
+
 # 2026-08-14 の追加実測: 「JSON のみ出力」と指示しても、```json のコードフェンスで
 # 包まれ、**後ろに説明文と `Sources:` が付く**ことがある（実測で発生）。
 # 1回の呼び出しが数分〜30分かかるので、この逸脱はリトライを消費せず吸収する。
@@ -385,14 +418,22 @@ async def test_the_api_key_is_not_handed_to_the_cli(
 
 
 async def test_extra_args_are_appended_without_touching_the_protocol() -> None:
-    """T-16 が web 検索の許可等を足すための逃げ道（プロトコルには出さない）。"""
+    """T-16 が web 検索の許可等を足すための逃げ道（プロトコルには出さない）。
+
+    ⚠️ **`--allowedTools` は値を空白区切りで複数取る（可変長）ので、`extra_args` は
+    argv の末尾に置く。** 後ろに別のフラグを足すと、その値まで許可の一覧として
+    読まれる。
+    """
     client, runner, _ = build_client(
-        [stdout_of(envelope())], extra_args=("--allowedTools", "WebSearch")
+        [stdout_of(envelope())],
+        extra_args=("--allowedTools", "WebSearch", "WebFetch"),
     )
 
     await client.complete(prompt="q", output_schema=Answer)
 
-    assert runner.calls[0].argv[-2:] == ["--allowedTools", "WebSearch"]
+    argv = runner.calls[0].argv
+    assert argv[-3:] == ["--allowedTools", "WebSearch", "WebFetch"]
+    assert argv.index("--allowedTools") == len(argv) - 3
 
 
 async def test_the_default_timeout_is_used_when_the_caller_does_not_pass_one() -> None:
@@ -653,6 +694,26 @@ async def test_the_measured_permission_denial_is_not_treated_as_success() -> Non
 
     assert "WebSearch" in " ".join(caught.value.reasons)
     assert "WebSearch" in str(caught.value)
+    assert len(runner.calls) == 1  # 許可の付け忘れはリトライで直らない
+
+
+async def test_the_measured_web_fetch_denial_is_not_treated_as_success() -> None:
+    """⚠️ **実測（2026-08-16 の通し実行）**: `WebSearch` だけを許可した crawl は
+    `WebFetch` の拒否3件で落ちた。**検索は実施されている**（`webSearchRequests=7`）
+    ので、T-16 の「検索したか」の検査は素通りする＝**この検査だけが捉えた**。
+
+    許可へ `WebFetch` を足したあとも、**この経路は残す**（許可の付け忘れ・CLI 側の
+    ツール名変更は、また同じ形で現れる）。
+    """
+    client, runner, _ = build_client(
+        [stdout_of(json.dumps(MEASURED_WEBFETCH_DENIAL_ENVELOPE, ensure_ascii=False))]
+    )
+
+    with pytest.raises(AIResponseError) as caught:
+        await client.complete(prompt="q", output_schema=Answer)
+
+    assert "WebFetch" in " ".join(caught.value.reasons)
+    assert "permission_denials=3件" in " ".join(caught.value.reasons)
     assert len(runner.calls) == 1  # 許可の付け忘れはリトライで直らない
 
 

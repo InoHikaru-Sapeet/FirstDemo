@@ -62,6 +62,21 @@ outputs 相当（`output_config.format`）があるかは未確認なので、JS
 **web 検索は `--allowedTools "WebSearch"` で有効化できる**（→ `extra_args`。
 プロトコルには出さない）。**実施されたかどうかは封筒トップの `server_tool_use`
 ではなく `modelUsage[].webSearchRequests` に出る。**
+
+---
+
+**追加の実測（2026-08-16。初の通し実行 `make run-weekly PERIOD=2026-W33`）**
+
+⚠️ **`WebSearch` の許可だけでは足りない。`WebFetch` も要る。** 約735秒走ったあと、
+封筒の `permission_denials` に **`WebFetch` の拒否が3件**入って落ちた（この検査が
+捉えた。`webSearchRequests` は非0なので T-16 の検索実施の検査は素通りしていた）。
+PROMPT-1（仕様書 §13.2）は**記事本文からの2〜4文の客観要約**を求めており、モデルは
+検索結果の本文を読むために `WebFetch` を使う。→ 許可は `adapter.llm.WEB_SEARCH_TOOLS`
+（`WebSearch` / `WebFetch` の2つだけ）。
+
+⚠️ **`--allowedTools` は値を空白区切りで複数取る（可変長引数）。** そのため
+`extra_args` は **argv の末尾**に置く（`_argv()`）。後ろに別のフラグを足すと、その値
+まで許可の一覧として読まれる。
 """
 
 import asyncio
@@ -492,6 +507,10 @@ class ClaudeCliClient:
         ⚠️ **プロンプトは argv で渡している**（実測がこの形）。OS の引数長上限
         （macOS は合計 1MB 程度）があるため、プロンプトが際限なく育つ場合は
         標準入力経由へ変える必要がある。**その形は未実測なので今は採らない。**
+
+        ⚠️ **`extra_args` は末尾のまま動かさない。** `--allowedTools` は値を空白区切りで
+        複数取る（可変長引数）ので、後ろに別のフラグを足すとその値まで許可の一覧として
+        読まれる。
         """
         return [
             self._command,

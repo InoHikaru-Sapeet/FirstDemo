@@ -11,7 +11,9 @@ import pytest
 from pydantic import BaseModel, TypeAdapter
 
 from adapter.llm import (
+    ALLOWED_TOOLS_FLAG,
     WEB_SEARCH_CLI_ARGS,
+    WEB_SEARCH_TOOLS,
     AICallMeta,
     AIClient,
     AIClientError,
@@ -64,7 +66,45 @@ async def test_the_web_search_capability_is_resolved_by_this_layer() -> None:
 
     await client.complete(prompt="q", output_schema=Answer)
 
-    assert runner.calls[0].argv[-2:] == ["--allowedTools", "WebSearch"]
+    assert runner.calls[0].argv[-3:] == ["--allowedTools", "WebSearch", "WebFetch"]
+
+
+def test_reading_the_article_body_is_part_of_the_web_search_capability() -> None:
+    """⚠️ **実測（2026-08-16 / `make run-weekly`）**: `WebSearch` だけを許可すると
+    `permission_denials` に **`WebFetch` の拒否**が入って落ちた。PROMPT-1 は本文からの
+    2〜4文の客観要約（§13.2）を求めるので、モデルは本文を読むために `WebFetch` を使う。
+    """
+    assert WEB_SEARCH_TOOLS == ("WebSearch", "WebFetch")
+    assert WEB_SEARCH_CLI_ARGS == ("--allowedTools", "WebSearch", "WebFetch")
+
+
+def test_only_the_two_web_tools_are_allowed() -> None:
+    """⚠️ **crawl の子プロセスへ実行系のツールを渡さない**（混入経路を作らない）。
+
+    許可した名前はそのまま `claude` へ渡る。収集に要るのは「検索する」「読む」の
+    2つだけで、`Bash` やファイル書き込みは要らない。**足すときはここが落ちる。**
+    """
+    assert len(WEB_SEARCH_TOOLS) == 2
+    assert WEB_SEARCH_CLI_ARGS.count(ALLOWED_TOOLS_FLAG) == 1
+
+    forbidden = ("Bash", "Write", "Edit", "NotebookEdit", "Read", "Task", "WebSearch(")
+    for name in forbidden:
+        assert not any(tool.startswith(name) for tool in WEB_SEARCH_TOOLS)
+
+
+async def test_the_crawl_client_gets_no_permission_bypass_flag() -> None:
+    """⚠️ 許可は**列挙**で渡す。「全部許可」のフラグへ逃げない
+    （逃げると、拒否が起きない＝`permission_denials` の歯止めごと無効になる）。"""
+    runner = FakeRunner(outcomes=[stdout_of(envelope())])
+    client = ClaudeCliClient.from_settings(
+        Settings(_env_file=None), extra_args=WEB_SEARCH_CLI_ARGS, runner=runner
+    )
+
+    await client.complete(prompt="q", output_schema=Answer)
+
+    argv = runner.calls[0].argv
+    assert "--dangerously-skip-permissions" not in argv
+    assert "--permission-mode" not in argv
 
 
 async def test_without_the_capability_no_tool_is_allowed() -> None:

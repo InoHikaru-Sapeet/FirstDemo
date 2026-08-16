@@ -219,7 +219,15 @@ CLI か API かを知らない。構造化出力は「JSON Schema を添えて J
 後続の説明文が付いて返ることがある）。
 
 web 検索が要る呼び出し（crawl / PROMPT-1）は `get_ai_client(web_search=True)` を使う。
-**上位が言えるのはここまで**で、CLI 固有の `--allowedTools` はこの層が付ける。
+**上位が言えるのはここまで**で、CLI 固有の `--allowedTools` はこの層が付ける
+（`--allowedTools "WebSearch" "WebFetch"`）。
+
+> ⚠️ **許可するのは `WebSearch` と `WebFetch` の2つだけ。** `WebFetch` が要るのは
+> **2026-08-16 の実測**：`WebSearch` だけを許可した crawl は `permission_denials` に
+> `WebFetch` の拒否を載せて落ちた（PROMPT-1 は**記事本文からの要約**を求めるので、
+> モデルは本文を読むために `WebFetch` を使う）。**`Bash` やファイル書き込みは
+> 足さない** — 許可した名前はそのまま `claude` の子プロセスへ渡るので、
+> 収集の一往復に実行系の経路を生やさない（`WEB_SEARCH_TOOLS` のテストが固定）。
 
 > ⚠️ **許可を渡さないと「成功に見える失敗」になる。** 封筒は `is_error=false` /
 > `subtype="success"` のまま `permission_denials` に拒否記録が入り、`result` は
