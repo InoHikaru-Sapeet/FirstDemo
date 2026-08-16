@@ -1,8 +1,8 @@
 """分類・10タグ付与・6軸採点（設計書 §6.1-3/4・§6.4 ／ 仕様書 §13.3-3/4 ／ T-19）。
 
-フィルタ段の3〜4番目。除外判定（T-17）と重複統合（T-18）を通り抜けた記事1件に
-ついて、**LLM に聞くのは「分類・9タグ・6軸の点数・一言要約」だけ**を聞き、
-**合計スコアと `adoption_class` はアプリ側が config から決定的に決める**。
+フィルタ段の中核。記事1件について **LLM に聞くのは「分類・9タグ・6軸の点数・
+一言要約・除外判定に要る事実」だけ**で、**合計スコアと `adoption_class` は
+アプリ側が config から決定的に決める**。
 
 ---
 
@@ -14,10 +14,34 @@
 | 10必須タグのうち9つの付与 | 重複・統合判定（T-18 `detect_duplicate`） |
 | 6軸の点数（各軸 0〜weight） | §12 フォーマットチェック（T-20 `check_article`） |
 | 一言要約（2〜3文） | 採否（`min_total_score_to_publish` 等・T-21） |
-| 合算・`adoption_class` 決定・降格の適用 | 行の組み立て・整列（T-21 / T-22） |
+| **除外判定に要る事実の申告**（下記） | 行の組み立て・整列（T-21 / T-22） |
+| 合算・`adoption_class` 決定・降格の適用 | |
 
 ⚠️ **右列のロジックをこのモジュールへ写さないこと。** 同じ判断が2箇所にあると、
 片方を直したときにもう片方が黙って古い基準で動く。
+
+---
+
+**除外判定に要る事実の申告**（2026-08-16 の決定1＝要確認事項 #10）
+
+T-17（`evaluate_exclusions`）は「どの除外ルールに当たるか」「内容の鮮度が低いか」を
+**上流からの事実申告**として受け取る（自然文のルールに当たるかの判定には意味理解が
+要り、決定的には書けないため）。その申告を作れるのは AI だけで、**AI 呼び出しは
+この層の1本しかない**ので、ここで同時に返させる（選別用の呼び出しを別に立てると
+1記事あたりの往復が2倍になる。1回数分。T-15 備考）。
+
+⚠️ **申告できるのは次の2つだけ。**
+
+1. `matched_exclusion_rule_nos`: 該当しうる除外ルールの `no`（空可）
+2. `content_is_stale`: 内容の鮮度が低いか
+
+**`severity` の適用・除外するかどうか・採否は返させない**（口を作らない）。
+プロンプトにも13ルールの `no` / `name` / `examples` **だけ**を載せ、
+**`severity` と `enabled` は見せない**（分岐そのものを AI に渡さないため。
+有効/無効の適用とルール順の評価は T-17 の `enabled_rules_in_order()` が行う）。
+
+⚠️ **この結果、処理順序が §6.1 の擬似コードと変わる**（除外判定が分類の**後**に
+来る）。理由と差分は TASKS.md T-21 備考、ドキュメント改訂は T-38。
 
 ---
 
@@ -104,7 +128,8 @@ from enterprise.services.format_check import (
 # （実行時の版は `AICallMeta.prompt_version` として監査／validation メタに載る。
 # 設計書 §9.2 の再現性要件）。
 PROMPT_NAME = "PROMPT-2/classify_and_score"
-PROMPT_VERSION = "0.1.0"
+PROMPT_VERSION = "0.2.0"
+"""⚠️ 0.1.0 → 0.2.0: 除外判定に要る事実の申告（`facts`）を足した（決定1）。"""
 
 # 出力スキーマのフィールド名。タグID と軸ID は3つ重なる（`reliability` /
 # `customer_relevance` / `practical_usability` はタグでも軸でもある）ため、
@@ -112,6 +137,14 @@ PROMPT_VERSION = "0.1.0"
 TAGS_FIELD = "tags"
 SCORES_FIELD = "scores"
 SUMMARY_FIELD = "summary"
+FACTS_FIELD = "facts"
+
+# `facts` の中身（除外判定＝T-17 の入力になる**事実だけ**）。
+# ⚠️ **ここに severity・除外可否・採否のフィールドを足さないこと**（足した瞬間に
+# LLM が T-17 の分岐を上書きできる。`exclusion.ScreenedArticle` の docstring と同じ
+# 境界。`test_the_facts_carry_no_verdict` が固定している）。
+MATCHED_RULES_FIELD = "matched_exclusion_rule_nos"
+IS_STALE_FIELD = "content_is_stale"
 
 # LLM に決めさせないタグ（合計スコアから決定的に決まる。§6.4）。
 # **出力スキーマからも外す**ので、LLM は申告する口を持たない。
@@ -133,10 +166,21 @@ CONFIG_AUTHORITY_INSTRUCTION = (
 
 # プロンプトに明記する「この依頼の対象外」。決定的 Python 側（T-17 / T-18 / T-20 /
 # T-21）が持つ判断を LLM に聞かないことを、プロンプト本文でも宣言しておく。
+# ⚠️ **「除外ルールに当たるか」という事実の申告は対象内**（決定1）。対象外なのは
+# その先（除外するのか・低優先なのか・載せるのか）の**決定**。
 OUT_OF_SCOPE_NOTICE = (
-    "除外するかどうかの判定・重複や統合の判定・§12 のフォーマット検証・"
+    "除外するかどうかの決定・重複や統合の判定・§12 のフォーマット検証・"
     "掲載可否（しきい値の適用）は、いずれもアプリ側が config から決定的に行う。"
     "これらを判断・出力しないこと。"
+)
+
+# 除外ルールの提示（決定1）。⚠️ **`severity` と `enabled` は載せない**
+# （分岐そのものを渡さないため。理由はモジュール docstring）。
+EXCLUSION_FACTS_INSTRUCTION = (
+    "次の除外ルールのうち、記事が**当てはまりうる**ものの番号をすべて挙げること"
+    "（当てはまるものが無ければ空配列）。"
+    "各ルールが除外・低優先・統合のどれになるかは示していない。"
+    "**それはアプリ側が config の severity から決めるので、推測しないこと。**"
 )
 
 
@@ -170,6 +214,49 @@ class AdoptionDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class ArticleFacts:
+    """除外判定（T-17）に渡す**事実**の申告（決定1。モジュール docstring 参照）。
+
+    ⚠️ **「除外すべき」「採用すべき」に相当する項目を足さないこと。**
+    ここに足したものは、そのまま LLM が severity 分岐を上書きする経路になる。
+
+    Attributes:
+        matched_rule_nos: 該当しうる除外ルールの `no`（空可）。値域の検査は
+            `ScreenedArticle`（T-17）と `evaluate_exclusions()` が行う
+        is_stale: 内容の鮮度が低いか（`low_priority_or_exclude` の分岐・§5.4）。
+            **日付からは判定できない**のが仕様の前提（T-17 モジュール docstring）
+    """
+
+    matched_rule_nos: frozenset[int] = frozenset()
+    is_stale: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyzedArticle:
+    """AI 呼び出し1往復の結果（採否・降格を**まだ当てていない**状態）。
+
+    決定1 の順序（分類・採点＋事実申告 → 除外判定 → …）では、除外判定の入力に
+    なる事実がこの呼び出しで初めて手に入る。したがって **`adoption_class` を
+    決めるのはこの後**（`ExclusionVerdict` が出てから `finalize()`）。
+
+    Attributes:
+        article: 元の記事（crawl の出力）
+        tags: タグID → 値。**`adoption_class` 以外の9タグ**。multi は `tuple`
+        scores: 軸ID → 点数（6軸すべて）
+        summary: 一言要約（2〜3文）
+        facts: 除外判定に渡す事実の申告
+        meta: AI 呼び出しの出自（使用モデル・`prompt_version`。T-30 / 監査ログ）
+    """
+
+    article: RawArticle
+    tags: Mapping[RequiredTagId, str | tuple[str, ...]]
+    scores: Mapping[str, int]
+    summary: str
+    facts: ArticleFacts
+    meta: AICallMeta
+
+
+@dataclass(frozen=True, slots=True)
 class ClassifiedArticle:
     """1記事の分類・タグ・軸点・要約（T-21 が中間xlsx の行へ組み立てる素）。
 
@@ -180,6 +267,7 @@ class ClassifiedArticle:
         scores: 軸ID → 点数（6軸すべて）
         adoption: 合算・区分決定・降格の記録
         summary: 一言要約（2〜3文）
+        facts: 除外判定へ渡した事実の申告（監査で「なぜ当たったか」が読める）
         meta: AI 呼び出しの出自（使用モデル・`prompt_version`。T-30 / 監査ログ）
     """
 
@@ -189,6 +277,7 @@ class ClassifiedArticle:
     adoption: AdoptionDecision
     summary: str
     meta: AICallMeta
+    facts: ArticleFacts = ArticleFacts()
 
     @property
     def total_score(self) -> int:
@@ -238,26 +327,22 @@ class ArticleClassifier:
         """送るプロンプト（`AIClient` が出力形式の指示を後ろへ足す）。"""
         return build_classification_prompt(article, self._config)
 
-    async def classify(
-        self, article: RawArticle, *, verdict: ExclusionVerdict | None = None
-    ) -> ClassifiedArticle:
-        """記事1件を分類・採点し、採用区分まで決めて返す（§6.1 の 3〜4）。
+    async def analyze(self, article: RawArticle) -> AnalyzedArticle:
+        """記事1件を AI へ1往復し、分類・9タグ・6軸点・要約・事実を受け取る。
+
+        **採否も降格もまだ当てない**（除外判定に要る事実がこの呼び出しの結果
+        だから。決定1 の順序）。区分を決めるのは `finalize()`。
 
         Args:
-            article: 除外・重複を通り抜けた記事
-            verdict: 除外判定（T-17）の結果。`low_priority` なら採点後に
-                `adoption_class` を1段下げる（§5.4）。`None` なら降格しない
+            article: 収集した記事1件
 
         Returns:
-            10必須タグ・6軸点・合計・採用区分・要約が揃った1件
+            AI が返した内容（検証済み）
 
         Raises:
-            ClassificationError: 除外済みの記事を渡された場合（本編と除外ログの
-                両方に載る事故を防ぐ）、または config から候補を作れない場合
+            ClassificationError: config から候補を作れない場合
             AIClientError: AI 呼び出しの失敗（原因ごとのサブクラス。握り潰さない）
         """
-        _ensure_not_excluded(verdict)
-
         result = await self._client.complete(
             prompt=self.build_prompt(article),
             output_schema=self._output_schema,
@@ -266,22 +351,76 @@ class ArticleClassifier:
         )
 
         payload = result.value.model_dump()
-        tags = dict(_tag_values(payload[TAGS_FIELD], self._config))
-        scores: dict[str, int] = {
-            str(axis.id): int(payload[SCORES_FIELD][axis.id])
-            for axis in self._config.scoring_axes
-        }
-        adoption = decide_adoption(scores, self._config, verdict=verdict)
+        return AnalyzedArticle(
+            article=article,
+            tags=dict(_tag_values(payload[TAGS_FIELD], self._config)),
+            scores={
+                str(axis.id): int(payload[SCORES_FIELD][axis.id])
+                for axis in self._config.scoring_axes
+            },
+            summary=str(payload[SUMMARY_FIELD]).strip(),
+            facts=_article_facts(payload[FACTS_FIELD]),
+            meta=result.meta,
+        )
+
+    def finalize(
+        self, analyzed: AnalyzedArticle, *, verdict: ExclusionVerdict | None = None
+    ) -> ClassifiedArticle:
+        """合算 → 区分決定 →（`low_priority` なら降格）を当てる（§6.1 の 4）。
+
+        AI は呼ばない（決定的な計算だけ）。順序は `decide_adoption()` が1本で
+        持っているので、ここで組み替えられない。
+
+        Args:
+            analyzed: `analyze()` の結果
+            verdict: 除外判定（T-17）の結果。`low_priority` なら
+                `adoption_class` を1段下げる（§5.4）。`None` なら降格しない
+
+        Returns:
+            10必須タグ・6軸点・合計・採用区分・要約が揃った1件
+
+        Raises:
+            ClassificationError: 除外済みの判定を渡された場合（本編と除外ログの
+                両方に載る事故を防ぐ）、または軸が揃わない場合
+        """
+        adoption = decide_adoption(analyzed.scores, self._config, verdict=verdict)
+        tags = dict(analyzed.tags)
         tags[DERIVED_TAG_ID] = adoption.adoption_class
 
         return ClassifiedArticle(
-            article=article,
+            article=analyzed.article,
             tags=tags,
-            scores=scores,
+            scores=analyzed.scores,
             adoption=adoption,
-            summary=str(payload[SUMMARY_FIELD]).strip(),
-            meta=result.meta,
+            summary=analyzed.summary,
+            meta=analyzed.meta,
+            facts=analyzed.facts,
         )
+
+    async def classify(
+        self, article: RawArticle, *, verdict: ExclusionVerdict | None = None
+    ) -> ClassifiedArticle:
+        """`analyze()` → `finalize()` を続けて行う（判定が既にある場合の入口）。
+
+        ⚠️ **決定1 の順序では判定は AI の後に決まる**ので、パイプライン（T-21）は
+        `analyze()` と `finalize()` を別々に呼ぶ。この入口は「除外判定に影響が
+        無い／判定が既に手元にある」場合の短縮形。
+
+        Args:
+            article: 記事1件
+            verdict: 除外判定（T-17）の結果。`None` なら降格しない
+
+        Returns:
+            10必須タグ・6軸点・合計・採用区分・要約が揃った1件
+
+        Raises:
+            ClassificationError: 除外済みの記事を渡された場合、または config から
+                候補を作れない場合
+            AIClientError: AI 呼び出しの失敗（原因ごとのサブクラス。握り潰さない）
+        """
+        # ⚠️ AI を呼ぶ**前**に落とす（1回の呼び出しが数分かかる。無駄打ちしない）。
+        _ensure_not_excluded(verdict)
+        return self.finalize(await self.analyze(article), verdict=verdict)
 
 
 # --- 出力スキーマ（config から動的に生成）-----------------------------------
@@ -299,6 +438,8 @@ def build_classification_schema(config: IntelligenceConfig) -> type[BaseModel]:
     - multi タグ → 1件以上の配列（§12.1 の「必須タグが非空」を構造で担保）
     - `adoption_class` / 合計スコア → **フィールドを作らない**（§6.4 の決定は
       アプリ側。`extra="forbid"` なので勝手に足した出力はパースに失敗する）
+    - `facts` → 除外ルールの `no`（config に**実在する番号だけ**を `Literal` で
+      許す）と鮮度の真偽。**severity・除外可否・採否のフィールドは作らない**
 
     Args:
         config: 実行開始時に固定参照している config
@@ -332,12 +473,14 @@ def build_classification_schema(config: IntelligenceConfig) -> type[BaseModel]:
         "ClassificationTags", __config__=_STRICT_OUTPUT, **tag_fields
     )
     scores_model = create_model("AxisScores", __config__=_STRICT_OUTPUT, **score_fields)
+    facts_model = _facts_model(config)
     return create_model(  # ty: ignore[no-matching-overload]
         "ArticleClassification",
         __config__=_STRICT_OUTPUT,
         **{
             TAGS_FIELD: (tags_model, ...),
             SCORES_FIELD: (scores_model, ...),
+            FACTS_FIELD: (facts_model, ...),
             SUMMARY_FIELD: (
                 _NonEmptyText,
                 Field(
@@ -348,6 +491,67 @@ def build_classification_schema(config: IntelligenceConfig) -> type[BaseModel]:
                 ),
             ),
         },
+    )
+
+
+def _facts_model(config: IntelligenceConfig) -> type[BaseModel]:
+    """`facts`（除外判定に渡す事実）のスキーマ。
+
+    ⚠️ **候補は config の `exclusion_rules[].no` の実値**。`Literal` にすることで
+    「config に無いルール番号」を構造的に出せなくする（T-17 は未知の番号を
+    `ExclusionError` で落とすが、そこまで行かせない方がリトライで直せる）。
+
+    ⚠️ **`enabled=false` のルールも候補に残す。** 有効/無効は「当たったか」という
+    事実ではなく config の運用判断で、適用するのは T-17 の
+    `enabled_rules_in_order()`。候補から外すと、AI の申告が config のスイッチに
+    依存し始める（＝事実の申告でなくなる）。
+
+    Raises:
+        ClassificationError: 除外ルールが1件も無い config（T-04 が 13件固定なので
+            通常は起きない）
+    """
+    rule_nos = sorted({rule.no for rule in config.exclusion_rules})
+    if not rule_nos:
+        raise ClassificationError(
+            "config に除外ルールがありません。当たったルール番号を申告させられません"
+        )
+
+    return create_model(  # ty: ignore[no-matching-overload]
+        "ExclusionFacts",
+        __config__=_STRICT_OUTPUT,
+        **{
+            MATCHED_RULES_FIELD: (
+                # ⚠️ `list[Literal[...]]`。空配列（どれにも当たらない）は正当。
+                list[Literal[tuple(rule_nos)]],  # ty: ignore[invalid-type-form]
+                Field(
+                    default_factory=list,
+                    description=(
+                        "該当しうる除外ルールの番号。当てはまるものが無ければ空配列。"
+                        "除外するかどうかは判断しない（アプリ側が config の "
+                        "severity から決める）"
+                    ),
+                ),
+            ),
+            IS_STALE_FIELD: (
+                # `strict=True`: `"true"` / 1 を真と読み替えない（T-19 の軸点と同じ）。
+                Annotated[bool, Field(strict=True)],
+                Field(
+                    default=False,
+                    description=(
+                        "内容の鮮度が低いか（過去の発表の再掲・焼き直しで、"
+                        "日付が新しくても中身が古いものは true）"
+                    ),
+                ),
+            ),
+        },
+    )
+
+
+def _article_facts(payload: Mapping[str, Any]) -> ArticleFacts:
+    """`facts` の出力を `ArticleFacts` へ写す（重複した番号は畳む）。"""
+    return ArticleFacts(
+        matched_rule_nos=frozenset(int(no) for no in payload[MATCHED_RULES_FIELD]),
+        is_stale=bool(payload[IS_STALE_FIELD]),
     )
 
 
@@ -532,6 +736,15 @@ def build_classification_prompt(article: RawArticle, config: IntelligenceConfig)
         "■ 一言要約",
         f"- {SUMMARY_MIN_SENTENCES}〜{SUMMARY_MAX_SENTENCES}文の日本語で書く。",
         "- 記事に書かれている事実だけを使い、意見・推測を混ぜない。",
+        "",
+        "■ 除外ルールの当たり（事実の申告）",
+        f"- {EXCLUSION_FACTS_INSTRUCTION}",
+        *_exclusion_rule_lines(config),
+        "",
+        "■ 内容の鮮度",
+        "- 過去の発表の再掲・焼き直しで、**日付が新しくても中身が古い**ものは"
+        "鮮度が低い（true）とする。",
+        "- 判断は記事の内容で行う。日付だけを見て決めない。",
     ]
     return "\n".join(sections)
 
@@ -557,6 +770,19 @@ def _tag_lines(config: IntelligenceConfig) -> list[str]:
             f"- {tag.id}: {tag.label}（{cardinality}・{tag.purpose}）— {allowed}"
         )
     return lines
+
+
+def _exclusion_rule_lines(config: IntelligenceConfig) -> list[str]:
+    """13の除外ルールの提示（`no` 昇順・`name` と `examples` だけ）。
+
+    ⚠️ **`severity` と `enabled` を載せないこと。** 載せると「これは
+    full_exclude だから当たったことにしないでおこう」といった逆算の余地が生まれ、
+    事実の申告ではなくなる（決定1。モジュール docstring）。
+    """
+    return [
+        f"- {rule.no}: {rule.name} — 例: {rule.examples}"
+        for rule in sorted(config.exclusion_rules, key=lambda r: r.no)
+    ]
 
 
 def _axis_lines(config: IntelligenceConfig) -> list[str]:
@@ -657,12 +883,18 @@ def _ensure_not_excluded(verdict: ExclusionVerdict | None) -> None:
 
 __all__ = [
     "CONFIG_AUTHORITY_INSTRUCTION",
+    "EXCLUSION_FACTS_INSTRUCTION",
+    "FACTS_FIELD",
+    "IS_STALE_FIELD",
+    "MATCHED_RULES_FIELD",
     "PROMPT_NAME",
     "PROMPT_VERSION",
     "SUMMARY_MAX_SENTENCES",
     "SUMMARY_MIN_SENTENCES",
     "AdoptionDecision",
+    "AnalyzedArticle",
     "ArticleClassifier",
+    "ArticleFacts",
     "ClassificationError",
     "ClassifiedArticle",
     "build_classification_prompt",

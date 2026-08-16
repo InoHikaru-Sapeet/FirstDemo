@@ -12,6 +12,8 @@
 - **`adoption_class` は `adoption_class_score_map` から決定的に決まり**、
   `low_priority` の記事は**採点→区分決定→降格**の順（§6.1）で1段下がる
 - 除外判定・重複判定・フォーマットチェックの判断をこの層に持ち込まない
+- **除外判定に要る事実（当たったルール番号・鮮度）は申告させるが、その先
+  （除外か低優先か採用か）を返す口は作らない**（2026-08-16 の決定1）
 """
 
 import copy
@@ -33,6 +35,9 @@ from adapter.llm.ai_client import (
 )
 from application.usecases.classify_and_score import (
     CONFIG_AUTHORITY_INSTRUCTION,
+    FACTS_FIELD,
+    IS_STALE_FIELD,
+    MATCHED_RULES_FIELD,
     PROMPT_VERSION,
     SCORES_FIELD,
     SUMMARY_FIELD,
@@ -40,7 +45,9 @@ from application.usecases.classify_and_score import (
     SUMMARY_MIN_SENTENCES,
     TAGS_FIELD,
     AdoptionDecision,
+    AnalyzedArticle,
     ArticleClassifier,
+    ArticleFacts,
     ClassificationError,
     ClassifiedArticle,
     build_classification_prompt,
@@ -54,6 +61,7 @@ from enterprise.entities.config import (
     REQUIRED_TAG_IDS,
     AdoptionClass,
     IntelligenceConfig,
+    Severity,
 )
 from enterprise.entities.json_document import (
     DocumentParseError,
@@ -67,7 +75,9 @@ from enterprise.entities.report_columns import (
 from enterprise.services.exclusion import (
     ExclusionAction,
     ExclusionVerdict,
+    ScreenedArticle,
     downgrade_adoption_class,
+    evaluate_exclusions,
 )
 from enterprise.services.format_check import (
     MIN_SUMMARY_SENTENCES,
@@ -216,11 +226,19 @@ VALID_SCORES: dict[str, int] = {
 VALID_TOTAL = 83
 
 
+# 既定の事実申告＝「どの除外ルールにも当たらない・鮮度は低くない」（決定1）。
+VALID_FACTS: dict[str, Any] = {
+    MATCHED_RULES_FIELD: [],
+    IS_STALE_FIELD: False,
+}
+
+
 def payload(
     *,
     tags: dict[str, Any] | None = None,
     scores: dict[str, Any] | None = None,
     summary: str = TWO_SENTENCE_SUMMARY,
+    facts: dict[str, Any] | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
     """LLM が返す想定の出力（既定は §5.2 の config に沿った妥当な1件）。"""
@@ -228,6 +246,7 @@ def payload(
         TAGS_FIELD: {**VALID_TAGS, **(tags or {})},
         SCORES_FIELD: {**VALID_SCORES, **(scores or {})},
         SUMMARY_FIELD: summary,
+        FACTS_FIELD: {**VALID_FACTS, **(facts or {})},
         **extra,
     }
 
@@ -445,6 +464,97 @@ def test_the_summary_is_required_and_not_blank(config: IntelligenceConfig) -> No
         schema.model_validate(payload(summary="   "))
     with pytest.raises(ValidationError):
         schema.model_validate({TAGS_FIELD: VALID_TAGS, SCORES_FIELD: VALID_SCORES})
+
+
+# --- 事実の申告（2026-08-16 の決定1＝要確認事項 #10）------------------------
+
+
+def test_the_facts_carry_no_verdict(config: IntelligenceConfig) -> None:
+    """申告できるのは**ルール番号と鮮度だけ**。判断そのものは返させない。
+
+    ⚠️ このテストが落ちたときは「口を増やしてよいか」を先に考えること。
+    severity・除外可否・採否を返せるようにした時点で、T-17 の決定的な分岐は
+    LLM に上書きされる（`exclusion.ScreenedArticle` の docstring と同じ境界）。
+    """
+    schema = build_classification_schema(config)
+
+    assert set(properties_of(schema, FACTS_FIELD)) == {
+        MATCHED_RULES_FIELD,
+        IS_STALE_FIELD,
+    }
+
+    for claimed in (
+        {"severity": "full_exclude"},
+        {"should_exclude": True},
+        {"exclusion_category": "完全除外"},
+        {"adoption_class": "不採用"},
+    ):
+        with pytest.raises(ValidationError):
+            schema.model_validate(payload(facts=claimed))
+
+
+def test_only_rule_numbers_that_exist_in_the_config_can_be_declared(
+    config: IntelligenceConfig,
+) -> None:
+    """候補は `exclusion_rules[].no` の実値（`Literal`）。範囲外は構造的に出せない。"""
+    schema = build_classification_schema(config)
+
+    value = schema.model_validate(payload(facts={MATCHED_RULES_FIELD: [1, 13]}))
+    assert getattr(value, FACTS_FIELD).matched_exclusion_rule_nos == [1, 13]
+
+    for out_of_range in ([0], [14], ["1"]):
+        with pytest.raises(ValidationError):
+            schema.model_validate(payload(facts={MATCHED_RULES_FIELD: out_of_range}))
+
+
+def test_declaring_no_rule_is_valid(config: IntelligenceConfig) -> None:
+    """「どれにも当たらない」は空配列（§6.2 の `action=keep`）。"""
+    schema = build_classification_schema(config)
+
+    value = schema.model_validate(payload(facts={MATCHED_RULES_FIELD: []}))
+
+    assert getattr(value, FACTS_FIELD).matched_exclusion_rule_nos == []
+
+
+def test_the_stale_flag_does_not_accept_a_string(config: IntelligenceConfig) -> None:
+    """`strict=True`：`"true"` / 1 を真と読み替えない（軸点と同じ扱い）。"""
+    schema = build_classification_schema(config)
+
+    for claimed in ("true", 1, "はい"):
+        with pytest.raises(ValidationError):
+            schema.model_validate(payload(facts={IS_STALE_FIELD: claimed}))
+
+
+async def test_the_declared_facts_reach_the_result(
+    config: IntelligenceConfig, article: RawArticle
+) -> None:
+    """申告は `ArticleFacts` として返り、そのまま T-17 の入力になる。"""
+    subject, _ = classifier(
+        config,
+        [
+            payload(
+                facts={MATCHED_RULES_FIELD: [3, 1, 3], IS_STALE_FIELD: True},
+            )
+        ],
+    )
+
+    analyzed = await subject.analyze(article)
+
+    # 重複した番号は畳む（`frozenset`）。順序は判定に影響しない（T-17 は no 昇順）。
+    assert analyzed.facts == ArticleFacts(
+        matched_rule_nos=frozenset({1, 3}), is_stale=True
+    )
+
+
+async def test_the_facts_survive_into_the_classified_article(
+    config: IntelligenceConfig, article: RawArticle
+) -> None:
+    """監査で「なぜそのルールに当たったか」を追えるよう、結果にも残す。"""
+    subject, _ = classifier(config, [payload(facts={MATCHED_RULES_FIELD: [11]})])
+
+    classified = await subject.classify(article)
+
+    assert classified.facts.matched_rule_nos == frozenset({11})
 
 
 # --- 出力スキーマ：6軸の範囲を型で拘束 --------------------------------------
@@ -763,6 +873,87 @@ async def test_an_excluded_article_is_not_sent_to_the_ai(
     assert client.calls == []
 
 
+# --- analyze() / finalize()：決定1 の順序（AI → 除外判定 → 区分決定）--------
+
+
+async def test_analyze_does_not_decide_the_adoption_class(
+    config: IntelligenceConfig, article: RawArticle
+) -> None:
+    """AI 呼び出しの時点では判定がまだ無いので、区分も降格も当てない。
+
+    区分を先に決めてから降格を当て直すと、§5.4 の「採用はするが下げる」から
+    外れる（`decide_adoption()` が順序を1本で持つ理由）。
+    """
+    subject, _ = classifier(config)
+
+    analyzed = await subject.analyze(article)
+
+    assert "adoption_class" not in analyzed.tags
+    assert not hasattr(analyzed, "adoption")
+
+
+async def test_finalize_applies_the_downgrade_after_the_verdict(
+    config: IntelligenceConfig, article: RawArticle
+) -> None:
+    """事実の申告 → 除外判定 → 区分決定＋降格、が1周つながること（決定1の順序）。
+
+    ルール11（`low_priority`）に当たったと申告された記事は、区分を決めてから
+    1段下がる（§6.1 の 4）。
+    """
+    subject, client = classifier(config, [payload(facts={MATCHED_RULES_FIELD: [11]})])
+
+    analyzed = await subject.analyze(article)
+    screened = ScreenedArticle(
+        article=article, matched_rule_nos=analyzed.facts.matched_rule_nos
+    )
+    verdict = evaluate_exclusions(screened, config)
+    classified = subject.finalize(analyzed, verdict=verdict)
+
+    assert verdict.action is ExclusionAction.LOW_PRIORITY
+    assert classified.adoption.scored_class == "参考情報"
+    assert classified.adoption_class == "共有のみ"
+    # ⚠️ 降格のために AI をもう一度呼ばない（申告は最初の1往復に含まれている）。
+    assert len(client.calls) == 1
+
+
+async def test_finalize_does_not_call_the_ai(
+    config: IntelligenceConfig, article: RawArticle
+) -> None:
+    """`finalize()` は決定的な計算だけ（合算・区分決定・降格）。"""
+    subject, client = classifier(config)
+
+    analyzed = await subject.analyze(article)
+    subject.finalize(analyzed)
+    subject.finalize(analyzed)
+
+    assert len(client.calls) == 1
+
+
+def test_finalize_refuses_an_excluded_verdict(
+    config: IntelligenceConfig, article: RawArticle
+) -> None:
+    """除外された記事に採用区分を付けない（本編と除外ログの両方に載る事故）。"""
+    subject, _ = classifier(config)
+    analyzed = AnalyzedArticle(
+        article=article,
+        tags={},
+        scores=dict(VALID_SCORES),
+        summary=TWO_SENTENCE_SUMMARY,
+        facts=ArticleFacts(),
+        meta=AICallMeta(requested_model="claude-opus-5"),
+    )
+
+    with pytest.raises(ClassificationError):
+        subject.finalize(
+            analyzed,
+            verdict=ExclusionVerdict(
+                action=ExclusionAction.EXCLUDE,
+                category="完全除外",
+                reason="真偽不明の噂",
+            ),
+        )
+
+
 # --- classify()：AIClient 経由の1本 -----------------------------------------
 
 
@@ -1034,13 +1225,62 @@ def test_the_prompt_tells_the_model_not_to_decide_the_total_or_the_class(
 def test_the_prompt_declares_the_deterministic_steps_out_of_scope(
     config: IntelligenceConfig, article: RawArticle
 ) -> None:
-    """除外・重複・§12 検証・採否は Python 側（T-17 / T-18 / T-20 / T-21）。"""
+    """除外・重複・§12 検証・採否は Python 側（T-17 / T-18 / T-20 / T-21）。
+
+    ⚠️ 対象外なのは**決定**であって、事実の申告（当たったルール番号・鮮度）は
+    対象内（決定1）。この2つの線引きが本文でも読めることを固定する。
+    """
     prompt = build_classification_prompt(article, config)
 
-    assert "除外するかどうかの判定" in prompt
+    assert "除外するかどうかの決定" in prompt
     assert "重複や統合の判定" in prompt
     assert "§12 のフォーマット検証" in prompt
     assert "掲載可否（しきい値の適用）" in prompt
+
+
+def test_the_prompt_lists_every_exclusion_rule(
+    config: IntelligenceConfig, article: RawArticle
+) -> None:
+    """13ルールの `no` / `name` / `examples` を提示する（当たり判定の材料）。"""
+    prompt = build_classification_prompt(article, config)
+
+    for rule in config.exclusion_rules:
+        assert f"- {rule.no}: {rule.name}" in prompt
+        assert rule.examples in prompt
+
+
+def test_the_prompt_hides_the_severity_and_the_enabled_flag(
+    config: IntelligenceConfig, article: RawArticle
+) -> None:
+    """⚠️ 分岐そのものを AI に渡さない（決定1）。
+
+    severity を見せると「これは full_exclude だから当たったことにしない」という
+    逆算の余地が生まれ、事実の申告ではなくなる。有効/無効の適用は T-17。
+    """
+    prompt = build_classification_prompt(article, config)
+
+    for severity in Severity:
+        assert severity.value not in prompt
+
+
+def test_a_disabled_rule_is_still_offered_for_declaration(
+    raw: dict[str, Any], article: RawArticle
+) -> None:
+    """`enabled=false` のルールも候補に残す（有効/無効の適用は T-17 の責務）。
+
+    候補から外すと、AI の申告が config のスイッチに依存し始める＝「当たったか」
+    という事実の申告でなくなる。
+    """
+    raw["exclusion_rules"][1]["enabled"] = False
+    config = IntelligenceConfig.model_validate(raw)
+    disabled = config.exclusion_rules[1]
+
+    prompt = build_classification_prompt(article, config)
+    schema = build_classification_schema(config)
+
+    assert f"- {disabled.no}: {disabled.name}" in prompt
+    value = schema.model_validate(payload(facts={MATCHED_RULES_FIELD: [disabled.no]}))
+    assert getattr(value, FACTS_FIELD).matched_exclusion_rule_nos == [disabled.no]
 
 
 def test_the_prompt_asks_for_two_to_three_sentences(
