@@ -986,7 +986,7 @@ flowchart TD
 
 ### P7. ジョブ実行API（設計書 §8・§1 ／ 仕様書 §15-8・§15-1）
 
-#### - [ ] T-45: 通し実行 CLI（run_pipeline）— P7 前の手動動作確認用
+#### - [x] T-45: 通し実行 CLI（run_pipeline）— P7 前の手動動作確認用
 - **対応**: §8.2（ステップ間の成果物受け渡し）／§13.1（period 解決）
 - **依存**: T-16, T-21, T-22, T-24, T-25, T-44
 - **成果物**: `backend/src/adapter/cli/run_pipeline.py`, `backend/Makefile`（`run-weekly` / `run-monthly`）, `backend/tests/adapter/test_run_pipeline_cli.py`
@@ -1011,6 +1011,18 @@ flowchart TD
   - ⚠️ **`make run-weekly` / `make run-monthly` というターゲット名は T-28 の完了条件と同じ。**
     T-28（`POST /run` 経由のローカル実行ターゲット）を実装するときに、
     **この CLI 版を置き換えるのか別名で共存させるのかを決めること**（名前だけが残って中身が別物、を避ける）。
+- **備考**（実績 2026-08-16）: 入口は `adapter.cli.run_pipeline`（`make run-weekly` / `make run-monthly`）。**ワーカーのロジックはこの CLI に1行も無い**（設計書 §8.2 の受け渡し表をそのまま配線しただけ）。
+  - **相手は Protocol で受け、組み立ては `build_pipeline()` の1箇所**（`Pipeline` データクラスへ crawl / filter / xlsx / 週刊・月刊レンダラを詰める）。⚠️ **具象クラスを型に書かなかった**のは、そうするとテストがワーカーを本物として組み立てることになり、**実際の `claude` が起動しかねない**ため（テストは1つも本物を使わない＝完了条件）。
+  - **config は開始時に `ConfigRepository.load()` で1回だけ読み、同じオブジェクトを全ステップへ渡す。** ⚠️ **`get_pinned(revision)` は使っていない**（DB のスナップショットではなく**ファイルが正**。T-11）。実行中に `config.json` を書き換えても `FilterWorker` が深いコピーを抱えるので判断基準は動かない。**T-26 は `get_pinned` を使うこと**（§8.3 の完了条件）。
+  - **render は filter の戻り値を使わず、xlsx と `narrative_{period}.json` を読み直す。** §8.2 の受け渡しがファイル経由で、そうしないと `--from render`（前の実行の成果物から再開する）が確認にならないため。
+  - ⚠️ **`--from` は明示指定だけ。前段成果物の存在による自動スキップはしない**（§8.3 の自動スキップは T-26 の責務）。`--from render` で narrative が無ければ「`--from filter` でやり直せ」と言って落ちる（黙って本文の無い HTML を出さない）。
+  - ⚠️ **月次の除外ログは週次ブックへ `append_exclusions()` で積む**（§8.1・T-21 備考）。**0件のときは呼ばない**（書くものが無いのに週次ブックを上書きすると、退避の世代を1つ無駄に消費する）。
+  - **失敗時は「どのステップで・どの例外か」だけを出して非0で終わる**（`EXIT_FAILED=1`／実行前に分かる不備は `EXIT_INVALID_INPUT=2`）。⚠️ **例外の型名をそのまま出す**（T-15 は原因ごとに型を分けているので、人向けの言葉へ言い換えるとその分類が潰れる）。`FAILURE_HINTS` は型 → 説明の表で、**判定ロジックを持たない**。6分類に加えて `SearchNotPerformedError` / `RawArticlesNotFoundError` / `DocumentParseError` / `ArtifactStoreError` の行を持つ。
+  - **`run_id` は `cli-YYYYmmdd-HHMMSS`。** 退避先（`_history/{period}/{revision}_{run_id}/`）の名前に入るので、パス区切りを含まないことを実際に `archive()` を呼ぶテストで固定した。
+  - **`common.logger` を import している**（副作用の `logging.basicConfig` が目的）。ワーカーの `logger.info`（crawl started / filter finished 等）が手元の端末に出ないと、**1回数分の AI 呼び出しの間ずっと無言**になる。
+  - **PERIOD 省略時は §13.1 と同じ規則**（週次＝実行日の当週 `{{ISO_WEEK}}` / 月次＝前月 `{{PREV_MONTH}}`、Asia/Tokyo）。⚠️ **`make run-weekly PERIOD=2026-07` は受け付けない**（週刊のつもりで月刊の成果物を上書きするため）。
+  - **監査ログは書いていない**（T-26 の責務。起票時の判断のまま）。
+  - テスト37件（`make test` 全体 1768件）。**ミューテーションで確認済み**：`run_id` を filter へ渡さないと3件、`--from` を無視して常に全ステップ実行すると2件、除外0件でも週次ブックを上書きすると1件、種別と表記の一致検査を外すと2件、ステップの失敗を握り潰して次へ進むと11件、narrative の存在確認を外すと1件が落ちる。
 
 #### - [ ] T-26: Run Orchestrator と状態機械
 - **対応**: §8.3・§8.4（→ 仕様書 §13.1・§14）

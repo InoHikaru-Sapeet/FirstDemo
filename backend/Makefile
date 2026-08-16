@@ -7,6 +7,7 @@ PORT ?= 8000
 .PHONY: help sync lint format type-check test test-ci dev
 .PHONY: config-schema config-schema-check migrate-config
 .PHONY: create-admin service-token
+.PHONY: run-weekly run-monthly
 
 help:
 	@echo ""
@@ -24,6 +25,10 @@ help:
 	@echo ""
 	@echo "  create-admin   - 最初の admin を作る（対話。ARGS='--promote a@b.com' も可）"
 	@echo "  service-token  - cron 用サービストークンを発行する"
+	@echo ""
+	@echo "  run-weekly     - 週刊を通しで実行する（PERIOD=2026-W33 で期間指定。既定は当週）"
+	@echo "  run-monthly    - 月刊を通しで実行する（PERIOD=2026-07 で期間指定。既定は前月）"
+	@echo "                   途中から再開: ARGS='--from filter' / ARGS='--from render'"
 	@echo ""
 
 # === 開発 ===
@@ -76,6 +81,22 @@ create-admin:
 # 生トークンは cron 側にだけ渡す。
 service-token:
 	PYTHONPATH=src uv run python -m adapter.cli.create_service_token
+
+# === 通し実行（T-45。設計書 §8.2）===
+# crawl → filter（narrative 含む）→ render を手元で通しに実行して HTML を目視確認する。
+# ⚠️ **P7（T-26 Run Orchestrator）の代わりではない。** ジョブ管理・状態機械・
+#    二重起動防止・実行の監査ログは T-26 の責務で、この CLI は持たない。
+# ⚠️ **AI 呼び出しは1回数分かかる**（T-15 実測）。記事1件につき1往復するので、
+#    crawl から通すと数十分規模になる。各ステップの開始・終了・所要時間は出る。
+#    PERIOD 省略時は当週（weekly）／前月（monthly）を Asia/Tokyo 基準で解決する。
+
+run-weekly:
+	PYTHONPATH=src uv run python -m adapter.cli.run_pipeline weekly \
+		$(if $(PERIOD),--period $(PERIOD)) $(ARGS)
+
+run-monthly:
+	PYTHONPATH=src uv run python -m adapter.cli.run_pipeline monthly \
+		$(if $(PERIOD),--period $(PERIOD)) $(ARGS)
 
 # === テスト ===
 
