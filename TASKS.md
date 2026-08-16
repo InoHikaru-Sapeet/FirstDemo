@@ -844,10 +844,10 @@ flowchart TD
   - **共通の period 値オブジェクトを作った**（`enterprise/entities/period.py`。T-16・T-18 の申し送り）。`adapter.storage.artifact_store` / `enterprise.services.dedup` / `application.usecases.crawl` に散っていた表記の正規表現と実日付への展開を1箇所へ寄せ、各層は自分の例外型（`ArtifactStoreError` / `DedupError` / `CrawlError`）へ包み直すだけにした。`test_every_layer_shares_one_definition` が写しの再発を検出する。
   - テスト69件（filter 31 / monthly_cases 18 / period 20）。`make test` 全体 1524件。
 
-#### - [ ] T-22: 中間xlsx ライタ
+#### - [x] T-22: 中間xlsx ライタ
 - **対応**: §2.2（→ 仕様書 §8）／設計判断B
 - **依存**: T-02, T-07, T-21
-- **成果物**: `backend/src/adapter/xlsx/report_writer.py`, テスト
+- **成果物**: `backend/src/adapter/xlsx/report_writer.py`, `backend/src/adapter/xlsx/__init__.py`, `backend/tests/adapter/test_report_writer.py`
 - **完了条件**:
   - **週次**：ISO週ごとに1シート。1行目タイトル `Weekly AI Intelligence レポート (2026-Www)` / 2行目 説明 / 3行目 空行 / 4行目 ヘッダ（22列）/ 5行目以降 データ（**合計スコア降順**）
   - **除外ログ**シート（6列）へ **append**
@@ -856,6 +856,16 @@ flowchart TD
   - multi 値は `;` 区切り
   - 同一 `{period}` の再実行は**正規名を上書き**しつつ、旧版を `_history/` へ退避（設計判断B）
   - 出力した xlsx を読み戻して列順・件数・降順が一致することをテストで確認（ラウンドトリップ）
+- **備考**（実績 2026-08-16）: 入口は `ReportStore(store).write_weekly(...)` / `write_monthly(...)` / `append_exclusions(...)` と、読み戻しの `read_weekly()` / `read_monthly()` / `read_exclusions()` / `read_history()`。**ライタとリーダを同じクラスに置いた**のは、列順・前置き行・シート名の解釈が2箇所に分かれると片方だけ壊れるため（T-07 が「writer と reader の双方がこの定義だけを参照する」としているのと同じ理由）。
+  - **列名・列順・区切り文字をこのモジュールに書いていない。** すべて T-07 の `WEEKLY_ARTICLE_SHEET` / `EXCLUSION_LOG_SHEET` / `MONTHLY_CASE_SHEET` と `format_row()` / `parse_row()` から引く。**書いてよい確定文字列は §8.1 の前置き2行だけ**（`WEEKLY_SHEET_TITLE_FORMAT` / `WEEKLY_SHEET_DESCRIPTION`。T-07 備考が「文言は T-22 の担当」としていた分）。
+  - **記事シートは作り直し、除外ログは append。** 記事側を追記にすると再実行で二重に並ぶ（§14 冪等性）。**除外ログは同じ period を2回実行すると同じ行が2回並ぶ**が、これは「いつ何を落としたか」の記録なので消さない（本編の重複とは意味が違う）。
+  - **退避は上書きの直前**（`ArtifactStore.archive()` → `write_bytes()` の順）。逆順だと退避されるのが新しい内容になる。`test_the_previous_version_is_archived_before_the_overwrite` が退避ファイルの中身まで見て固定している。
+  - **`除外ログ` シートは常に末尾へ移す**（§8.1 のシート構成「各週シート ＋ 除外ログ」）。固定名ファイルの中で他の週のシートは巻き込まない（upsert）。
+  - ⚠️ **月次の `No` が昇順でなければ書かずに落とす**（`ReportStoreError`）。並べ替えて救わないのは、`No` の順序が章の束ね方そのもの（§8.2「昇順＝章グルーピング順」・T-21）で、ライタが黙って直すと「章がバラバラなのに番号だけ整った表」になるため。
+  - **履歴の読み戻し（T-18 申し送り①）もここが持つ**（`read_history(periods)`）。週次シート／月次 cases に加えて `除外ログ` も見る（§11.1）。除外ログ行は `収集日` しか持たないので `weekly_period_of()` / `monthly_period_of()` で period を割り出す。**順序は渡された period の順 → 各期間で「本編 → 除外ログ」**（先に当たった1件が代表なので、本編に残っている記事を優先する）。⚠️ **`収集日` が空の行はどの期間にも入れない**（§12 不備で日付ごと欠けた記事。日付の無い行をどこかの週へ当てはめる方が誤り）。
+  - **`FilterWorker` の `HistoryReader` を構造的に満たす**ので、`FilterWorker(history_reader=ReportStore(store))` でそのまま繋がる（`test_the_report_store_can_serve_as_the_history_reader`）。T-21 の出力行がそのまま書けて読み戻せることも通しで固定した。
+  - openpyxl は `BytesIO` 経由で読み書きし、**書き込みは必ず `ArtifactStore.write_bytes()`（原子的）**。直接 `open()` しない（T-02 が唯一の入口）。読みは `read_only=True` で開いて必ず `close()` する。
+  - テスト26件（＋ T-21 側の接続2件）。`make test` 全体 1552件。
 
 ---
 

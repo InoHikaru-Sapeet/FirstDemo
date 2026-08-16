@@ -29,6 +29,7 @@ from adapter.llm.ai_client import (
     resolve_output_adapter,
 )
 from adapter.storage.artifact_store import ArtifactStore
+from adapter.xlsx.report_writer import ReportStore
 from application.usecases import filter as filter_module
 from application.usecases.classify_and_score import (
     FACTS_FIELD,
@@ -907,3 +908,71 @@ async def test_a_weekly_run_has_no_cases(
 
     assert result.cases == []
     assert client.classification_calls == len(client.calls)  # 事例の往復が無い
+
+
+# --- T-22（中間xlsx ライタ）との接続 -----------------------------------------
+
+
+async def test_the_result_rows_can_be_written_and_read_back(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """T-21 の出力がそのまま中間xlsx になり、読み戻すと同じ行に戻ること。
+
+    ⚠️ 行の形（列名・multi の扱い）がライタと食い違っていたらここで落ちる。
+    """
+    write_articles(
+        store,
+        [
+            article(title="採用される記事", url="https://example.com/kept"),
+            article(title="落ちる記事", url="https://example.com/dropped"),
+        ],
+        WEEKLY_PERIOD,
+    )
+    client = ScriptedAIClient(
+        classifications={
+            "採用される記事": classification(),
+            "落ちる記事": classification(rules=[1]),
+        }
+    )
+    result = await worker(config, store, client).run(WEEKLY_PERIOD)
+
+    reports = ReportStore(store)
+    reports.write_weekly(
+        period=WEEKLY_PERIOD,
+        articles=result.articles,
+        exclusions=result.exclusion_log,
+        revision=result.config_revision,
+        run_id="run-0001",
+    )
+
+    assert reports.read_weekly(WEEKLY_PERIOD) == result.articles
+    assert reports.read_exclusions() == result.exclusion_log
+
+
+async def test_the_report_store_can_serve_as_the_history_reader(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """T-18 申し送り①：履歴は中間xlsx から読み戻して組み立てる。
+
+    先週のシートに載っている記事と同じ URL の記事は、今週は統合として外れる。
+    """
+    reports = ReportStore(store)
+    write_articles(store, [article()], WEEKLY_PERIOD)
+    write_articles(store, [article()], "2026-W30")
+
+    last_week = await worker(config, store, ScriptedAIClient()).run("2026-W30")
+    reports.write_weekly(
+        period="2026-W30",
+        articles=last_week.articles,
+        exclusions=last_week.exclusion_log,
+        revision=last_week.config_revision,
+        run_id="run-0001",
+    )
+
+    this_week = await worker(
+        config, store, ScriptedAIClient(), history_reader=reports
+    ).run(WEEKLY_PERIOD)
+
+    assert len(last_week.articles) == 1
+    assert this_week.articles == []
+    assert this_week.exclusion_log[0]["除外区分"] == CATEGORY_MERGED
