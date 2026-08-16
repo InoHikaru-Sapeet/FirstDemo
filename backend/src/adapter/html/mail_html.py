@@ -186,11 +186,15 @@ def table(
     width: str | None = "100%",
     attrs: Mapping[str, str | None] | None = None,
 ) -> str:
-    """レイアウト用の table（§7.1「table レイアウト」）。"""
+    """レイアウト用の table（§7.1「table レイアウト」）。
+
+    行は改行で連ねる。`<tr>` の**間**の空白は表の描画に影響しない一方、生成物
+    （ゴールデンファイル）の差分が行単位で読めるようになるため。
+    """
     merged: dict[str, str | None] = {**TABLE_LAYOUT_ATTRS, "width": width}
     if attrs:
         merged.update(attrs)
-    return element("table", "".join(rows), style=style, attrs=merged)
+    return element("table", "\n".join(rows), style=style, attrs=merged)
 
 
 def row(
@@ -216,14 +220,22 @@ def block(
     content: str,
     *,
     style: str | None = None,
+    cell_style: str | None = None,
     width: str | None = "100%",
 ) -> str:
     """1セルだけの table。「余白と背景を持つ箱」を table で作る常套手段。
 
     `<div>` でも表示はできるが、余白の解釈がメールクライアントごとに割れるため
     箱は table に寄せる（§7.1「table レイアウト」）。
+
+    Args:
+        content: 箱の中身（組み立て済み HTML）
+        style: table 側の style（背景・罫・角丸）
+        cell_style: セル側の style（**内側の余白はここ**。table の padding は
+            メールクライアントによって効かない）
+        width: table の width 属性
     """
-    return table([row([cell(content)])], style=style, width=width)
+    return table([row([cell(content, style=cell_style)])], style=style, width=width)
 
 
 def link(
