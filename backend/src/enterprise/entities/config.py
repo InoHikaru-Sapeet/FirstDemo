@@ -247,6 +247,16 @@ class WeeklyThresholds(_StrictModel):
     max_common_topics: int = Field(ge=0)
     point_of_week_required: bool
 
+    @property
+    def industries(self) -> tuple[str, ...]:
+        """対象業界（**必ず1件以上**）。
+
+        収集の重点（T-16 / T-46）・顧客関連度の採点（T-19）・生成テキスト（T-44）・
+        描画（T-24）が参照する読み出し口を**1つ**にしてある。フィールドの形
+        （単数 / 複数）が変わっても、参照側はここだけを見ていれば追随できる。
+        """
+        return (self.target_industry,)
+
 
 class MonthlyThresholds(_StrictModel):
     """月刊ビリーフの可変パラメータ（仕様書 §7.2）。"""

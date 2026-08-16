@@ -149,6 +149,8 @@ def test_confirmed_initial_thresholds(raw: dict[str, Any]) -> None:
     assert tunable.adoption_class_score_map.share_only == 60
     assert tunable.min_reliability_score_to_publish == 5
     assert tunable.weekly.target_industry == "不動産"
+    # 参照側（crawl / 採点 / 生成テキスト / 描画）はこの読み出し口だけを見る。
+    assert tunable.weekly.industries == ("不動産",)
     assert tunable.weekly.max_industry_topics == 5
     assert tunable.weekly.max_common_topics == 6
     assert tunable.weekly.point_of_week_required is True

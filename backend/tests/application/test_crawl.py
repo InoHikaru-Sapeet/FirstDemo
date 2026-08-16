@@ -35,6 +35,7 @@ from adapter.llm.ai_client import (
 from adapter.storage.artifact_store import ArtifactStore
 from application.usecases.crawl import (
     EXCLUDED_SOURCES,
+    INDUSTRY_NOT_A_FILTER_NOTICE,
     MONTHLY_EMPHASIS,
     NO_DEDUP_NOTICE,
     NO_JUDGEMENT_NOTICE,
@@ -570,13 +571,55 @@ def test_the_prompt_leaves_the_output_format_to_the_ai_client(
     assert "JSON だけ" not in prompt
 
 
-def test_the_prompt_does_not_narrow_the_collection_to_the_target_industry(
+def test_the_prompt_asks_for_the_target_industry_without_narrowing(
     config: IntelligenceConfig,
 ) -> None:
-    """⚠️ この段は網羅。業界で絞るのは顧客関連度の採点（T-19）と除外（T-17）。"""
+    """T-46 Step 1：対象業界は「必ず含める」。**絞り込みの条件にはしない**。
+
+    初運用（2026-W33）では対象業界を渡さなかった結果、収集の母集団に不動産の
+    記事が1件も入らず、§9.2-3 の業界関連トピックが構造的に空になった。
+    ⚠️ ここで絞ると、業界タグの確定（T-19）と除外（T-17）の材料が消える。
+    """
     prompt = build_crawl_prompt(WEEKLY_PERIOD, config, collected_at=TODAY)
 
-    assert config.tunable_thresholds.weekly.target_industry not in prompt
+    for industry in config.tunable_thresholds.weekly.industries:
+        assert industry in prompt
+    assert "必ず収集対象に含める" in prompt
+    assert INDUSTRY_NOT_A_FILTER_NOTICE in prompt
+    # 網羅の指示は残っている（重点が置き換えになっていないこと）。
+    for category in config.information_categories:
+        assert category.label in prompt
+
+
+def test_a_renamed_target_industry_follows_into_the_prompt(
+    initial_raw: dict[str, Any],
+) -> None:
+    """⚠️ 業界名を写さず config から取る（admin の変更に追随する）。"""
+    raw = copy.deepcopy(initial_raw)
+    raw["tunable_thresholds"]["weekly"]["target_industry"] = "医薬品"
+    config = IntelligenceConfig.model_validate(raw)
+
+    prompt = build_crawl_prompt(WEEKLY_PERIOD, config, collected_at=TODAY)
+
+    assert "医薬品" in prompt
+    assert "不動産" not in prompt
+
+
+def test_the_monthly_prompt_separates_user_cases_from_vendor_announcements(
+    config: IntelligenceConfig,
+) -> None:
+    """T-46 Step 1：月次の「事例」は**導入企業側**（ベンダー発表ではない）。
+
+    初運用（2026-07）では採用15件に `enterprise_ai_case` が0件で、集まったのは
+    ベンダーの製品・モデル発表ばかりだった。
+    """
+    monthly = build_crawl_prompt(MONTHLY_PERIOD, config, collected_at=TODAY)
+    weekly = build_crawl_prompt(WEEKLY_PERIOD, config, collected_at=TODAY)
+
+    assert "導入した企業（ユーザー企業）側の事例" in monthly
+    assert "活用事例として数えない" in monthly
+    # ⚠️ 重心は週次・月次のどちらか一方だけ（両方出すと重み付けが消える）。
+    assert "ユーザー企業" not in weekly
 
 
 async def test_the_worker_sends_the_prompt_and_its_version(
