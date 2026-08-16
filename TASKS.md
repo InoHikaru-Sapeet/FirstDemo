@@ -871,7 +871,7 @@ flowchart TD
 
 ### P6. HTML生成（設計書 §7 ／ 仕様書 §15-7）
 
-#### - [ ] T-23: メールHTML 基盤とカテゴリ色マップ
+#### - [x] T-23: メールHTML 基盤とカテゴリ色マップ
 - **対応**: §7.1・§7.2（→ 仕様書 §9.1・§10.1・§13.4）
 - **依存**: T-01
 - **成果物**: `backend/src/adapter/html/mail_html.py`, `backend/src/adapter/html/category_colors.py`, テスト
@@ -882,6 +882,17 @@ flowchart TD
   - フォント：`'Hiragino Kaku Gothic ProN','ヒラギノ角ゴ ProN','Meiryo',Arial,sans-serif`
   - カテゴリ色マップ（§7.2）：`ai_agent_automation=#0891b2` / `ai_major_company_model=#7c3aed` / `ai_governance_risk=#dc2626`（**実サンプル実測の確定値**）＋ 補完4色 `enterprise_ai_case=#059669` / `industry_ai_trend=#d97706` / `ai_training_org_change=#db2777` / `ai_implementation_ops=#4f46e5`
 - **備考**: ⚠️ **補完4色はサンプル未収載のためブランド確認が必要**（§5 要確認事項）。差し替え可能な定数として1箇所にまとめること。
+- **備考**（実績 2026-08-16）: 部品は `adapter/html/mail_html.py`、色は `adapter/html/category_colors.py`。**T-24 / T-25 は HTML 文字列を直接組み立てず、この部品だけを通す**（メールクライアントで壊れない書き方を1箇所に閉じる）。
+  - **確定3色と補完4色を別の定数に分けた**（`CONFIRMED_CATEGORY_COLORS` / `SUPPLEMENTED_CATEGORY_COLORS`）。1つの辞書にまとめると「どれが実サンプル実測でどれが未確認か」がコードから読めず、**差し替えてよい行が分からなくなる**。要確認事項 #1 が解けたら後者の4行だけを直す。`unconfirmed_category_ids()` / `is_brand_confirmed()` で未確認分を列挙できる。
+  - **色は ID（`information_categories[].id`）で引く。ラベル文字列では引かない**（ラベルは admin が config で変えられるが ID は §5.2 の確定値）。`missing_category_ids()` が「config に7カテゴリあるのに色が6つ」の取りこぼしを拾い、テストが `()` を固定している。
+  - ⚠️ **未知のカテゴリID は既定色（`#4b5563`）に落として描画を続ける**（例外にしない）。色が引けないだけで記事カードを1件落とす方が損害が大きい。`logger.warning` には出す。7色のどれとも重ならない中立色を選んである。
+  - **エスケープをこの層の責務にした。** 記事タイトル・一言要約・ソース名は crawl が外部サイトから拾ってきたテキストで（T-16）、途中の工程は誰も HTML として無害化していない。文字列が HTML へ入る経路を `escape()` / `link()` / `paragraphs()` の3つに限り、レンダラ側で `f"<td>{value}</td>"` と書かせない形にした。
+  - ⚠️ **`href` は `http` / `https`（と相対パス）だけに絞った。** §7.1 は「href は URL 列をそのまま使用」だが、`javascript:` をそのまま `href` へ置くのは混入経路そのもの。**使えない URL でも記事は落とさず、リンクを外してテキストだけ出す**（`<span>`）。→ 仕様の文言としては差分なので **T-38 の確認対象**。
+  - **`forbidden_constructs()` が §7.1 の受け入れ条件**（`<style>` / `<script>` / `<link>` / `@import` / `display:flex` / `display:grid` / `javascript:` の href / `on*=` 属性）。`assert_mail_safe()` はレンダラの最後に通して**書き出す前に落とす**。⚠️ **誤検知しないことも同じだけ重要**（誤検知するとレンダラが正しい出力を落とすようになる）ので、`style=` 属性や本文中の「javascript:」「script」で反応しないことをテストで固定した。イベントハンドラ検出は `<[^>]*\son[a-z]+\s*=` として**タグの中だけ**を見る。
+  - **style 属性の値だけ `'` をエスケープしない**（`escape_style()`）。`FONT_FAMILY` が `'Hiragino Kaku Gothic ProN'` を含み、属性は `"` で囲むので `'` を実体参照にする必要が無い。ゴールデンファイルの差分をレビューできる形に保つための判断。
+  - ⚠️ **`safe_url()` はエスケープしない**（属性を書く `attributes()` が行う）。両方でエスケープすると `?a=1&b=2` の `&` が `&amp;amp;` になる。実装中に実際に踏んだので、分担をテストで固定した。
+  - **箱（背景と余白を持つ領域）は `<div>` ではなく1セルの table**（`block()`）。余白の解釈がメールクライアントごとに割れるため（§7.1「table レイアウト」）。レイアウト table には `role="presentation"` を付ける。
+  - テスト50件。`make test` 全体 1602件。
 
 #### - [ ] T-24: 週刊メルマガ レンダラ
 - **対応**: §7.3（→ 仕様書 §9）
