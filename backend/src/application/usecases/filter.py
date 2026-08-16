@@ -45,6 +45,20 @@ T-15 備考）ので、同じ1往復にまとめた（→ TASKS.md T-21 備考�
 
 ---
 
+**⚠️ 診断はログにだけ出す**（T-46 Step 2）
+
+実行の終わりに **採用記事のカテゴリ分布**と**スコア分布（最高 / 中央値 / 最低）**、
+月次はさらに**事例昇格の内訳**（`enterprise_ai_case` 該当 / `min_score_for_case`
+以上 / `target_case_count` の絞り）を INFO で出す。初運用（2026-W33・2026-07）で
+「事例0件」「業界関連トピック0件」の原因を後から診断できなかったのは、
+**採用記事の一覧がどの成果物にも残らない**ため（月次実行は月次8列の cases しか
+書かない）。
+
+⚠️ **成果物は増やさない。** 週次22列 / 月次8列は §8 の確定値、
+`validation_{period}.json` は §2.4 のスキーマで、どちらも診断のために広げない。
+
+---
+
 **config は実行開始時に固定する**（§6.3・§14）
 
 `FilterWorker` は渡された config を**深いコピーで抱え込む**。実行中に admin が
@@ -72,6 +86,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from statistics import median
 from typing import Any, Protocol
 
 from adapter.llm import AIClient
@@ -84,10 +99,11 @@ from application.usecases.classify_and_score import (
     total_score,
 )
 from application.usecases.monthly_cases import (
+    CASE_CATEGORY_ID,
     CaseCandidate,
     MonthlyCase,
     MonthlyCaseBuilder,
-    select_case_candidates,
+    select_cases,
 )
 from application.usecases.narrative import NarrativeBuilder
 from enterprise.entities.config import IntelligenceConfig
@@ -139,6 +155,13 @@ REASON_SEPARATOR = " / "
 
 # 信頼性の軸ID（§13.3-5 の「信頼性点」）。config の `scoring_axes[].id`。
 RELIABILITY_AXIS_ID = "reliability"
+
+# 参照する週次22列（列名の正は T-07。ここは「どの列を見るか」だけを持つ）。
+COLUMN_CATEGORY = "情報カテゴリ"
+COLUMN_TOTAL_SCORE = "合計スコア"
+
+# 診断ログの区切り（T-46 Step 2）。
+DIAGNOSTIC_SEPARATOR = " / "
 
 
 class FilterError(Exception):
@@ -367,7 +390,7 @@ class FilterWorker:
         # 6) 合計スコア降順で整列（§8.1）。**5) の前に行う**のは、§12 の行番号が
         # 週次シートの行位置だから（T-20 申し送り①「降順に整列した後の一覧を渡す」）。
         # 同点は入力順＝収集順のまま（安定ソート）。
-        pairs.sort(key=lambda pair: -int(pair[0]["合計スコア"]))
+        pairs.sort(key=lambda pair: -int(pair[0][COLUMN_TOTAL_SCORE]))
 
         # 5) フォーマットチェック（error のある記事は本編から外す）
         check = check_articles([record for record, _ in pairs], self._config)
@@ -398,6 +421,20 @@ class FilterWorker:
             len(cases),
             len(exclusion_log),
             check.report.ok,
+        )
+        # ⚠️ **診断は成果物ではなくログで出す**（T-46 Step 2）。xlsx の列（§8 の
+        # 確定値）も `validation_*.json` のスキーマ（§2.4）も増やさない。
+        logger.info(
+            "filter category distribution (period=%s, adopted=%d, %s)",
+            parsed.text,
+            len(records),
+            format_category_distribution(records, self._config),
+        )
+        logger.info(
+            "filter score distribution (period=%s, adopted=%d, %s)",
+            parsed.text,
+            len(records),
+            format_score_distribution(records),
         )
         return FilterResult(
             period=parsed,
@@ -470,7 +507,8 @@ class FilterWorker:
         if not period.is_monthly:
             return []
 
-        indexes = select_case_candidates(
+        monthly = self._config.tunable_thresholds.monthly
+        selection = select_cases(
             records, [item.article for item in classified], self._config
         )
         candidates = [
@@ -479,15 +517,31 @@ class FilterWorker:
                 total_score=classified[index].total_score,
                 summary=classified[index].summary,
             )
-            for index in indexes
+            for index in selection.indexes
         ]
+        # ⚠️ **3条件の内訳を出す**（T-46 Step 2）。初運用（2026-07）で事例が0件に
+        # なったとき、カテゴリ該当が0件なのか・しきい値落ちなのか・件数の絞りなのかを
+        # 後から診断できなかった（採用記事の一覧はどの成果物にも残らない）。
+        logger.info(
+            "monthly case selection (period=%s, adopted=%d, %s=%d, >=min_score_for_case"
+            "(%d)=%d, dropped_by_target_case_count(%d)=%d, promoted=%d)",
+            period.text,
+            len(records),
+            CASE_CATEGORY_ID,
+            selection.category_matched,
+            monthly.min_score_for_case,
+            selection.above_min_score,
+            monthly.target_case_count,
+            selection.dropped_by_target_count,
+            len(candidates),
+        )
         if not candidates:
             logger.warning(
                 "事例へ昇格できる記事がありません（period=%s。"
                 "情報カテゴリ=%s かつ 合計スコア >= %d が条件）",
                 period.text,
-                "enterprise_ai_case",
-                self._config.tunable_thresholds.monthly.min_score_for_case,
+                CASE_CATEGORY_ID,
+                monthly.min_score_for_case,
             )
         return await self._case_builder.build(candidates, period=period.text)
 
@@ -655,6 +709,75 @@ def rejection_reason(
     return REASON_SEPARATOR.join(reasons) if reasons else None
 
 
+# --- 診断（T-46 Step 2。**ログにだけ出す**）-----------------------------------
+
+
+def category_distribution(
+    records: Sequence[Mapping[str, Any]], config: IntelligenceConfig
+) -> dict[str, int]:
+    """採用記事のカテゴリ分布（カテゴリID → 件数）。
+
+    ⚠️ **0件のカテゴリも 0 として残す**（config の7カテゴリを起点に数える）。
+    初運用（2026-W33）で問題になったのは「`enterprise_ai_case` が **0件**」という
+    事実そのもので、出現したカテゴリだけを並べるとそれが読めない。
+
+    config に無いカテゴリID が行に入っていたら末尾へ足す（黙って落とさない。
+    分類は config の候補から選ばせている＝T-19 ので、本来は起きない）。
+    """
+    counts: dict[str, int] = {
+        str(category.id): 0 for category in config.information_categories
+    }
+    for record in records:
+        key = str(record.get(COLUMN_CATEGORY) or "")
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def format_category_distribution(
+    records: Sequence[Mapping[str, Any]], config: IntelligenceConfig
+) -> str:
+    """カテゴリ分布をログ1行の形へ（件数降順 → カテゴリID の定義順）。"""
+    counts = category_distribution(records, config)
+    order = {key: index for index, key in enumerate(counts)}
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], order[item[0]]))
+    return DIAGNOSTIC_SEPARATOR.join(f"{key}={count}" for key, count in ranked)
+
+
+def score_distribution(records: Sequence[Mapping[str, Any]]) -> list[int]:
+    """採用記事の合計スコア（読めない値は数えない）。"""
+    scores: list[int] = []
+    for record in records:
+        value = record.get(COLUMN_TOTAL_SCORE)
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        scores.append(value)
+    return scores
+
+
+def format_score_distribution(records: Sequence[Mapping[str, Any]]) -> str:
+    """スコア分布（最高 / 中央値 / 最低）をログ1行の形へ。
+
+    §5.2 のしきい値（`min_score_for_case` = 80 / `propose_next_meeting` = 85）に
+    届く記事が構造的に無いことは、この3つの値があれば実行ログから読める
+    （初運用の実測は 60〜73 に密集していた）。
+    """
+    scores = score_distribution(records)
+    if not scores:
+        return "スコアなし（採用0件）"
+    return DIAGNOSTIC_SEPARATOR.join(
+        [
+            f"max={max(scores)}",
+            f"median={_number(median(scores))}",
+            f"min={min(scores)}",
+        ]
+    )
+
+
+def _number(value: float) -> str:
+    """中央値の表示（偶数件では .5 になるので、整数のときだけ整数で出す）。"""
+    return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
+
+
 def low_score_log_entry(article: RawArticle, reason: str) -> dict[str, Any]:
     """採否で外した記事の除外ログ1行（§13.3-5 `除外区分=低スコア/信頼性不足`）。"""
     return {
@@ -669,12 +792,18 @@ def low_score_log_entry(article: RawArticle, reason: str) -> dict[str, Any]:
 
 __all__ = [
     "CATEGORY_LOW_SCORE",
+    "COLUMN_CATEGORY",
+    "COLUMN_TOTAL_SCORE",
     "FilterError",
     "FilterResult",
     "FilterWorker",
     "HistoryReader",
     "RawArticlesNotFoundError",
+    "category_distribution",
+    "format_category_distribution",
+    "format_score_distribution",
     "low_score_log_entry",
+    "score_distribution",
     "rejection_reason",
     "screened_article",
     "weekly_record",

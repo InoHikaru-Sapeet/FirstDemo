@@ -922,6 +922,11 @@ flowchart TD
   - **業界名は config から取る**（`WeeklyThresholds.industries`）。⚠️ **参照側の読み出し口を1つにする目的で `industries`（タプル）を足した**——Step 3 でフィールドが複数形へ変わっても、crawl・採点・生成テキスト・描画は**この口だけ**を見ていれば追随する。プロパティなので `config.schema.json` は変わらない（`make config-schema-check` で確認済み）。
   - **月次の重心は §13.2 の文言（「先進企業の具体的活用事例」）を残したまま、「何を事例と数えないか」を足した**（導入した企業側 ⇔ ベンダーの製品・モデル発表）。⚠️ **週次側には出さない**（重心を両方出すと重み付けの指示が消える。T-16 の既存テストが固定）。
   - PROMPT-1 文面との差分は **T-38 の改訂対象**として記録済み。テストは crawl 38件（+2。網羅を狭めない検査へ差し替え）・config モデル 115件（+1）で、`make test` 全体 **1774件**。
+- **備考（Step 2 実績 2026-08-17）**: 診断は**ログにだけ**出す。**成果物は増やしていない**（週次22列 / 月次8列は §8 の確定値、`validation_{period}.json` は §2.4 のスキーマ）。config の確定値も変更なし。
+  - `filter finished` の直後に **カテゴリ分布**（`filter category distribution`）と **スコア分布**（`filter score distribution`＝`max` / `median` / `min`）を INFO で出す。⚠️ **カテゴリ分布は 0件のカテゴリも 0 として出す**（config の7カテゴリを起点に数える）——初運用で問題だったのは「`enterprise_ai_case` が**0件**」という事実そのもので、出現したものだけを並べるとログから読めない。中央値は偶数件で `.5` になるので、整数のときだけ整数で出す。
+  - 月次は **事例昇格の内訳**（`monthly case selection`：`enterprise_ai_case` 該当 / `>=min_score_for_case(N)` / `dropped_by_target_case_count(N)` / `promoted`）を INFO で出す。⚠️ **内訳を数える場所を判定と同じ関数にした**（`select_cases()` が `CaseSelection` を返し、既存の `select_case_candidates()` はその位置だけを取る薄い口になった）。別関数で数え直すと**昇格条件の写しが2つ**でき、片方だけ変わったときに診断が嘘をつく。
+  - **事例0件の WARNING は維持**（内訳の INFO を足しただけ）。`test_the_zero_case_warning_survives_the_breakdown_log` が両方出ることを固定している。
+  - テスト filter 52件（+8）。`make test` 全体 **1782件**。
 - **備考（判断）**:
   - **仕様書の確定値を変えるのは Step 3 の `target_industries` だけ**（PM 要件として 2026-08-17 に確認済み）。しきい値（`min_score_for_case` 等）の初期値は**動かさない**——実行時 config で調整できる項目を仕様側で動かすと、キャリブレーションの履歴が config の revision 履歴から消える
   - **xlsx 22列 / 8列は変更しない**（§8.1・§8.2 の確定値）。診断は**ログ**で行う

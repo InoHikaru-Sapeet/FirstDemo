@@ -46,6 +46,9 @@ from application.usecases.filter import (
     FilterError,
     FilterWorker,
     RawArticlesNotFoundError,
+    category_distribution,
+    format_category_distribution,
+    format_score_distribution,
 )
 from application.usecases.monthly_cases import CHAPTER_LABEL_FORMAT
 from application.usecases.narrative import (
@@ -1180,6 +1183,176 @@ async def test_a_weekly_run_has_no_cases(
     assert result.cases == []
     # 往復は「記事1件の分類」＋「生成テキスト1回」だけ＝事例の往復が無い。
     assert client.classification_calls + client.narrative_calls == len(client.calls)
+
+
+# --- 診断ログ（T-46 Step 2）--------------------------------------------------
+# ⚠️ 診断は**ログにだけ**出す（xlsx の列も validation のスキーマも増やさない）。
+
+
+def test_the_category_distribution_keeps_the_empty_categories(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ 0件のカテゴリを落とさない。
+
+    初運用で問題になったのは「`enterprise_ai_case` が **0件**」という事実そのもの
+    で、出現したカテゴリだけを並べるとそれがログから読めない。
+    """
+    records = [
+        {"情報カテゴリ": "ai_agent_automation"},
+        {"情報カテゴリ": "ai_agent_automation"},
+        {"情報カテゴリ": "ai_governance_risk"},
+    ]
+
+    counts = category_distribution(records, config)
+
+    assert counts["ai_agent_automation"] == 2
+    assert counts["ai_governance_risk"] == 1
+    assert counts["enterprise_ai_case"] == 0
+    # config の7カテゴリを起点に数える（出現したものだけではない）。
+    assert set(counts) == {
+        str(category.id) for category in config.information_categories
+    }
+
+
+def test_the_category_distribution_is_ordered_by_count(
+    config: IntelligenceConfig,
+) -> None:
+    records = [
+        {"情報カテゴリ": "ai_governance_risk"},
+        {"情報カテゴリ": "ai_agent_automation"},
+        {"情報カテゴリ": "ai_agent_automation"},
+    ]
+
+    line = format_category_distribution(records, config)
+
+    assert line.startswith("ai_agent_automation=2 / ai_governance_risk=1 / ")
+    assert "enterprise_ai_case=0" in line
+
+
+def test_the_score_distribution_reports_max_median_min() -> None:
+    """§5.2 のしきい値に届く記事が構造的に無いことを実行ログから読めるように。"""
+    records = [{"合計スコア": score} for score in (73, 66, 60)]
+
+    assert format_score_distribution(records) == "max=73 / median=66 / min=60"
+
+
+def test_the_median_of_an_even_number_of_articles_keeps_the_half() -> None:
+    records = [{"合計スコア": score} for score in (73, 67, 66, 60)]
+
+    assert format_score_distribution(records) == "max=73 / median=66.5 / min=60"
+
+
+def test_the_score_distribution_of_an_empty_run_is_readable() -> None:
+    assert format_score_distribution([]) == "スコアなし（採用0件）"
+
+
+async def test_the_finished_log_reports_both_distributions(
+    config: IntelligenceConfig,
+    store: ArtifactStore,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    write_articles(store, [article()], WEEKLY_PERIOD)
+
+    with caplog.at_level("INFO"):
+        await worker(config, store, ScriptedAIClient()).run(WEEKLY_PERIOD)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "filter category distribution" in message and "enterprise_ai_case=1" in message
+        for message in messages
+    )
+    assert any(
+        "filter score distribution" in message and "max=83" in message
+        for message in messages
+    )
+
+
+async def test_the_monthly_case_selection_breakdown_is_logged(
+    config: IntelligenceConfig,
+    store: ArtifactStore,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """3条件（カテゴリ / `min_score_for_case` / `target_case_count`）の内訳。
+
+    初運用（2026-07）で事例0件になったとき、どの条件で落ちたのかを後から
+    診断できなかった（採用記事の一覧はどの成果物にも残らない）。
+    """
+    config.tunable_thresholds.monthly.target_case_count = 1
+    write_articles(
+        store,
+        [
+            article(
+                url="https://example.com/news/1",
+                title="大手不動産が契約業務をAIで自動化",
+            ),
+            article(
+                url="https://example.com/news/2",
+                title="地方銀行、審査の一次判定に生成AIを試験導入",
+            ),
+            article(
+                url="https://example.com/news/3",
+                title="政府がAI事業者向けの新指針を公表",
+            ),
+        ],
+        MONTHLY_PERIOD,
+    )
+    client = ScriptedAIClient(
+        classifications={
+            # 83点・enterprise_ai_case → 昇格候補
+            "大手不動産が契約業務をAIで自動化": classification(),
+            # 79点（`min_score_for_case`=80 未満だが採用の 60 以上）
+            "地方銀行、審査の一次判定に生成AIを試験導入": classification(
+                scores={"customer_relevance": 18}
+            ),
+            # 83点だが別カテゴリ
+            "政府がAI事業者向けの新指針を公表": classification(
+                tags={"information_category": "ai_governance_risk"}
+            ),
+        }
+    )
+
+    with caplog.at_level("INFO"):
+        result = await worker(config, store, client).run(MONTHLY_PERIOD)
+
+    assert len(result.cases) == 1
+    breakdown = next(
+        message
+        for message in (record.getMessage() for record in caplog.records)
+        if "monthly case selection" in message
+    )
+    assert "enterprise_ai_case=2" in breakdown  # カテゴリ該当
+    assert ">=min_score_for_case(80)=1" in breakdown  # うちしきい値以上
+    assert "dropped_by_target_case_count(1)=0" in breakdown
+    assert "promoted=1" in breakdown
+
+
+async def test_the_zero_case_warning_survives_the_breakdown_log(
+    config: IntelligenceConfig,
+    store: ArtifactStore,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """内訳（INFO）を足しても、事例0件の WARNING は残す。"""
+    write_articles(store, [article()], MONTHLY_PERIOD)
+    client = ScriptedAIClient(
+        default_classification=classification(
+            tags={"information_category": "ai_governance_risk"}
+        )
+    )
+
+    with caplog.at_level("INFO"):
+        result = await worker(config, store, client).run(MONTHLY_PERIOD)
+
+    assert result.cases == []
+    assert any(
+        record.levelname == "WARNING" and "事例へ昇格できる記事がありません" in message
+        for record, message in (
+            (record, record.getMessage()) for record in caplog.records
+        )
+    )
+    assert any(
+        "monthly case selection" in record.getMessage() and record.levelname == "INFO"
+        for record in caplog.records
+    )
 
 
 # --- T-22（中間xlsx ライタ）との接続 -----------------------------------------

@@ -77,6 +77,10 @@ CHAPTER_PROMPT_VERSION = "0.1.0"
 # ラベルや説明が変わっても、事例の定義は config 側で1つに保たれる。
 CASE_CATEGORY_ID = "enterprise_ai_case"
 
+# 参照する週次22列（列名の正は T-07。ここは「どの列を見るか」だけを持つ）。
+COLUMN_CATEGORY = "情報カテゴリ"
+COLUMN_TOTAL_SCORE = "合計スコア"
+
 # 章見出しの体裁（仕様書 §8.2「`第N章 <章タイトル>`」）。
 CHAPTER_LABEL_FORMAT = "第{number}章 {title}"
 
@@ -173,12 +177,38 @@ class CaseCandidate:
     summary: str
 
 
-def select_case_candidates(
+@dataclass(frozen=True, slots=True)
+class CaseSelection:
+    """昇格の判定の結果と**その内訳**（T-46 Step 2 の診断ログ）。
+
+    初運用（2026-07）で事例が0件になったとき、「カテゴリ該当が0件なのか、
+    `min_score_for_case` で落ちたのか、`target_case_count` の絞りなのか」を
+    後から診断できなかった。**3条件それぞれの通過件数を数えておく**のが
+    この型の目的で、条件そのものは `select_cases()` の1箇所にしかない
+    （内訳を別関数で数え直すと、条件の写しが2つになる）。
+
+    Attributes:
+        indexes: 昇格させる記事の位置（合計スコア降順・`target_case_count` 件まで）
+        category_matched: 情報カテゴリが `enterprise_ai_case` の件数
+        above_min_score: うち合計スコアが `min_score_for_case` 以上の件数
+        dropped_by_target_count: `target_case_count` の絞りで落ちた件数
+    """
+
+    indexes: tuple[int, ...]
+    category_matched: int
+    above_min_score: int
+
+    @property
+    def dropped_by_target_count(self) -> int:
+        return self.above_min_score - len(self.indexes)
+
+
+def select_cases(
     records: Sequence[Mapping[str, Any]],
     articles: Sequence[RawArticle],
     config: IntelligenceConfig,
-) -> list[int]:
-    """事例へ昇格させる記事の位置を決める（決定的。モジュール docstring）。
+) -> CaseSelection:
+    """事例へ昇格させる記事の位置と内訳を決める（決定的。モジュール docstring）。
 
     Args:
         records: 週次22列の行（採用済み・合計スコア降順で渡すこと）
@@ -186,7 +216,7 @@ def select_case_candidates(
         config: 実行時 config
 
     Returns:
-        `records` の索引（合計スコア降順・`target_case_count` 件まで）
+        昇格させる位置と、3条件それぞれの通過件数
 
     Raises:
         MonthlyCaseError: `records` と `articles` の件数が食い違う場合
@@ -197,11 +227,13 @@ def select_case_candidates(
         )
 
     monthly = config.tunable_thresholds.monthly
+    category_matched = 0
     scored: list[tuple[int, int]] = []
     for index, record in enumerate(records):
-        if record.get("情報カテゴリ") != CASE_CATEGORY_ID:
+        if record.get(COLUMN_CATEGORY) != CASE_CATEGORY_ID:
             continue
-        total = record.get("合計スコア")
+        category_matched += 1
+        total = record.get(COLUMN_TOTAL_SCORE)
         if not isinstance(total, int) or isinstance(total, bool):
             continue
         if total < monthly.min_score_for_case:
@@ -210,7 +242,20 @@ def select_case_candidates(
 
     # 合計スコア降順。同点は元の並び（＝採用側の降順）を保つ＝安定ソート。
     scored.sort(key=lambda item: -item[1])
-    return [index for index, _ in scored[: monthly.target_case_count]]
+    return CaseSelection(
+        indexes=tuple(index for index, _ in scored[: monthly.target_case_count]),
+        category_matched=category_matched,
+        above_min_score=len(scored),
+    )
+
+
+def select_case_candidates(
+    records: Sequence[Mapping[str, Any]],
+    articles: Sequence[RawArticle],
+    config: IntelligenceConfig,
+) -> list[int]:
+    """`select_cases()` の位置だけを取る口（内訳が要らない呼び出し向け）。"""
+    return list(select_cases(records, articles, config).indexes)
 
 
 class MonthlyCaseBuilder:
@@ -470,8 +515,11 @@ __all__ = [
     "CHAPTER_LABEL_FORMAT",
     "CHAPTER_PROMPT_NAME",
     "CHAPTER_PROMPT_VERSION",
+    "COLUMN_CATEGORY",
+    "COLUMN_TOTAL_SCORE",
     "CaseCandidate",
     "CaseDraft",
+    "CaseSelection",
     "MonthlyCase",
     "MonthlyCaseBuilder",
     "MonthlyCaseError",
@@ -480,5 +528,6 @@ __all__ = [
     "build_chapter_schema",
     "case_row",
     "select_case_candidates",
+    "select_cases",
     "source_text_of",
 ]
