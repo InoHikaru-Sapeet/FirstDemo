@@ -216,6 +216,32 @@ def cell(
     return element("td", content, style=style, attrs=attrs)
 
 
+def spacer_row(height: str) -> str:
+    """縦の余白だけを作る行。
+
+    `margin` は `<td>` では効かないメールクライアントが多いので、余白は
+    padding か「高さだけを持つ行」で作る。空の `<td>` は潰れることがあるため
+    `&nbsp;` を1つ入れ、`font-size:0` で見えなくする（メールHTML の定石）。
+    """
+    return row(
+        [
+            cell(
+                "&nbsp;",
+                style=styles(
+                    f"height:{height}", f"line-height:{height}", "font-size:0"
+                ),
+            )
+        ]
+    )
+
+
+def spacer_cell(width: str) -> str:
+    """横の余白だけを作るセル（バッジを並べるときの間隔）。"""
+    return cell(
+        "&nbsp;", style=styles(f"width:{width}", "font-size:0", "line-height:0")
+    )
+
+
 def block(
     content: str,
     *,
@@ -400,6 +426,8 @@ __all__ = [
     "paragraphs",
     "row",
     "safe_url",
+    "spacer_cell",
+    "spacer_row",
     "split_paragraphs",
     "styles",
     "table",

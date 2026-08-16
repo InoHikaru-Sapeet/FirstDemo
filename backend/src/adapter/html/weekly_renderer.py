@@ -607,6 +607,7 @@ def _render(
             _card(record, labels=labels, narrative=narrative) for record in records
         )
 
+    rows.append(m.spacer_row("26px"))
     rows.append(_footer())
 
     badge = INDUSTRY_BADGE_FORMAT.format(industry=industry)
