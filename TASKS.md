@@ -777,7 +777,7 @@ flowchart TD
   - **除外済み（`action=exclude`）の判定を渡されたら AI を呼ぶ前に落とす**（`ClassificationError`）。§6.1 は除外記事を `continue` するので、ここへ来るのは呼び出し側の取り違え。1回の呼び出しが数分かかるため無駄打ちさせない。`merge` は除外ではないので通す（統合されるかは T-18 が決める）。
   - **除外判定・重複判定・§12 検証・採否のロジックはこの層に無い。** プロンプト本文でも「これらはアプリ側が config から決定的に行う」と宣言して LLM に判断させない。合計が `min_total_score_to_publish` 未満でも**この層は分類結果を返すだけ**（除外ログへ回すのは T-21）。
   - **一言要約の下限は T-20 の `MIN_SUMMARY_SENTENCES` をそのまま輸入した**（`SUMMARY_MIN_SENTENCES`）。ずらすと「指示どおり書いたのに warning」になる。上限3は §8.1 / T-07 の「2〜3文」の上側だが、**T-20 は長い側を warning にしていない**ので指示だけに留めた（この層で文の数を検証し直さない＝T-20 の重複実装をしない）。生成結果が §12 を通ることは `test_the_output_passes_the_format_check` が `check_article()` を実際に通して確かめている。
-  - **プロンプトの版は `PROMPT_VERSION`（`0.1.0`）で、`AICallMeta.prompt_version` として返る**（監査／validation メタ・§9.2）。⚠️ **本文を変えたら版を上げること**。T-30 で `prompts/PROMPT-2.md` へ切り出す前提の暫定置き場。
+  - **プロンプトの版は `PROMPT_VERSION`（`0.1.0`）で、`AICallMeta.prompt_version` として返る**（監査／validation メタ・§9.2）。⚠️ **本文を変えたら版を上げること**。~~T-30 で `prompts/PROMPT-2.md` へ切り出す前提の暫定置き場。~~ → **2026-08-17（T-30）**：切り出しの向きが逆になった。**版と本文の正はこのモジュールのまま**で、`prompts/PROMPT-2.md` は `make prompts` が描画した読み物（理由は T-30 備考）。⚠️ **本文を変えたら `make prompts` も流すこと**。
   - multi タグは `tuple` にして**同じ値の重複を畳む**（`業界` 欄が `不動産;不動産` にならないように。順序は出力順のまま）。
   - **テストは `FakeAIClient`（`AIClient` プロトコルのテストダブル）で、実際の `claude` を起動しない。** 出力の検証は本物と同じ経路（渡した出力スキーマで `parse_json_document`）を通し、スキーマ不一致は本物と同じ `AIOutputParseError` にしてある。テスト76件（`make test` 全体 1383件）。
   - **ミューテーションで確認済み**：`extra="forbid"` を緩めると4件、軸点の範囲拘束を外すと3件、上限を静的な100にすると3件、`strict` を外すと2件、`Literal` を自由文字列にすると12件、multi の `min_length` を外すと1件、降格を適用しないと4件、区分の境界を `>=`→`>` にすると3件、タグへ降格前の区分を入れると1件、除外ガードを外すと各1件、重複除去を外すと1件、合計の軸欠落チェックを外すと1件が落ちる。
@@ -1130,16 +1130,33 @@ flowchart TD
 
 ### P9. プロンプト運用（設計書 §9 ／ 仕様書 §15-9）
 
-#### - [ ] T-30: プロンプトのテンプレート化とバージョン管理
+#### - [x] T-30: プロンプトのテンプレート化とバージョン管理
 - **対応**: §9.1・§9.2（→ 仕様書 §13.2〜13.4）
 - **依存**: T-15, T-21
-- **成果物**: `prompts/PROMPT-1.md`, `prompts/PROMPT-2.md`, `prompts/PROMPT-3-WEEKLY.md`, `prompts/PROMPT-3-MONTHLY.md`, `prompts/README.md`, `backend/src/adapter/llm/prompt_loader.py`
+- **成果物**: `prompts/PROMPT-1.md`, `prompts/PROMPT-2.md`, `prompts/PROMPT-2-NARRATIVE-WEEKLY.md`, `prompts/PROMPT-2-NARRATIVE-MONTHLY.md`, `prompts/PROMPT-2-MONTHLY-CASE.md`, `prompts/PROMPT-2-MONTHLY-CHAPTERS.md`, `prompts/COMMON-OUTPUT-INSTRUCTIONS.md`, `prompts/PROMPT-3-WEEKLY.md`, `prompts/PROMPT-3-MONTHLY.md`, `prompts/README.md`, `backend/src/adapter/cli/export_prompts.py`, `backend/tests/adapter/test_export_prompts.py`, `backend/Makefile`（`prompts` / `prompts-check`）, `README.md`
 - **完了条件**:
   - 4プロンプトを `{{変数}}` 付きテンプレートとしてファイル化し、**注入元を §9.1 の表どおり明記**（PROMPT-1: `{{PERIOD}}` / PROMPT-2: `{{PERIOD}}`,`{{dedup.*}}` / PROMPT-3-WEEKLY: `{{ISO_WEEK}}`,`{{target_industry}}`,`{{weekly.*}}` / PROMPT-3-MONTHLY: `{{MONTH}}`,`{{MONTH_JP}}`,`{{month_range}}`,`{{monthly.*}}`）
   - 各ファイルに `prompt_version`（semver）を持たせ、ローダが読み取る
   - **実行時に使用した `prompt_version` と `config.revision` を監査ログ／validation メタに記録**（再現性確保）
   - **PROMPT-3-WEEKLY / -MONTHLY の冒頭に「現時点では運用ドキュメント。実際の render は決定的 Python テンプレート（T-24/T-25）が担当し、本ファイルは将来 LLM 生成へ切り替える場合の仕様」と明記**
   - `prompts/README.md` に改訂は PR レビュー必須・テンプレート変数の増減は §9.1 の表と同時更新、を記載
+- **備考**: 2026-08-17 完了。**PM にパイプラインで使用中のプロンプトを見せる必要が生じたための前倒し**（P9 の順番より前に着手した）。
+  - ⚠️ **完了条件の「ファイルをテンプレート化してローダが読む」を、「コードを正とし、`prompts/*.md` はその描画結果を生成・CI で一致検査する」へ読み替えた。** したがって **`backend/src/adapter/llm/prompt_loader.py` は作っていない**（成果物から外し、`export_prompts.py` に置き換えた）。判断の根拠:
+    - **プロンプトは `{{変数}}` の差し替えではなく、config から**組み立てられている**。** 7カテゴリ・10必須タグ（候補値つき）・6軸の得点帯・13除外ルールは `_tag_lines()` / `_axis_lines()` / `_exclusion_rule_lines()` が config から行を生成しており、週次/月次の重心（`WEEKLY_EMPHASIS` / `MONTHLY_EMPHASIS`）や `adoption_class` の「出力しない」行のような**分岐**もある。ファイルをテンプレートにしても、これらの文面はコード側に残る。**「PM が読むファイルにプロンプト本文の全部があるとは限らない」状態になり、必須条件（乖離させない）を満たしたつもりで満たせない。**
+    - 逆向き（コードが正・ファイルは描画結果）なら、**PM が読むのは実際に組み立てられた文字列そのもの**になる。config 由来の値（不動産・13ルールの文面・得点帯）まで実値で読めるので、レビューの材料としてもテンプレートより情報量が多い。
+    - **本文を1文字も変えずに済む**（本タスクの厳守事項）。テンプレート化は6つの組み立て関数を書き換える作業で、切り出しの過程で空白・改行が変わる危険があった。
+    - **実行時にファイル読み込みが増えない**。プロンプトをファイルから読む形にすると、`prompts/` の欠落・パス解決の失敗が **30分の crawl の途中で**表面化しうる。また `backend/Dockerfile` のビルドコンテキストは `backend/` なので、リポジトリルートの `prompts/` はイメージへ入らない（コンテキスト変更が要る）。
+    - **リポジトリに同じ形の前例がある**：`schemas/config.schema.json`（Pydantic モデルが正・`make config-schema` で生成・`--check` で検査）。同じ作法に揃えた。
+  - **乖離の防止（必須条件）は2枚で担保している**。①本文は実行時と同じ `build_*_prompt()` を**そのまま呼んで**描画する（写しを書かない）。②`test_committed_prompts_match_the_code` がコミット済み `prompts/*.md` と描画結果の**完全一致**を検査する。⚠️ **ミューテーションで実効性を確認済み**：`crawl.py` の「あなたはAI動向のリサーチャーです。」を書き換えると3件（`test_committed_prompts_match_the_code` / `test_a_prompt_change_makes_the_committed_file_stale` / `test_check_passes_for_the_committed_files`）が落ちる。
+  - ⚠️ **完了条件の「4プロンプト」は実態と合っていなかった。** filter の中で AI に頼んでいる仕事が **分類・採点／週次 narrative／月次 narrative／月次の事例原稿／月次の章立て** の5本に分かれている（T-19・T-44・T-21）。**使用中のものを全部出す**方針にしたので、`prompts/` は PROMPT-2 系が5ファイル＋共通の出力指示1ファイルになった。パイプラインの段は crawl → filter → render の3段のまま（§8.4）。
+  - **出力形式の指示（`claude_cli_client.OUTPUT_INSTRUCTIONS`）も `COMMON-OUTPUT-INSTRUCTIONS.md` として出した。** 全プロンプトの末尾に付いて実際に送られているので、これが無いと `prompts/` は「実際に送っている本文」の一部を欠く。
+  - **`prompt_version` の正はコードの `PROMPT_VERSION` 定数**（Markdown 側に写しを持たない）。`test_versions_come_from_the_code` が固定。**実行時の版と `config.revision` の記録は T-15 の `AICallMeta` / `meta_to_audit_payload()` で既に満たされている**（本タスクでの変更なし）。
+  - **描画に使う config は仕様書 §5.2 の確定値**（`backend/tests/enterprise/data/config_initial.json`）。実行時に読む `artifacts/config.json` を使うと、生成物が実行環境・運用中の編集で変わって `--check` が成立しない。⚠️ **その代わり、`prompts/` に出ているカテゴリ・しきい値は「初期値」であって現在の運用値ではない**（読み方の注意は `prompts/README.md`）。運用中の値で読みたいときは `--config artifacts/config.json --output-dir /tmp/…` で別の場所へ出す。
+  - **記事・行・事例は `export_prompts.py` の `SAMPLE_*`**（描画用）。サンプルを変えると生成物が変わるので `make prompts` を流し直すこと。
+  - **PROMPT-3-WEEKLY / -MONTHLY は手書き**（実行経路に無く、描画元のコードが存在しない）。仕様書 §13.4 の本文を逐語で収録し、🚫「未使用・render は決定的 Python テンプレート」を冒頭に置いた。`test_prompt_3_is_marked_unused` が注記の存在を固定。**実装との差分**（今週のポイント・示唆・巻頭言などが別プロンプトになっている点、業界ごとに1通出す点）も各ファイルに書いてある。
+  - 設計書 §9.1 の表にある **PROMPT-2 の `{{dedup.*}}` は実際の本文に現れない**（重複・統合判定は決定的 Python＝T-18 が持ち、AI に聞かない）。`prompts/PROMPT-2.md` の「補足」に記録した。**設計書側の改訂は T-38**。
+  - ⚠️ **未解決**：`backend/Dockerfile` のビルドコンテキストは `backend/` なので、将来パイプラインをコンテナで動かす場合も `prompts/` はイメージに要らない（実行時に読まないため問題にならない）。ただし **`make prompts` / `make prompts-check` はリポジトリルートに `prompts/` がある前提**なので、backend だけを切り出して配布する形にはできない。
+  - テスト15件（`make test` 全体 **1812件**）。`make lint` / `make prompts-check` も通過。
 
 ---
 

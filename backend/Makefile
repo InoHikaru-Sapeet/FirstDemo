@@ -5,7 +5,7 @@ APP_MODULE := adapter.http.fastapi.main:app
 PORT ?= 8000
 
 .PHONY: help sync lint format type-check test test-ci dev
-.PHONY: config-schema config-schema-check migrate-config
+.PHONY: config-schema config-schema-check migrate-config prompts prompts-check
 .PHONY: create-admin service-token
 .PHONY: run-weekly run-monthly
 
@@ -22,6 +22,8 @@ help:
 	@echo "  config-schema        - config.json の JSON Schema を生成する"
 	@echo "  config-schema-check  - 生成済み JSON Schema が最新かを検査する"
 	@echo "  migrate-config       - xlsx から config.json を初期投入する（既定は dry。ARGS='--apply' で書き込み）"
+	@echo "  prompts              - 使用中のプロンプトを prompts/*.md へ書き出す"
+	@echo "  prompts-check        - コミット済み prompts/*.md が最新かを検査する"
 	@echo ""
 	@echo "  create-admin   - 最初の admin を作る（対話。ARGS='--promote a@b.com' も可）"
 	@echo "  service-token  - cron 用サービストークンを発行する"
@@ -59,6 +61,22 @@ config-schema:
 
 config-schema-check:
 	PYTHONPATH=src uv run python -m adapter.cli.export_config_schema --check
+
+# === プロンプトの書き出し（T-30 / 設計書 §9）===
+# ../prompts/*.md は「PM・編集担当が本文を読むための生成物」。正は
+# src/application/usecases/*.py の build_*_prompt() で、本文はそれを**そのまま
+# 呼んで**描画している。⚠️ prompts/ を手で編集しても実行されるプロンプトは変わらない。
+# ⚠️ **本文を変えたら PROMPT_VERSION を上げ、`make prompts` で生成し直して同じ PR に
+#    含めること**（版管理ルールは prompts/README.md）。忘れると `make test` が落ちる。
+# 描画には config が要る（本文はカテゴリ・タグ・得点帯・除外ルールを config から
+# 差し込む）。既定は仕様書 §5.2 の確定値で、実行時に読む artifacts/config.json では
+# ない（生成物を実行環境ごとに変えないため）。
+
+prompts:
+	PYTHONPATH=src uv run python -m adapter.cli.export_prompts $(ARGS)
+
+prompts-check:
+	PYTHONPATH=src uv run python -m adapter.cli.export_prompts --check
 
 # === 初期投入（移行。T-14 / 設計書 §10）===
 # docs/source/weekly_ai_intelligence_requirements.xlsx → artifacts/config.json。

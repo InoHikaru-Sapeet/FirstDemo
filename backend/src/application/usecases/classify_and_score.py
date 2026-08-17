@@ -123,10 +123,11 @@ from enterprise.services.format_check import (
     MIN_SUMMARY_SENTENCES,
 )
 
-# プロンプトの版（T-30 で `prompts/PROMPT-2.md` へ切り出し、ローダが読む予定）。
-# それまではこのモジュールが唯一の置き場。⚠️ **本文を変えたら版も上げること**
-# （実行時の版は `AICallMeta.prompt_version` として監査／validation メタに載る。
-# 設計書 §9.2 の再現性要件）。
+# プロンプトの版。**このモジュールが版と本文の正**で、`prompts/PROMPT-2.md` は
+# `make prompts`（T-30 `adapter.cli.export_prompts`）が描画した読み物。
+# ⚠️ **本文を変えたら版も上げ、`make prompts` で生成し直すこと**（忘れると
+# `make test` が落ちる）。実行時の版は `AICallMeta.prompt_version` として
+# 監査／validation メタに載る（設計書 §9.2 の再現性要件）。
 PROMPT_NAME = "PROMPT-2/classify_and_score"
 PROMPT_VERSION = "0.2.0"
 """⚠️ 0.1.0 → 0.2.0: 除外判定に要る事実の申告（`facts`）を足した（決定1）。"""

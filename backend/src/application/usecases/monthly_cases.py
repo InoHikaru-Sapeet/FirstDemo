@@ -65,8 +65,10 @@ from enterprise.entities.report_columns import (
 
 logger = logging.getLogger(__name__)
 
-# プロンプトの版（T-30 で `prompts/` へ切り出す前提の暫定置き場）。
-# ⚠️ **本文を変えたら版も上げること**（§9.2 の再現性要件）。
+# プロンプトの版。**このモジュールが版と本文の正**で、
+# `prompts/PROMPT-2-MONTHLY-{CASE,CHAPTERS}.md` は `make prompts`
+# （T-30 `adapter.cli.export_prompts`）が描画した読み物。
+# ⚠️ **本文を変えたら版も上げ、`make prompts` で生成し直すこと**（§9.2 の再現性要件）。
 CASE_PROMPT_NAME = "PROMPT-2/monthly_case"
 CASE_PROMPT_VERSION = "0.1.0"
 CHAPTER_PROMPT_NAME = "PROMPT-2/monthly_chapters"
