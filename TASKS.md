@@ -591,9 +591,24 @@ flowchart TD
   - ⚠️ **エラー本文はプロジェクト共通の `detail` 封筒に載せた**（`{"detail":{"error":"revision_conflict","current_revision":2}}`）。§3.3 は封筒なしの形で書いているが、T-40・T-42 が既に `detail` 封筒で統一されているのでそちらに合わせた（→ §3.3 の記法を揃えるなら T-38）。
   - **T-05 を必ず通ることはミューテーションで確認済み**：`save()` から `ensure_valid_config()` を外すと5件のテストが落ちる。監査ログの add を外すと2件落ちる。
 
----
-
-### P4. 移行（設計書 §10 ／ 仕様書 §15-10）
+#### - [ ] T-47: 手編集した `config.json` を履歴へ記録する CLI（`make config-record`）
+- **対応**: §4.3・§6.3（→ 仕様書 §6.3・§7.4）／ §8.3（`ConfigPinError` の修復案内）
+- **依存**: T-05, T-11, T-13, T-26
+- **成果物**: `backend/src/adapter/cli/record_config.py`, `backend/src/adapter/config_repository.py`（追記）, `backend/src/application/usecases/update_config.py`（追記）, `backend/src/application/usecases/run_orchestrator.py`（`ConfigPinError` の文面）, `backend/Makefile`, `backend/tests/adapter/test_record_config_cli.py`
+- **背景（実運用で発生・2026-08-17）**: T-26 の `get_pinned()` が、**手編集された `artifacts/config.json` と DB スナップショット（`config_revisions` revision=1・旧形式 `target_industry`）の乖離**を検出して実行前に停止した（`ConfigPinError` の設計どおり）。修復路として案内している管理画面（T-33）は最小実装済みだが、**サーバを立てずに `config.json` を直接調整する運用は今後も正式な admin 操作として残る**。ファイルと履歴を揃える CLI が要る。
+- **完了条件**:
+  - `artifacts/config.json` を読み、**T-04 スキーマ ＋ T-05 クロスフィールド検証**を通す
+  - DB の**最新 revision のスナップショットと比較**し、差分があれば：
+    - `meta.revision` を **最新+1** へ更新してファイルへ書き戻す（**原子的書き込み**）
+    - `config_revisions` へ新スナップショットと `diff_summary` を記録
+    - 監査ログ `config_update`（`actor` は `cli:` 系、`diff` は前 revision との差分）
+    - **既存の `update_config` ユースケース／`ConfigRepository` の経路を再利用**し、`PUT /config` と履歴・監査の形が揃うこと（二重実装しない）
+  - 差分がなければ「記録済み・変更なし」で正常終了（**冪等**）
+  - **dry が既定**（差分と新 revision 番号のプレビューのみ）、`--apply` で書き込み
+  - **検証失敗時は書き込まず中断**
+  - `ConfigPinError` の修復案内を「`make config-record ARGS='--apply'` を実行（または管理画面から保存）」へ更新
+  - テスト：乖離あり／なし／検証失敗／冪等性。`make help` へ1行追加
+- **備考**: 手編集は「ファイルが正」（T-11）の帰結で、禁じる代わりに**履歴へ後から追いつかせる**のがこのタスク。書き込み経路を増やさない（`ConfigRepository.save()` の1本）ことが要点。
 
 #### - [x] T-14: xlsx → config.json 初期マイグレーション CLI
 - **対応**: §10.2・§10.3・§10.4
