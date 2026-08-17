@@ -48,6 +48,9 @@ make config-schema-check  # 生成済みスキーマが最新かを検査
 
 make create-admin         # 最初の admin を作る（T-41）
 make service-token        # cron 用サービストークンを発行（T-41）
+
+make run-weekly           # 週刊を通しで実行（下の「パイプラインを実行する」）
+make run-monthly          # 月刊を通しで実行
 ```
 
 `make help` の後ろに `migrate-*` / `up` / `down` / `db-init` が出る（`Makefile.db.mk`）。
@@ -293,6 +296,115 @@ result = await worker.crawl("2026-W31")       # or "2026-07"
 > 検索なしの記事一覧は**モデルの記憶からの推測**になりうるが、形の上ではスキーマを
 > 通ってしまう。回数が **0 のときも、報告が無い（`None`）ときも失敗**にし、
 > **成果物を書く前に**落とす。
+
+## パイプラインを実行する（crawl → filter → render）
+
+実行の本体は **Run Orchestrator**（[`src/application/usecases/run_orchestrator.py`](src/application/usecases/run_orchestrator.py) ／ 設計書 §8）。
+状態機械・config の固定・二重起動防止・監査ログはここが持ち、**入口は2つあるが中身は同じ**です。
+
+| 入口 | いつ使うか | サーバ |
+|---|---|---|
+| `make run-weekly` / `make run-monthly`（CLI） | 手元で通しに動かして HTML を目視する | **不要** |
+| `POST /run/{weekly\|monthly}`（API） | **cron が叩く経路**。認可・202・二重起動の 409 まで含めて確認する | 必要（`make dev`） |
+
+> ⚠️ **週次フル実行は業界数に依存し、18業界で 90〜100分**（実測）。AI 呼び出しは
+> 1回で数分かかります（[上の「AI 呼び出し」](#ai-呼び出しclaude-code-cli)）。
+
+### CLI（サーバ不要）
+
+```bash
+make run-weekly                                    # 当週（Asia/Tokyo）
+make run-weekly PERIOD=2026-W33
+make run-monthly                                   # 前月
+make run-monthly PERIOD=2026-07
+
+make run-weekly PERIOD=2026-W33 ARGS="--from filter"   # 収集済みの raw から再開
+make run-weekly PERIOD=2026-W33 ARGS="--from render"   # 中間xlsx と narrative から再開
+make run-weekly ARGS="--from auto"                     # raw があれば crawl だけ省く
+make run-weekly ARGS="--retry job_20260817-080000-1a2b3c"   # 失敗した段からやり直す
+```
+
+`PERIOD` 省略時は仕様書 §13.1 の規則（週次＝当週 ISO 週 / 月次＝前月・Asia/Tokyo）。
+終了コードは **0 成功 / 1 実行が失敗 / 2 入力の不備 / 3 同じ期間が実行中**。
+
+### API（cron が叩く経路）
+
+```bash
+make service-token          # 生トークンを発行し、.env にはハッシュを入れる
+make dev                    # 別の端末でサーバを起動
+
+SERVICE_TOKEN=<生トークン> make run-weekly-api
+# => {"job_id":"job_20260817-080000-1a2b3c","type":"weekly","period":"2026-W34","status":"queued"}
+
+SERVICE_TOKEN=<生トークン> JOB=job_20260817-080000-1a2b3c make run-status
+```
+
+素の curl なら次のとおり（cron に書くのはこの形）。
+
+```bash
+curl -sS -X POST http://localhost:8000/run/weekly \
+  -H "Authorization: Bearer $SERVICE_TOKEN"
+```
+
+- **`period` は省略できます**（サーバが §13.1 の規則で解決します）。明示するなら
+  `-H 'Content-Type: application/json' -d '{"period":"2026-W34"}'`
+- **`202` は「受け付けた」であって「終わった」ではありません。** 進み方は
+  `GET /run/{job_id}` で見ます
+- **同じ `{種別, 期間}` が走っていれば `409`**（二重起動防止）。cron が重ねて
+  叩いても壊れません
+
+### できあがったもの
+
+```bash
+curl -sS http://localhost:8000/reports/2026-W34 -b cookie.txt
+# => {"period":"2026-W34","type":"weekly",
+#     "html_urls":[{"industry":"不動産","url":"/files/weekly_..._2026-W34.html"}],
+#     "xlsx_url":"/files/weekly_ai_intelligence_report.xlsx#sheet=2026-W34",
+#     "summary":{"adopted":11,"excluded":24}}
+```
+
+`GET /reports/{period}` と `GET /files/{filename}` は**全ロールが閲覧できます**（§6.2）。
+配信されるのは**週刊 HTML・月刊 HTML・中間xlsx の4種だけ**で、`config.json` や
+`scratch/`（ドライランの出力）・`_history/`・`_runs/` は配信経路に載りません。
+
+### 途中で止めたいとき／落ちたとき
+
+| | |
+|---|---|
+| **キャンセル API** | **ありません。** 止めるにはプロセスを落とす（CLI なら `Ctrl-C`、API ならサーバを止める） |
+| **ジョブ全体のタイムアウト** | **ありません。** 効くのは AI 呼び出し1回ごとの制限（`AI_TIMEOUT_SECONDS` / `AI_CRAWL_TIMEOUT_SECONDS`）だけ |
+| **落とした後** | ジョブ記録は「実行中」のまま残り、ロック（`artifacts/_runs/locks/`）も残ります。**次に同じ期間を要求したときに自動で回収**され、記録は `failed` になります |
+| **手で外す** | `rm artifacts/_runs/locks/{weekly,monthly}_{期間}.lock` |
+| **やり直す** | 途中まで書けた成果物は残っているので、`--from` / `--retry` で途中から回せます |
+
+## TODO: 本番 cron 登録
+
+⚠️ **インフラ（ホスティング環境）が未確定のため、crontab への登録手順はまだ書けません。**
+確定後にこの節へコマンド例を追記してください（→ [`../TASKS.md`](../TASKS.md) T-38）。
+
+登録するスケジュールは**確定済み**です（仕様書 §13.1 ／ 設計書 §8.1）。
+
+| ジョブ | cron 式 | TZ | 対象期間 |
+|---|---|---|---|
+| 週刊（`weekly_ai_intelligence`） | `0 8 * * MON` | `Asia/Tokyo` | 当週 ISO 週（`{{ISO_WEEK}}`） |
+| 月刊（`monthly_belief`） | `0 9 1 * *` | `Asia/Tokyo` | 前月（`{{PREV_MONTH}}`） |
+
+叩くコマンドは上の「API（cron が叩く経路）」と同じもの（`period` は省略。サーバが
+上の表の規則で解決します）。
+
+**確定後に決めること**
+
+1. **どこで動かすか。** `claude -p` は**ログイン済みの CLI がある機に**限られます
+   （TASKS.md §1.1「AI呼び出し方式」）。無人のサーバへ載せる時点で
+   **Anthropic API 実装への差し替え**が要ります
+2. **`TZ=Asia/Tokyo` を crontab に明示する**（既定が UTC の環境では月曜 08:00 が
+   日曜 23:00 にずれます）
+3. **生トークンの渡し方**（systemd の `EnvironmentFile` / シークレットマネージャ）。
+   ⚠️ crontab の行に直接書かない（`ps` と `/var/log` に残ります）
+4. **失敗の通知先。** `202` は受付にすぎないので、cron のログだけでは成否が
+   分かりません（`GET /run/{job_id}` を見るか、監査ログの `run_finish` を見る）
+5. **多重起動の扱い。** アプリ側は 409 で断りますが、cron 側でも重ね打ちしない
+   設定（`flock` 等）を入れるかは運用の判断
 
 ## データベース
 

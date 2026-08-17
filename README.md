@@ -43,6 +43,39 @@ pnpm install
 pnpm dev            # http://localhost:5173
 ```
 
+## パイプラインを実行する
+
+crawl → filter → render を通しで実行します。**入口は2つありますが中身は同じ**
+（どちらも Run Orchestrator を通るので、状態機械・二重起動防止・監査ログが効きます）。
+詳細は [`backend/README.md`](./backend/README.md#パイプラインを実行するcrawl--filter--render)。
+
+```bash
+cd backend
+
+# サーバ不要。手元で通しに動かして HTML を目視する
+make run-weekly                      # 当週（Asia/Tokyo）
+make run-weekly PERIOD=2026-W33
+make run-monthly                     # 前月
+make run-weekly PERIOD=2026-W33 ARGS="--from filter"   # 途中から再開
+
+# cron が叩くのと同じ経路（サーバ起動が必要）
+make dev
+SERVICE_TOKEN=<生トークン> make run-weekly-api
+```
+
+> ⚠️ **週次フル実行は業界数に依存し、18業界で 90〜100分**（実測）。
+> API は `202` を返してから裏で走ります。進み方は `GET /run/{job_id}`。
+
+### TODO: 本番 cron 登録
+
+**インフラ（ホスティング環境）が未確定のためコマンド例はまだ書けません。**
+登録するスケジュールは確定済みで、**週刊 `0 8 * * MON` / 月刊 `0 9 1 * *`（ともに
+`Asia/Tokyo`）**。確定後に決めることの一覧は
+[`backend/README.md`](./backend/README.md#todo-本番-cron-登録) にあります。
+
+> ⚠️ **`claude -p` はログイン済みの CLI がある機でしか動きません**（TASKS.md §1.1）。
+> 無人のサーバへ載せる時点で Anthropic API 実装への差し替えが要ります。
+
 ## プロンプト
 
 パイプライン（crawl → filter → render）が AI へ送っているプロンプトの本文は

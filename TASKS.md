@@ -1128,14 +1128,21 @@ flowchart TD
   - **`ReportStore.read_exclusions()` に `period` を足した**（既存の `_exclusions_by_period()` を使う後方互換の追加）。除外ログは週次ブックに全期間ぶん積まれる（§8.1）ので、`summary.excluded` はそこから期間で切り出す。
   - **実績**: `make lint` / `make type-check`（診断数は着手前と同じ7件） / `make test` すべて通過。テストは **1985件**（T-27 で +91：run ルーター 22 / reports・files ルーター 39 / RBAC 30）。
 
-#### - [ ] T-28: ローカル実行ターゲットと本番cron TODO
+#### - [x] T-28: ローカル実行ターゲットと本番cron TODO
 - **対応**: §8.1
 - **依存**: T-27
-- **成果物**: `backend/Makefile`, `README.md`
+- **成果物**: `backend/Makefile`, `README.md`, `backend/README.md`, `backend/tests/test_cron_schedule.py`
 - **完了条件**:
   - `make run-weekly`（当週 ISO 週を解決して実行）／`make run-monthly`（前月を解決して実行）。`PERIOD=` で明示指定も可能
   - README に **「TODO: 本番 cron 登録」** の項を追加（インフラ確定後にコマンド例を追記する旨と、対象スケジュール `0 8 * * MON` / `0 9 1 * *`（Asia/Tokyo）を記載）
   - README のセットアップ手順にパイプライン実行手順を追記
+- **備考（実績 2026-08-17）**: **T-45 の CLI 版と置き換えず、別名で共存させた**（T-45 備考の申し送り「名前だけが残って中身が別物、を避ける」への回答）。
+  - **`make run-weekly` / `run-monthly` は CLI のまま**（`POST /run` を叩く形にはしなかった）。理由は2つ：**サーバを起動していなくても手元で通しに動かせる**ことが T-45 からのこの入り口の目的であること／**T-26 で CLI も Orchestrator を通るようになった**ので、名前と中身の食い違いがそもそも無いこと（状態機械・二重起動防止・監査ログは API 実行と同じものが効く）。
+  - **API 経由は `make run-weekly-api` / `run-monthly-api` を新設**（＋ `run-status`）。用途は「**cron が叩くのと同じ経路**で、認可・202・二重起動の 409 まで含めて確認する」こと。⚠️ **生トークンは環境変数で渡す**（`SERVICE_TOKEN=... make run-weekly-api`）。引数に書くと `ps` とシェル履歴に残る。未指定なら実行せず終了コード 2 で止める。
+  - **cron のコマンド例は `period` を省略した形**（サーバが §13.1 の規則で解決する＝T-27）。crontab に日付計算を書かせないため。
+  - **crontab の登録手順は枠だけ**（README の「TODO: 本番 cron 登録」）。⚠️ **スケジュールは確定値なので表として先に書き、`tests/test_cron_schedule.py` で設計書 §8.1 との一致を固定した**（README が先に古くなるのを防ぐ）。同じテストが「cron の起動時刻（月曜・毎月1日）と `resolve_period()` の既定（当週・前月）が噛み合うこと」も押さえている。
+  - 確定後に決めることを5点として残した：**どこで動かすか**（`claude -p` はログイン済み CLI のある機に限られる＝無人サーバへ載せる時点で Anthropic API 実装への差し替えが要る）／`TZ=Asia/Tokyo` の明示（既定 UTC だと月曜 08:00 が日曜 23:00 になる）／生トークンの渡し方／**失敗の通知先**（202 は受付にすぎず cron のログでは成否が分からない）／cron 側での重ね打ち防止（アプリは 409 で断るが `flock` を足すかは運用判断）。
+  - **実績**: `make lint` / `make test` 通過。テストは **1992件**（T-28 で +7：cron スケジュールの一致検査）。
 
 ---
 
@@ -1352,8 +1359,8 @@ flowchart TD
   - ⚠️ **設計書 §3.3 の `PUT /config` リクエスト例を直す**（T-11 で判明）：例は `min_total_score_to_publish` を 62 にしているが、§5.2 の `share_only` が 60 なので **§2.1.1-2 の降順整合（`share_only ≥ min_total_score_to_publish`）に違反し、実装は 422 を返す**。値を下げるか、`adoption_class_score_map` も併せて上げる例に差し替える
   - **認証まわりの運用手順**を README に明記：初回セットアップ（`make migrate-all` → `make create-admin` → ログイン）／ユーザーの昇格手順／サービストークンの設定
   - **`AuthenticationBackend` の差し替え口**（どのプロトコルを実装し、どこで DI を差し替えるか）を README と CLAUDE.md に明記。**「SSO は現時点でやらない。これは将来の余地であって対応済みではない」**ことも併記（§1.1 備考）
-  - **「TODO: 本番 cron 登録」**の項（T-28 と重複しないよう相互参照）
-  - パイプライン実行手順（`make run-weekly` / `make run-monthly` / マイグレーション CLI）
+  - ~~**「TODO: 本番 cron 登録」**の項（T-28 と重複しないよう相互参照）~~ → **2026-08-17 実施済み（T-28）**。ルート README と `backend/README.md` の両方にあり、スケジュールの一致は `tests/test_cron_schedule.py` が固定している。**このタスクで残っているのは、インフラ確定後に crontab 登録の実コマンドを埋めること**
+  - ~~パイプライン実行手順（`make run-weekly` / `make run-monthly` / マイグレーション CLI）~~ → **2026-08-17 実施済み（T-28）**
   - README「次のタスク」を現状に合わせて更新（本 TASKS.md への参照を追加）
   - backend 側 CLAUDE.md にレイヤ構成・命名規約・成果物パス規約を記載
 - **備考**: 仕様書・設計書の改訂を**このタスクまで遅らせている**のは、認証の実装（T-08・T-40〜T-42）で決めた細部が固まってから一度に直すほうが手戻りが少ないため。それまでの**実装方針の正は TASKS.md §1**（future-roadmap.md の記載と同じ扱い）。

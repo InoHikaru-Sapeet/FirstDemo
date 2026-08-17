@@ -7,7 +7,7 @@ PORT ?= 8000
 .PHONY: help sync lint format type-check test test-ci dev
 .PHONY: config-schema config-schema-check migrate-config prompts prompts-check
 .PHONY: create-admin service-token
-.PHONY: run-weekly run-monthly
+.PHONY: run-weekly run-monthly run-weekly-api run-monthly-api run-status
 
 help:
 	@echo ""
@@ -33,6 +33,10 @@ help:
 	@echo "                   途中から再開: ARGS='--from filter' / ARGS='--from render'"
 	@echo "                   前段成果物があれば省く: ARGS='--from auto'"
 	@echo "                   失敗した段からやり直す: ARGS='--retry job_...'"
+	@echo ""
+	@echo "  run-weekly-api   - POST /run/weekly を叩く（cron と同じ経路。要 SERVICE_TOKEN=）"
+	@echo "  run-monthly-api  - POST /run/monthly を叩く（同上）"
+	@echo "  run-status       - ジョブの状態を見る（JOB=job_...）"
 	@echo ""
 
 # === 開発 ===
@@ -119,6 +123,39 @@ run-weekly:
 run-monthly:
 	PYTHONPATH=src uv run python -m adapter.cli.run_pipeline monthly \
 		$(if $(PERIOD),--period $(PERIOD)) $(ARGS)
+
+# === API 経由の実行（T-28。cron が叩く形の確認用）===
+# ⚠️ **上の run-weekly / run-monthly とは経路が違うだけで、走る中身は同じ**
+#    （どちらも T-26 の Run Orchestrator を通る）。使い分けは:
+#      - run-weekly      … サーバ不要。手元で通しに動かして HTML を目視する
+#      - run-weekly-api  … **cron が叩くのと同じ経路**。認可・202・二重起動の
+#                          409 まで含めて、本番の呼ばれ方を確認する
+# ⚠️ **サービストークンの生の値**が要る（`make service-token` の出力。.env に
+#    入れるのはハッシュのほう）。引数に書くと ps とシェル履歴に残るので、
+#    環境変数で渡す: `SERVICE_TOKEN=... make run-weekly-api`
+# ⚠️ **202 はすぐ返る（実行は裏で 90〜100分続く）。** 進み方は job_id を
+#    GET /run/{job_id} で見る。
+
+BASE_URL ?= http://localhost:8000
+
+run-weekly-api:
+	@test -n "$(SERVICE_TOKEN)" || \
+		{ echo "SERVICE_TOKEN=<生トークン> を渡してください（make service-token で発行）"; exit 2; }
+	curl -sS -X POST $(BASE_URL)/run/weekly \
+		-H "Authorization: Bearer $(SERVICE_TOKEN)" \
+		$(if $(PERIOD),-H 'Content-Type: application/json' -d '{"period":"$(PERIOD)"}')
+
+run-monthly-api:
+	@test -n "$(SERVICE_TOKEN)" || \
+		{ echo "SERVICE_TOKEN=<生トークン> を渡してください（make service-token で発行）"; exit 2; }
+	curl -sS -X POST $(BASE_URL)/run/monthly \
+		-H "Authorization: Bearer $(SERVICE_TOKEN)" \
+		$(if $(PERIOD),-H 'Content-Type: application/json' -d '{"period":"$(PERIOD)"}')
+
+# ジョブの進み方を見る（JOB=job_... は POST /run が返した job_id）。
+run-status:
+	@test -n "$(JOB)" || { echo "JOB=job_... を渡してください"; exit 2; }
+	curl -sS $(BASE_URL)/run/$(JOB) -H "Authorization: Bearer $(SERVICE_TOKEN)"
 
 # === テスト ===
 
