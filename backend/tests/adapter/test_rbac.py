@@ -129,6 +129,20 @@ TASKS_T29_DRY_RUN_ROWS: dict[
     Operation.GET_CONFIG_DRY_RUN_RESULT: (ALLOW, DENY, DENY, DENY),
 }
 
+# T-36 の追加行（§6.2 にも §3.2 にも列挙が無い）。
+# 一覧（`GET /reports`）と記事ごとの表示（`GET /reports/{period}/articles`）は
+# **`GET /reports/{period}` と同じ行**（全ロール可）。§6.2 の
+# 「`GET /reports/{period}`（HTML/一覧）」が指しているのがまさにこれで、
+# **自己登録直後の viewer が最初に着地する画面**（T-36）が叩く口。
+# ⚠️ `articles` は選別のために config を読むが、返すのは**メール版 HTML に
+# 出ている項目だけ**（合計スコアとしきい値は返さない）。
+TASKS_T36_REPORT_ROWS: dict[
+    Operation, tuple[Decision, Decision, Decision, Decision]
+] = {
+    Operation.GET_REPORTS_INDEX: (ALLOW, ALLOW, ALLOW, ALLOW),
+    Operation.GET_REPORT_ARTICLES: (ALLOW, ALLOW, ALLOW, ALLOW),
+}
+
 # TASKS.md T-09「認証系エンドポイントをマトリクスへ追加」（2026-08-13 の方針変更分）。
 TASKS_T09_AUTH_ROWS: dict[Operation, tuple[Decision, Decision, Decision, Decision]] = {
     Operation.POST_AUTH_REGISTER: (ALLOW, ALLOW, ALLOW, ALLOW),
@@ -148,6 +162,7 @@ ALL_EXPECTED_ROWS = (
     | TASKS_T09_AUTH_ROWS
     | TASKS_T27_RUN_ROWS
     | TASKS_T29_DRY_RUN_ROWS
+    | TASKS_T36_REPORT_ROWS
 )
 
 
@@ -608,6 +623,11 @@ REQUESTS = [
     Call(Operation.GET_RUN_JOB, "GET", "/run/job_nope"),
     Call(Operation.GET_REPORTS, "GET", "/reports/2026-W31"),
     Call(Operation.GET_FILES, "GET", "/files/monthly_belief_2026-07.html"),
+    # --- T-36 -----------------------------------------------------------------
+    # ⚠️ 許可されるロールでは 403 以外なら何でもよい。この tmp な artifact_root には
+    # 成果物が無いので、一覧は 200（空）／記事ごとの表示は 404 になる。
+    Call(Operation.GET_REPORTS_INDEX, "GET", "/reports"),
+    Call(Operation.GET_REPORT_ARTICLES, "GET", "/reports/2026-W31/articles"),
     # --- T-29 -----------------------------------------------------------------
     # ⚠️ この tmp な artifact_root には config も成果物も無いので、admin は 404 に
     # なる。**認可の配線だけを見ている**（中身は `test_config_router.py` の担当）。

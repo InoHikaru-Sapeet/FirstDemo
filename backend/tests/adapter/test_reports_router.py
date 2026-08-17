@@ -12,6 +12,7 @@
 """
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -26,6 +27,7 @@ from sqlalchemy.pool import NullPool
 
 from adapter.database.base import Base
 from adapter.database.models.user import User
+from adapter.html.category_colors import CATEGORY_COLORS
 from adapter.http.fastapi.auth.dependencies import get_db_session, get_session_factory
 from adapter.http.fastapi.main import app
 from adapter.storage.artifact_store import ArtifactStore
@@ -38,6 +40,10 @@ PASSWORD = "correct horse battery staple"
 WEEKLY_PERIOD = "2026-W31"
 MONTHLY_PERIOD = "2026-07"
 NOW = datetime(2026, 8, 17, 8, 0, tzinfo=UTC)
+
+INITIAL_CONFIG_PATH = (
+    Path(__file__).parents[1] / "enterprise" / "data" / "config_initial.json"
+)
 
 # `不動産` をパーセントエンコードしたもの（URL は一意に読める形で返す）。
 INDUSTRY_ENCODED = "%E4%B8%8D%E5%8B%95%E7%94%A3"
@@ -183,6 +189,43 @@ def write_monthly_html(harness: Harness) -> Path:
     path = harness.store.monthly_html_path(MONTHLY_PERIOD)
     harness.store.write_text(path, "<html>月刊</html>")
     return path
+
+
+def seed_config(harness: Harness, *, industries: list[str] | None = None) -> None:
+    """`config.json` を置く（`GET /reports/{period}/articles` の選別に要る）。
+
+    ⚠️ **ファイルを直接書く**（`ConfigRepository.create_initial()` は履歴を DB へ
+    書くが、この口は config をファイルからしか読まない）。
+    """
+    raw = json.loads(INITIAL_CONFIG_PATH.read_text(encoding="utf-8"))
+    if industries is not None:
+        raw["tunable_thresholds"]["weekly"]["target_industries"] = industries
+    harness.store.write_text(
+        harness.store.config_path(), json.dumps(raw, ensure_ascii=False)
+    )
+
+
+def write_narrative(
+    harness: Harness,
+    *,
+    insights: dict[str, str] | None = None,
+    industries: tuple[str, ...] = ("不動産",),
+) -> None:
+    """`narrative_{period}.json`（T-44 の形）を置く。"""
+    document = {
+        "period": WEEKLY_PERIOD,
+        "industries": {
+            industry: {
+                "point_of_week_sentences": ["今週の総括。"],
+                "insights": dict(insights or {}),
+            }
+            for industry in industries
+        },
+    }
+    harness.store.write_text(
+        harness.store.narrative_path(WEEKLY_PERIOD),
+        json.dumps(document, ensure_ascii=False),
+    )
 
 
 # =============================================================================
@@ -339,6 +382,305 @@ def test_a_period_cannot_walk_out_of_the_artifact_root(
 ) -> None:
     """区切りを含む period はルーティングにも当たらない（422 の手前で 404）。"""
     assert harness.client.get(f"/reports/{period}").status_code in (404, 422)
+
+
+# =============================================================================
+# GET /reports（一覧。T-36）
+# =============================================================================
+
+
+def test_the_list_is_empty_before_anything_is_rendered(harness: Harness) -> None:
+    """⚠️ **404 ではなく空の一覧**（「まだ何も無い」は正常な状態）。"""
+    response = harness.client.get("/reports")
+
+    assert response.status_code == 200
+    assert response.json() == {"reports": []}
+
+
+def test_the_list_carries_the_period_type_and_industries(harness: Harness) -> None:
+    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness, "金融")
+    write_monthly_html(harness)
+
+    response = harness.client.get("/reports")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "reports": [
+            # ⚠️ **新しい号が先**（period の文字列の降順）。業界はファイル名順。
+            {
+                "period": WEEKLY_PERIOD,
+                "type": "weekly",
+                "industries": ["不動産", "金融"],
+            },
+            {"period": MONTHLY_PERIOD, "type": "monthly", "industries": []},
+        ]
+    }
+
+
+def test_a_period_with_a_sheet_but_no_html_is_not_listed(harness: Harness) -> None:
+    """⚠️ 一覧は「読めるレポート」の一覧（render まで通ったもの）。
+
+    ⚠️ **その period を直接引けば件数は返る**（一覧に出ないことと 404 は別）。
+    """
+    write_weekly_sheet(harness, rows=5)
+
+    assert harness.client.get("/reports").json() == {"reports": []}
+    assert harness.client.get(f"/reports/{WEEKLY_PERIOD}").status_code == 200
+
+
+def test_the_list_does_not_read_the_config(harness: Harness) -> None:
+    """⚠️ 対象業界は config にも書いてあるが、一覧は**置いてあるファイル**から。
+
+    config を読んで組み立てると、設定値が非 admin へ漏れる経路になる（§6.1）。
+    ここでは config.json が無い状態でも一覧が 200 で返ることで、参照していない
+    ことを示す（config を読んでいたら 404 か 500 になる）。
+    """
+    assert not harness.store.exists(harness.store.config_path())
+    write_weekly_html(harness, "不動産")
+
+    response = harness.client.get("/reports")
+
+    assert response.status_code == 200
+    assert response.json()["reports"][0]["industries"] == ["不動産"]
+
+
+# =============================================================================
+# GET /reports/{period}/articles（閲覧ページ用。T-36）
+# =============================================================================
+
+
+def test_the_articles_carry_what_the_mail_html_shows(harness: Harness) -> None:
+    seed_config(harness)
+    write_weekly_sheet(harness, rows=2)
+    write_weekly_html(harness, "不動産")
+    write_narrative(
+        harness, insights={"https://example.com/news/0": "自社では試せる。"}
+    )
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["period"] == WEEKLY_PERIOD
+    assert body["industry"] == "不動産"
+    assert body["industries"] == ["不動産"]
+    assert body["point_of_week"] == "今週の総括。"
+
+    section = body["sections"][0]
+    assert section["heading"] == "不動産関連トピック"
+    first = section["articles"][0]
+    assert first == {
+        "category_id": "enterprise_ai_case",
+        "category_label": "企業AI活用事例",
+        "category_color": CATEGORY_COLORS["enterprise_ai_case"],
+        "title": "記事0",
+        "url": "https://example.com/news/0",
+        "summary": "AIエージェントを導入した。契約業務が自動化された。",
+        "insight": "自社では試せる。",
+        "source": "ITmedia",
+    }
+
+
+def test_the_articles_never_expose_scores_or_thresholds(harness: Harness) -> None:
+    """⚠️ **メール版 HTML に出ていないものは返さない**（config の推定経路を作らない）。
+
+    合計スコアを返すと、採用された記事の最低点から
+    `min_total_score_to_publish` の下限が読める（admin 限定の値・§6.1）。
+    """
+    seed_config(harness)
+    write_weekly_sheet(harness, rows=1)
+    write_weekly_html(harness, "不動産")
+    write_narrative(harness)
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    card = response.json()["sections"][0]["articles"][0]
+    assert set(card) == {
+        "category_id",
+        "category_label",
+        "category_color",
+        "title",
+        "url",
+        "summary",
+        "insight",
+        "source",
+    }
+    assert "83" not in response.text  # 合計スコアの値そのもの
+
+
+def test_every_insight_is_returned_even_the_ones_the_mail_holds_back(
+    harness: Harness,
+) -> None:
+    """⚠️ メール版はセクション先頭1件だけ（T-48 Step 1）。Web は全件返す。"""
+    seed_config(harness)
+    write_weekly_sheet(harness, rows=3)
+    write_weekly_html(harness, "不動産")
+    write_narrative(
+        harness,
+        insights={
+            f"https://example.com/news/{index}": f"示唆{index}。" for index in range(3)
+        },
+    )
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    insights = [
+        card["insight"]
+        for section in response.json()["sections"]
+        for card in section["articles"]
+    ]
+    assert insights == ["示唆0。", "示唆1。", "示唆2。"]
+
+
+def test_the_summary_is_not_truncated_for_the_web(harness: Harness) -> None:
+    """メール版は全角60字で切るが（T-48 Step 1）、Web はトグルで開くので全文。"""
+    seed_config(harness)
+    long_summary = "あ" * 100
+    harness.reports.write_weekly(
+        period=WEEKLY_PERIOD,
+        articles=[weekly_article(0) | {"一言要約": long_summary}],
+        revision=1,
+        run_id="job_test",
+    )
+    write_weekly_html(harness, "不動産")
+    write_narrative(harness)
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    card = response.json()["sections"][0]["articles"][0]
+    assert card["summary"] == long_summary
+    assert "…" not in card["summary"]
+
+
+def test_a_url_that_is_not_http_is_returned_as_null(harness: Harness) -> None:
+    """⚠️ メール版 `link()` と同じ判定（閲覧ページにも `javascript:` を通さない）。"""
+    seed_config(harness)
+    harness.reports.write_weekly(
+        period=WEEKLY_PERIOD,
+        articles=[weekly_article(0) | {"URL": "javascript:alert(1)"}],
+        revision=1,
+        run_id="job_test",
+    )
+    write_weekly_html(harness, "不動産")
+    write_narrative(harness)
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    assert response.json()["sections"][0]["articles"][0]["url"] is None
+
+
+def test_the_industry_edition_can_be_chosen(harness: Harness) -> None:
+    seed_config(harness, industries=["不動産", "金融"])
+    write_weekly_sheet(harness, rows=1)
+    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness, "金融")
+    write_narrative(harness, industries=("不動産", "金融"))
+
+    response = harness.client.get(
+        f"/reports/{WEEKLY_PERIOD}/articles", params={"industry": "金融"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["industry"] == "金融"
+    # 記事の「業界」は不動産だけなので、金融版では業界共通トピックへ落ちる。
+    assert response.json()["sections"][0]["heading"] == "業界共通トピック"
+
+
+def test_an_industry_edition_that_was_not_published_is_404(harness: Harness) -> None:
+    seed_config(harness, industries=["不動産", "金融"])
+    write_weekly_sheet(harness, rows=1)
+    write_weekly_html(harness, "不動産")
+    write_narrative(harness)
+
+    response = harness.client.get(
+        f"/reports/{WEEKLY_PERIOD}/articles", params={"industry": "金融"}
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "industry_not_published"
+
+
+def test_articles_are_not_available_for_a_monthly_period(harness: Harness) -> None:
+    """月刊は章立ての読み物なので HTML をそのまま見せる（T-36 の割り切り）。"""
+    seed_config(harness)
+    write_monthly_html(harness)
+
+    response = harness.client.get(f"/reports/{MONTHLY_PERIOD}/articles")
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "articles_not_available"
+
+
+def test_articles_for_a_week_with_no_html_are_404(harness: Harness) -> None:
+    seed_config(harness)
+    write_weekly_sheet(harness, rows=3)
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "report_not_found"
+
+
+def test_a_missing_config_is_reported_as_a_missing_report(harness: Harness) -> None:
+    """⚠️ **`config_not_found` を返さない**（非 admin に config の存在を教えない）。
+
+    §6.1 は「admin 以外には存在も中身も返さない」。config が無ければ採否も
+    決められないので、「そのレポートは読めない」＝レポートの 404 へ畳む。
+    """
+    assert not harness.store.exists(harness.store.config_path())
+    write_weekly_sheet(harness, rows=1)
+    write_weekly_html(harness, "不動産")
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "report_not_found"
+    assert "config" not in response.text
+
+
+def test_a_week_without_a_narrative_still_lists_its_articles(
+    harness: Harness,
+) -> None:
+    """⚠️ render は生成テキストが無いと落とすが、閲覧は落とさない。"""
+    seed_config(harness)
+    write_weekly_sheet(harness, rows=1)
+    write_weekly_html(harness, "不動産")
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    assert response.status_code == 200
+    assert response.json()["point_of_week"] is None
+    assert response.json()["sections"][0]["articles"][0]["insight"] is None
+
+
+def test_the_articles_use_the_same_selection_as_the_mail_html(
+    harness: Harness,
+) -> None:
+    """⚠️ 採否・並び順・上限はメール版と同じ判定（`select_articles()`）。
+
+    Web 用に別の選び方をすると「メールに無い記事が Web にある」状態になり、
+    どちらが号の内容なのか決まらなくなる。
+    """
+    seed_config(harness)
+    below = weekly_article(9) | {"合計スコア": 10, "レポート採用区分": "不採用"}
+    harness.reports.write_weekly(
+        period=WEEKLY_PERIOD,
+        articles=[weekly_article(0), below],
+        revision=1,
+        run_id="job_test",
+    )
+    write_weekly_html(harness, "不動産")
+    write_narrative(harness)
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    titles = [
+        card["title"]
+        for section in response.json()["sections"]
+        for card in section["articles"]
+    ]
+    assert titles == ["記事0"]
 
 
 # =============================================================================

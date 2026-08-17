@@ -1344,16 +1344,29 @@ flowchart TD
   - **件数サマリ（採用/除外）を即表示**、明細（除外区分・理由つき）をダウンロード可能
   - 「実ファイルは上書きされない／結果は TTL 後に削除される」ことを UI に明示
 
-#### - [ ] T-36: レポート一覧・閲覧ページ
+#### - [x] T-36: レポート一覧・閲覧ページ
 - **対応**: §3.3
 - **依存**: T-31
-- **成果物**: `frontend/src/components/pages/ReportsPage.tsx`
+- **成果物**: `frontend/src/components/pages/ReportsPage.tsx`, `frontend/src/api/reports.ts`, `backend/src/adapter/http/fastapi/routers/reports.py`（`GET /reports` / `GET /reports/{period}/articles`）, `backend/src/adapter/storage/artifact_store.py`（`rendered_periods()`）, テスト
 - **完了条件**:
   - 週次（`YYYY-Www`）／月次（`YYYY-MM`）のレポート一覧と、生成HTML・中間xlsx へのリンク
   - 採用/除外件数サマリの表示
   - **editor / viewer でも閲覧できる**（config には一切触れない）
-  - editor / viewer 向けに `POST /run` 実行ボタンの出し分け（viewer は非表示、実体はサーバー403）
+  - ~~editor / viewer 向けに `POST /run` 実行ボタンの出し分け（viewer は非表示、実体はサーバー403）~~ → **未実装（やり残し）**。理由は下の備考
   - **自己登録直後の viewer が最初に着地する画面**がここになる（T-43）。「閲覧のみ可能。実行や設定変更が必要なら管理者に依頼する」旨が分かる状態にする
+- **備考（実績 2026-08-17。T-48 と同じ日に前倒しで実施）**: 一覧 → 号の選択 → 詳細の3段。週刊は**記事ごとのトグル開閉**で要約（切っていない全文）と示唆を出し、月刊はメール版 HTML を iframe でそのまま見せる。
+  - ⚠️ **`GET /reports` が無かったので足した**（既存は `GET /reports/{period}` だけ）。材料は `ArtifactStore.rendered_periods()`＝**置いてある生成 HTML** で、config も中間xlsx のシートも見ない。⚠️ **render まで通っていない period は一覧に出ない**（閲覧ページの一覧は「読めるレポート」の一覧。その period を直接引けば件数は返るので、一覧に出ないことと 404 は別）。⚠️ **件数サマリは一覧に載せない**（period ごとに xlsx を開くことになる）
+  - ⚠️ **記事ごとのトグルには構造化データが要るので `GET /reports/{period}/articles` を足した。** メール版 HTML は §7.1 で JS 禁止なので、**同じ内容を JSON で返す口を別に置く**形にした。**週刊のみ**（月刊は章立ての読み物なので HTML をそのまま見せる＝割り切り）
+  - ⚠️ **この口は config を読む**（採否・上限・業界の振り分けに要る）が、**返すのはメール版 HTML に出ている項目だけ**——カテゴリラベル・色・タイトル・要約・示唆・出典。⚠️ **合計スコアとしきい値は返さない**（HTML に出ていない＝返すと `min_total_score_to_publish` を推定できる新しい経路になる）。`test_the_articles_never_expose_scores_or_thresholds` がレスポンスの鍵の集合ごと固定している
+  - ⚠️ **`config.json` が無いときに `config_not_found` を返さない**（全ロールが叩ける口なので、非 admin に config の存在を教えることになる。§6.1）。config が無ければ採否も決められないので **レポートの 404 へ畳む**
+  - ⚠️ **示唆は全件返す**（メール版はセクション先頭1件だけ＝T-48 Step 1）。生成テキストの内容は配信物の本文なので、閲覧できる相手を HTML より狭める理由が無い。⚠️ **`narrative_{period}.json` 自体は配信しない**（`is_servable()` の許可リストに入れていない＝生の成果物はダウンロードさせない）
+  - **選別はメール版と同じ判定を通す**（`select_articles()` をそのまま呼ぶ）。Web 用に別の選び方をすると「メールに載っていない記事が Web にある」状態になり、どちらが号の内容なのか決まらなくなる。フロント側でも並べ替え・絞り込みをしない（`api/reports.ts` の警告）
+  - ⚠️ **生成テキストが無い号でも落とさない**（render は落とすが、閲覧は示唆なしで一覧を出す）
+  - ⚠️ **`<details>` ではなく `aria-expanded` を持つボタン**にした（開閉の状態をテストとスクリーンリーダーの両方から同じ形で読める）。⚠️ **`javascript:` の URL はサーバーが `null` にして返す**ので、閲覧ページもリンクにしない（メール版 `link()` と同じ判定）
+  - ⚠️ **`<a href>` / `<iframe src>` には `/api` を足す**（`artifactUrl()`）。API が返す `url` は `/files/...` で、dev の Vite proxy が `/api` を落としてバックエンドへ渡す形（`fetch` を通さない経路も同じ規則）
+  - **RBAC**：`GET /reports` と `GET /reports/{period}/articles` を `Operation` とマトリクスへ追加（**`GET /reports/{period}` と同じ行**＝全ロール可）。`test_rbac.py` の網羅テストと `REQUESTS` にも追加済み。→ **§3.2 の表への追記が必要（T-38 に記録）**
+  - **やり残し**: `POST /run` 実行ボタン（完了条件の1行）。**90〜100分走るジョブを1クリックで起動する導線**は確認ダイアログ・進捗ポーリング（`GET /run/{job_id}`）・二重起動 409 の扱いまで含めて設計が要り、「最小のページ」の範囲を超えるため今日は入れていない。ボタンの出し分け自体は `useCurrentUser().role` で足りる（実体はサーバー 403）
+  - テストはバックエンド +33件（一覧 4 ／ 記事ごとの表示 12 ／ `rendered_periods` 3 ／ RBAC 網羅 +14）で `make test` 全体 **2167件**、フロント 43 → 60件（+17）
 
 ---
 
@@ -1424,6 +1437,12 @@ flowchart TD
     - §3.3 に **エラーの割り当て**を追記する：404 `no_scored_data`（その period の採点済みデータが無い）／409 `revision_conflict`（`base_revision` を付けた場合）／422 `validation_failed`（§7.2 の許可リスト違反）／422 **`not_previewable`**（後述）／422 `invalid_period`
     - §7.3-5「任意で『この基準で再フィルタ（ドライラン）』」に、**適用できるのは既存の採点結果へ決定的に再適用できる変更（掲載しきい値・信頼性しきい値・採用区分しきい値）だけ**であることと、それ以外は 422 で断ることを明記する。⚠️ **「効果ゼロ」として黙って通さない**のが要点（通すと admin が「この変更は件数に影響しない」と読む）
     - 実装は `application/usecases/dry_run.py`（3分割 `DETERMINISTIC_PATHS` / `RESCORE_REQUIRED_PATHS` / `NOT_PREVIEWABLE_PATHS`）・`adapter/http/fastapi/routers/config.py`・`auth/rbac.py`・`adapter/xlsx/report_writer.py`（`write_dry_run`）
+  - ⚠️ **設計書 §3.2・§3.3 と仕様書 §9.2 に閲覧 Web ページの2口を追記する**（2026-08-17 の T-36）：
+    - §3.2 のエンドポイント表に **`GET /reports`**（一覧）と **`GET /reports/{period}/articles`**（記事ごとの表示）を追加する。どちらも **`GET /reports/{period}` と同じ行**（全ロール可）。認可の根拠は `auth/rbac.py` のコメントと `routers/reports.py` のモジュール docstring
+    - §3.3 に両方の Request / Response を追記する。⚠️ **`articles` はメール版 HTML に出ている項目だけを返す**（カテゴリラベル・色・タイトル・要約・示唆・出典）。**合計スコアとしきい値は返さない**ことを明記する（返すと admin 限定の config の値を推定できる）。エラーの割り当ては 404 `report_not_found`（その週の HTML が無い／config が無い）／404 `industry_not_published`／404 `articles_not_available`（月次）／422 `invalid_period`
+    - §3.3 の一覧について、**材料は「置いてある生成 HTML」**（`ArtifactStore.rendered_periods()`）であり、**render まで通っていない period は出ない**ことを明記する
+    - 仕様書 §9.2 に **「メール版は要旨のみ・Web 版が全文」という2面性**を書き足す（T-48 Step 1 の §9.2-4 改訂と同じ論点。メール版は要約を全角60字で切り示唆をセクション先頭1件に絞るが、Web の閲覧ページは同じ号の全文をトグルで開ける）
+    - 実装は `adapter/http/fastapi/routers/reports.py`・`auth/rbac.py`・`adapter/storage/artifact_store.py`（`rendered_periods`）・`frontend/src/api/reports.ts`・`frontend/src/components/pages/ReportsPage.tsx`
   - ⚠️ **成果物に「分析結果」を残すかを判断する**（2026-08-17 の T-29 で判明した制約。**新しい成果物の追加＝設計書 §2・§8 への差分になるので単独で判断すること**）：
     - **問題**：AI が記事ごとに出した**軸点・タグ・事実申告（該当除外ルール番号・鮮度）**は `FilterResult` の中だけに在り、どの成果物にも書かれない。中間xlsx の週次シート（22列）に残るのは**採用された記事の軸点まで**で、除外された記事は6列の除外ログ（点数なし）に落ちる。月次実行に至っては採点済みの22列を1行も書かない（書くのは8列の事例だけ）
     - **その結果ドライラン（T-29）にできないこと**：(a) しきい値を**下げた**ときに何件**増える**かの試算（落ちた記事の点数が無い）／(b) **除外ルールの enabled・severity** を変えたときの試算（事実申告が無い。⚠️ **判定ロジック自体は決定的で再適用可能**——AI には severity も enabled も見せていない＝T-19 ので、事実さえ残っていれば再採点は要らない。**残っていないことだけが理由**）／(c) **月次 period** のドライラン全般／(d) **重複判定パラメータ**の試算（判定の入力は「除外を通り抜けた記事」だが、残っているのは重複を落とした後の一覧）

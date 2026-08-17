@@ -138,6 +138,40 @@ def test_the_weekly_glob_finds_exactly_the_names_the_format_generates(
     ]
 
 
+# --- 一覧の材料（T-36）--------------------------------------------------------
+
+
+def test_rendered_periods_are_empty_before_anything_is_written(
+    store: ArtifactStore,
+) -> None:
+    assert store.rendered_periods() == []
+
+
+def test_rendered_periods_come_from_the_html_that_is_actually_there(
+    store: ArtifactStore,
+) -> None:
+    """⚠️ **新しい号が先**。週刊は業界ごとに何通あっても period は1つ。"""
+    store.write_text(store.weekly_html_path("不動産", "2026-W30"), "<html></html>")
+    store.write_text(store.weekly_html_path("不動産", "2026-W31"), "<html></html>")
+    store.write_text(store.weekly_html_path("製造", "2026-W31"), "<html></html>")
+    store.write_text(store.monthly_html_path("2026-07"), "<html></html>")
+
+    assert store.rendered_periods() == ["2026-W31", "2026-W30", "2026-07"]
+
+
+def test_rendered_periods_ignore_artifacts_that_are_not_generated_html(
+    store: ArtifactStore,
+) -> None:
+    """⚠️ 中間xlsx・生の成果物・履歴は一覧の材料にしない。"""
+    store.write_text(store.config_path(), "{}")
+    store.write_text(store.raw_articles_path("2026-W31"), "{}")
+    store.write_text(store.narrative_path("2026-W31"), "{}")
+    store.write_text(store.validation_path("2026-W31"), "{}")
+    store.write_bytes(store.weekly_report_path(), b"xlsx")
+
+    assert store.rendered_periods() == []
+
+
 @pytest.mark.parametrize(
     "filename",
     [

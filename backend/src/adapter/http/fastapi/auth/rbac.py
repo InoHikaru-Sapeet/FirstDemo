@@ -96,6 +96,10 @@ class Operation(StrEnum):
 
     # --- run / reports ファミリ（仕様書 §6.2）--------------------------------
     GET_REPORTS = "GET /reports/{period}"
+    # T-36 の追加分（§6.2 の `GET /reports/{period}` と同じ行）。閲覧ページの
+    # 一覧と、記事ごとの表示（メール版 HTML と同じ内容を JSON で返す口）。
+    GET_REPORTS_INDEX = "GET /reports"
+    GET_REPORT_ARTICLES = "GET /reports/{period}/articles"
     POST_RUN = "POST /run/{type}"
     # §6.2 に列挙が無い設計時追加分（T-27）。理由は下の PERMISSION_MATRIX を参照。
     GET_RUN_JOB = "GET /run/{job_id}"
@@ -152,6 +156,23 @@ PERMISSION_MATRIX: Final[Mapping[Operation, Mapping[Role, Decision]]] = (
             ),
             # | GET /reports/{period} | ○ | ○ | ○ | ○ |
             Operation.GET_REPORTS: _row(
+                admin=_ALLOW, editor=_ALLOW, viewer=_ALLOW, system=_ALLOW
+            ),
+            # === T-36 の追加行（§6.2 の `GET /reports/{period}` と同じ行）======
+            # ⚠️ **一覧も記事ごとの表示も「レポートの閲覧」そのもの**。§6.2 の
+            # 「`GET /reports/{period}`（HTML/一覧）」が指しているのはこれで、
+            # **自己登録直後の viewer が最初に着地する画面**（T-36 完了条件）が
+            # ここを叩く。
+            # ⚠️ **`GET /reports/{period}/articles` は config を読むが、返すのは
+            # メール版 HTML に出ている項目だけ**（カテゴリラベル・色・タイトル・
+            # 要約・示唆・出典）。合計スコアとしきい値は返さないので、admin 限定の
+            # config（§6.1）を非 admin へ露出する経路にはならない。判断の根拠は
+            # `routers/reports.py` のモジュール docstring。
+            # → §3.2 の表への追記が必要（T-38）。
+            Operation.GET_REPORTS_INDEX: _row(
+                admin=_ALLOW, editor=_ALLOW, viewer=_ALLOW, system=_ALLOW
+            ),
+            Operation.GET_REPORT_ARTICLES: _row(
                 admin=_ALLOW, editor=_ALLOW, viewer=_ALLOW, system=_ALLOW
             ),
             # | POST /run/{weekly|monthly} | ○ | ○ | 403 | ○ |
@@ -272,6 +293,10 @@ ROUTE_OPERATIONS: Final[Mapping[tuple[str, str], Operation]] = MappingProxyType(
         ("POST", "/run/{run_type}"): Operation.POST_RUN,
         ("GET", "/run/{job_id}"): Operation.GET_RUN_JOB,
         ("GET", "/reports/{period}"): Operation.GET_REPORTS,
+        # T-36。⚠️ 一覧のルートは `APIRouter(prefix="/reports")` ＋ `@router.get("")`
+        # なので、テンプレートは**末尾スラッシュ無しの `/reports`**。
+        ("GET", "/reports"): Operation.GET_REPORTS_INDEX,
+        ("GET", "/reports/{period}/articles"): Operation.GET_REPORT_ARTICLES,
         ("GET", "/files/{filename}"): Operation.GET_FILES,
         # T-29。⚠️ 明細のダウンロードは**パスの末尾がファイル名リテラル**
         # （`result.xlsx`）。ルートのテンプレートをそのまま書くこと。

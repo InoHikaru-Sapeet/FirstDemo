@@ -1,11 +1,365 @@
+/**
+ * レポート一覧・閲覧ページ（T-36。設計書 §3.3 ／ 仕様書 §6.2）。
+ *
+ * **認証済みの全ロールが閲覧できる**（config には一切触れない）。自己登録直後の
+ * viewer が最初に着地する画面がここ（T-43）。
+ *
+ * ---
+ *
+ * ⚠️ **メール版 HTML と Web 版は「同じ号の別の見せ方」**。
+ *
+ * 配信物はメール版 HTML（`GET /files/...`）で、§7.1 で JS が禁止なので**要約を
+ * 全角60字で切り、示唆をセクション先頭1件に絞っている**（T-48 Step 1）。この画面は
+ * Web なので JS が使えるため、**同じ号の全文をトグルで開ける**——記事ごとに要約
+ * （切っていない全文）と示唆（メール版が出していない分も含めて全件）を出す。
+ *
+ * ⚠️ **選別（採否・並び順・上限）はサーバーが返したまま使う。** 並べ替えや件数の
+ * 絞り込みをこちらでやると「メールに載っていない記事が Web にある」状態になり、
+ * どちらが号の内容なのか決まらなくなる（`api/reports.ts` の警告と対）。
+ *
+ * ⚠️ **メール版 HTML そのものも見られるようにしてある**（iframe と直リンク）。
+ * 配信されるものを確認する経路が無いと、編集担当が「実際に届く形」を見られない。
+ */
+
+import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { toDisplayMessage } from "@/api/client";
+import { reportKeys } from "@/api/query-keys";
+import {
+	type ArticleCard as ArticleCardData,
+	artifactUrl,
+	fetchArticles,
+	fetchReport,
+	fetchReports,
+	type ReportListEntry
+} from "@/api/reports";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { useCurrentUser } from "@/hooks/useCurrentUser";
+
+const TYPE_LABELS = {
+	weekly: "週刊メルマガ",
+	monthly: "月刊ビリーフ"
+} as const;
+
+/** viewer に「見るだけの権限である」ことを伝える文（T-36 完了条件）。 */
+export const VIEWER_NOTICE =
+	"閲覧のみ可能な権限です。レポートの実行や判断基準の変更が必要な場合は管理者に依頼してください。";
+
 export function ReportsPage() {
+	const { user } = useCurrentUser();
+	const [selected, setSelected] = useState<string | null>(null);
+
+	const list = useQuery({
+		queryKey: reportKeys.list(),
+		queryFn: fetchReports
+	});
+
+	// ⚠️ **一覧が届いてから既定を決める**（`useEffect` で state を後追いさせない）。
+	// 選択が未設定なら先頭＝いちばん新しい号を見ているものとして扱う。
+	const reports = list.data ?? [];
+	const period = selected ?? reports[0]?.period ?? null;
+
 	return (
-		<div className="p-6">
+		<main className="mx-auto max-w-5xl p-6">
 			<h1 className="text-xl font-semibold">レポート一覧</h1>
-			<p className="text-sm text-neutral-500">
-				週刊メルマガ・月刊ビリーフの生成結果をここに表示する（GET /reports/
-				{"{period}"}）。
+			<p className="mt-1 text-sm text-muted-foreground">
+				週刊メルマガ・月刊ビリーフの生成結果を表示します。
 			</p>
+
+			{user?.role === "viewer" && (
+				<Alert className="mt-4">
+					<AlertDescription>{VIEWER_NOTICE}</AlertDescription>
+				</Alert>
+			)}
+
+			{list.isPending && <p className="mt-6 text-sm">読み込み中…</p>}
+
+			{list.isError && (
+				<Alert variant="destructive" className="mt-6">
+					<AlertDescription>{toDisplayMessage(list.error)}</AlertDescription>
+				</Alert>
+			)}
+
+			{list.isSuccess && reports.length === 0 && (
+				<p className="mt-6 text-sm text-muted-foreground">
+					まだレポートがありません。パイプラインの実行が終わるとここに並びます。
+				</p>
+			)}
+
+			{reports.length > 0 && period !== null && (
+				<div className="mt-6 grid gap-6 md:grid-cols-[14rem_1fr]">
+					<PeriodList
+						reports={reports}
+						selected={period}
+						onSelect={setSelected}
+					/>
+					<ReportDetail key={period} period={period} />
+				</div>
+			)}
+		</main>
+	);
+}
+
+type PeriodListProps = {
+	reports: ReportListEntry[];
+	selected: string;
+	onSelect: (period: string) => void;
+};
+
+function PeriodList({ reports, selected, onSelect }: PeriodListProps) {
+	return (
+		<nav aria-label="号の一覧">
+			<ul className="space-y-1">
+				{reports.map((report) => (
+					<li key={report.period}>
+						<button
+							type="button"
+							onClick={() => onSelect(report.period)}
+							aria-current={report.period === selected}
+							className={`w-full rounded border p-2 text-left text-sm ${
+								report.period === selected ? "bg-muted font-semibold" : ""
+							}`}
+						>
+							<span className="block">{report.period}</span>
+							<span className="block text-xs text-muted-foreground">
+								{TYPE_LABELS[report.type]}
+								{report.industries.length > 0 &&
+									`（${report.industries.join("・")}）`}
+							</span>
+						</button>
+					</li>
+				))}
+			</ul>
+		</nav>
+	);
+}
+
+function ReportDetail({ period }: { period: string }) {
+	const report = useQuery({
+		queryKey: reportKeys.detail(period),
+		queryFn: () => fetchReport(period)
+	});
+
+	if (report.isPending) {
+		return <p className="text-sm">読み込み中…</p>;
+	}
+	if (report.isError) {
+		return (
+			<Alert variant="destructive">
+				<AlertDescription>{toDisplayMessage(report.error)}</AlertDescription>
+			</Alert>
+		);
+	}
+
+	const data = report.data;
+	return (
+		<section aria-label={`${period} のレポート`}>
+			<h2 className="text-lg font-semibold">
+				{period}（{TYPE_LABELS[data.type]}）
+			</h2>
+			<p className="mt-1 text-sm text-muted-foreground">
+				採用 {data.summary.adopted} 件 ／ 除外 {data.summary.excluded} 件
+			</p>
+
+			<ul className="mt-3 space-y-1 text-sm">
+				{data.html_urls.map((html) => (
+					<li key={html.url}>
+						<a
+							className="underline"
+							href={artifactUrl(html.url)}
+							target="_blank"
+							rel="noreferrer"
+						>
+							{html.industry === null
+								? "メール版 HTML を開く"
+								: `メール版 HTML を開く（${html.industry} 版）`}
+						</a>
+					</li>
+				))}
+				<li>
+					<a
+						className="underline"
+						href={artifactUrl(data.xlsx_url)}
+						target="_blank"
+						rel="noreferrer"
+					>
+						中間xlsx をダウンロード
+					</a>
+				</li>
+			</ul>
+
+			{data.type === "weekly" ? (
+				<WeeklyArticles period={period} />
+			) : (
+				<MailPreview
+					title="月刊ビリーフ（メール版 HTML）"
+					url={data.html_urls[0]?.url ?? null}
+				/>
+			)}
+		</section>
+	);
+}
+
+function WeeklyArticles({ period }: { period: string }) {
+	const [industry, setIndustry] = useState<string | null>(null);
+
+	const articles = useQuery({
+		queryKey: reportKeys.articles(period, industry),
+		queryFn: () => fetchArticles(period, industry ?? undefined)
+	});
+
+	if (articles.isPending) {
+		return <p className="mt-6 text-sm">記事を読み込み中…</p>;
+	}
+	if (articles.isError) {
+		return (
+			<Alert variant="destructive" className="mt-6">
+				<AlertDescription>{toDisplayMessage(articles.error)}</AlertDescription>
+			</Alert>
+		);
+	}
+
+	const data = articles.data;
+	return (
+		<div className="mt-6">
+			{data.industries.length > 1 && (
+				<fieldset className="mb-4 flex flex-wrap gap-2">
+					<legend className="sr-only">業界版</legend>
+					{data.industries.map((name) => (
+						<Button
+							key={name}
+							type="button"
+							size="sm"
+							variant={name === data.industry ? "default" : "outline"}
+							aria-pressed={name === data.industry}
+							onClick={() => setIndustry(name)}
+						>
+							{name} 版
+						</Button>
+					))}
+				</fieldset>
+			)}
+
+			{data.point_of_week !== null && (
+				<div className="rounded border p-4">
+					<h3 className="text-sm font-semibold">今週のポイント</h3>
+					<p className="mt-2 text-sm leading-relaxed whitespace-pre-line">
+						{data.point_of_week}
+					</p>
+				</div>
+			)}
+
+			{data.sections.map((section) => (
+				<div key={section.heading} className="mt-6">
+					<h3 className="text-base font-semibold">{section.heading}</h3>
+					<ul className="mt-2 space-y-2">
+						{/* 鍵は URL（示唆を引く鍵でもあり、号の中で一意。§12.1 の
+						    非空必須項目）。使えない URL の記事は見出しで代用する。 */}
+						{section.articles.map((article) => (
+							<li key={article.url ?? article.title}>
+								<ArticleRow article={article} />
+							</li>
+						))}
+					</ul>
+				</div>
+			))}
+		</div>
+	);
+}
+
+/**
+ * 記事1件のトグル行。
+ *
+ * 閉じているときはメール版と同じ密度（バッジ＋見出し＋出典）で、開くと**要約
+ * （切っていない全文）と示唆**が出る。⚠️ `<details>` ではなく `aria-expanded` を
+ * 持つボタンにしてあるのは、開閉の状態をテストとスクリーンリーダーの両方から
+ * 同じ形で読めるようにするため。
+ */
+function ArticleRow({ article }: { article: ArticleCardData }) {
+	const [open, setOpen] = useState(false);
+	const hasDetail = article.summary !== "" || article.insight !== null;
+
+	return (
+		<div className="rounded border p-3">
+			<div className="flex flex-wrap items-center gap-2">
+				<span
+					className="rounded px-2 py-0.5 text-[10px] font-bold text-white"
+					// カテゴリ色は §7.2 の確定マップ（サーバーが解決した値をそのまま
+					// 使う。フロントに色の写しを持たない）。
+					style={{ backgroundColor: article.category_color }}
+				>
+					{article.category_label}
+				</span>
+				<span className="text-xs text-muted-foreground">
+					出典：{article.source}
+				</span>
+			</div>
+
+			<h4 className="mt-2 text-sm font-semibold">
+				{article.url === null ? (
+					// ⚠️ `http`/`https` でない URL はサーバーが `null` にして返す
+					// （メール版 `link()` と同じ判定）。リンクにしない。
+					article.title
+				) : (
+					<a
+						className="underline"
+						href={article.url}
+						target="_blank"
+						rel="noreferrer"
+					>
+						{article.title}
+					</a>
+				)}
+			</h4>
+
+			{hasDetail && (
+				<>
+					<button
+						type="button"
+						onClick={() => setOpen((value) => !value)}
+						aria-expanded={open}
+						className="mt-2 text-xs underline"
+					>
+						{open ? "要約と示唆を閉じる" : "要約と示唆を開く"}
+					</button>
+
+					{open && (
+						<div className="mt-2 space-y-2">
+							{article.summary !== "" && (
+								<p className="text-sm leading-relaxed">{article.summary}</p>
+							)}
+							{article.insight !== null && (
+								<p className="rounded border-l-4 border-indigo-500 bg-indigo-50 p-2 text-sm leading-relaxed">
+									{article.insight}
+								</p>
+							)}
+						</div>
+					)}
+				</>
+			)}
+		</div>
+	);
+}
+
+/** メール版 HTML の埋め込み（配信される形をそのまま見る）。 */
+function MailPreview({ title, url }: { title: string; url: string | null }) {
+	if (url === null) {
+		return (
+			<p className="mt-6 text-sm text-muted-foreground">
+				この号の HTML はまだありません。
+			</p>
+		);
+	}
+
+	return (
+		<div className="mt-6">
+			<h3 className="text-base font-semibold">{title}</h3>
+			<iframe
+				title={title}
+				src={artifactUrl(url)}
+				className="mt-2 h-[70vh] w-full rounded border"
+			/>
 		</div>
 	);
 }

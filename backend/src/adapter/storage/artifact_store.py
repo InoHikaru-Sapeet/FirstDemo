@@ -315,6 +315,32 @@ class ArtifactStore:
         validate_period(period)
         return sorted(self.root.glob(WEEKLY_HTML_NAME.glob(period=period)))
 
+    def rendered_periods(self) -> list[str]:
+        """生成 HTML が**実際に置いてある** period（新しい順。T-36）。
+
+        `GET /reports`（一覧）の材料。⚠️ **config でも中間xlsx でもなく
+        「置いてあるファイル」から数える**（`weekly_html_paths()` と同じ理由。
+        一覧は全ロールが叩ける口なので config を読めない）。
+
+        ⚠️ **中間xlsx のシートは見ない。** render まで通っていない period は
+        一覧に出さない——閲覧ページの一覧は「読めるレポート」の一覧であって、
+        実行の進み方は `GET /run/{job_id}` の担当。⚠️ その period を直接
+        `GET /reports/{period}` で引けば、xlsx から数えた件数は返る
+        （一覧に出ないことと 404 は別）。
+
+        Returns:
+            重複を畳んだ period（**降順**＝新しい号が先）
+        """
+        periods: set[str] = set()
+        for name_format in (WEEKLY_HTML_NAME, MONTHLY_HTML_NAME):
+            for path in self.root.glob(name_format.glob()):
+                if fields := name_format.parse(path.name):
+                    periods.add(fields["period"])
+        # ⚠️ **文字列の降順で「新しい順」になる**（`2026-W31` / `2026-07` は
+        # どちらもゼロ埋めの固定幅表記）。週次と月次が混ざるので日付へ直しても
+        # 全順序にはならず、表記のままで並べるのが素直。
+        return sorted(periods, reverse=True)
+
     # --- 配信できる成果物（T-27。生成物配信の許可リスト）------------------
 
     def is_servable(self, filename: str) -> bool:
