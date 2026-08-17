@@ -288,6 +288,45 @@ def test_blank_paragraphs_are_dropped() -> None:
     assert split_paragraphs(None) == []
 
 
+# --- 全角換算の切り詰め（T-48。週刊の1行要約・月刊の引用ボックスが共有）--------
+
+
+def test_text_within_the_limit_is_returned_unchanged() -> None:
+    assert mail_html.truncate_fullwidth("短い。", limit=10) == "短い。"
+
+
+def test_text_over_the_limit_gets_the_ellipsis() -> None:
+    cut = mail_html.truncate_fullwidth("あいうえおかきくけこ", limit=5)
+
+    assert cut == "あいうえお…"
+
+
+def test_halfwidth_characters_count_as_half() -> None:
+    """⚠️ **字数で数えていたら通ってしまう長さ**を固定する。"""
+    assert mail_html.truncate_fullwidth("a" * 10, limit=5) == "a" * 10
+    assert mail_html.truncate_fullwidth("a" * 11, limit=5) == "a" * 10 + "…"
+
+
+def test_ambiguous_width_characters_count_as_fullwidth() -> None:
+    """`east_asian_width == "A"`（`§` など）は日本語環境では全角で出る。"""
+    assert mail_html.truncate_fullwidth("§§§", limit=2) == "§§…"
+
+
+def test_newlines_and_runs_of_spaces_collapse_to_one_space() -> None:
+    flat = mail_html.truncate_fullwidth("前半。\n\n 後半。", limit=60)
+
+    assert flat == "前半。 後半。"
+
+
+def test_empty_text_does_not_become_an_ellipsis() -> None:
+    for value in (None, "", "   ", "\n"):
+        assert mail_html.truncate_fullwidth(value, limit=10) == ""
+
+
+def test_the_ellipsis_string_is_caller_supplied() -> None:
+    assert mail_html.truncate_fullwidth("あいう", limit=1, ellipsis="[略]") == "あ[略]"
+
+
 # --- カテゴリ色マップ（§7.2）-------------------------------------------------
 
 

@@ -41,6 +41,30 @@
 
 **章は「最初に現れた順」でまとめる。** 同じ章ラベルが離れた位置に現れても1章として
 扱い、章ヘッダを2度出さない（目次の件数と本編の見出し数が食い違わないため）。
+
+---
+
+**⚠️ 視覚強化（2026-08-17 の T-48 Step 2）**
+
+章立てが視覚的に追いにくい、という PM 要件で**装飾を強めた**。§10.2 に対する差分は
+3つで、いずれも**装飾のみ・本文は不変**（`解説` の段落は全段そのまま出るし、
+`No`・章の束ね方・件数・確定値の配色は一切動かない）。→ **T-38 の改訂対象**。
+
+1. **章ヘッダの `第N章` バッジを大型化し、章色帯を足した**（§10.2-4 は「`第N章`
+   バッジ＋章タイトル」だけ）。バッジはネイビー地の白抜きチップ、色帯は左端の
+   `6px solid #4FA8DB`。⚠️ **確定値の下端 `2px solid #4FA8DB` は残している**
+2. **事例カードの `CASE NN` をバッジへ**（§10.2-4 の確定文言は `CASE NN ／ 企業名`）。
+   ⚠️ **区切りの `／` はバッジの境界が担うので描かない**。文言の正は
+   `CASE_LABEL_FORMAT` のままで、バッジと企業名の書式は**そこから導いている**
+3. **解説に含まれるキーとなる数値（時間削減・金額・割合）を引用ボックスへ**
+   （§10.2-4 に規定は無い＝完全な追加）
+
+⚠️ **3 は本文から抜き書きするだけ**（`key_figure_quote()`）。解説の段落は全段
+そのまま描くので、引用ボックスの文は**本文と重複して現れる**——これは pull-quote の
+常道で、要約したり書き換えたりはしない（§1.1「render は AI を呼ばない」ので
+そもそもできない）。数値が見つからない事例にはボックスを出さない。
+
+⚠️ **画像・図解の自動生成はやらない**（T-48 のスコープ外。TASKS.md に明記）。
 """
 
 import logging
@@ -96,6 +120,69 @@ CHAPTER_LABEL_RE = re.compile(
 )
 CHAPTER_BADGE_FORMAT = "第{number}章"
 
+# --- 視覚強化の確定値（T-48 Step 2）------------------------------------------
+
+CASE_NUMBER_FORMAT = "CASE {no:02d}"
+"""事例カードの番号バッジ（`CASE_LABEL_FORMAT` の前半）。"""
+
+CASE_LABEL_SEPARATOR = " ／ "
+"""`CASE_LABEL_FORMAT` の区切り。**バッジ化したので描画には出ない**。"""
+
+KEY_FIGURE_UNITS: tuple[str, ...] = (
+    # 割合・倍率（削減率・向上率）
+    "％",
+    "%",
+    "ポイント",
+    "割",
+    "倍",
+    # 時間（時間削減）
+    "人時",
+    "人月",
+    "営業日",
+    "時間",
+    "か月",
+    "カ月",
+    "ヶ月",
+    "週間",
+    "分",
+    "秒",
+    "日",
+    # 金額
+    "万円",
+    "億円",
+    "円",
+    "ドル",
+)
+"""引用ボックスの対象にする単位（時間削減・金額・割合）。
+
+⚠️ **順序に意味がある**（長い単位を先に並べる）。`分` を `時間` より先に置くと
+「3時間」の「時間」を取り逃す、といった食い違いが起きるため、照合の正規表現は
+**長さの降順に並べ直してから**組み立てる（`_KEY_FIGURE_RE`）。
+
+⚠️ **`件` / `名` / `人` は入れていない。** 「3件の事例」「5名の担当者」のような
+数え上げが引用ボックスに載ると、キーとなる数値が埋もれる。
+"""
+
+KEY_FIGURE_QUOTE_MAX_FULLWIDTH_CHARS = 40
+"""引用ボックスの上限（全角字）。超えたら末尾を `…` にする。"""
+
+QUOTE_ELLIPSIS = "…"
+
+# 数値の書き方（半角・全角の数字／桁区切り／`万`・`億`・`兆` の位取り）。
+_KEY_FIGURE_NUMBER = r"[0-9０-９][0-9０-９,，.．]*(?:万|億|兆)?"
+
+_KEY_FIGURE_RE = re.compile(
+    _KEY_FIGURE_NUMBER
+    + "(?:"
+    + "|".join(
+        re.escape(unit) for unit in sorted(KEY_FIGURE_UNITS, key=len, reverse=True)
+    )
+    + ")"
+)
+
+# 引用に切り出す単位（文）。`。` で割る（`split_paragraphs` は段落なので別物）。
+_SENTENCE_END = "。"
+
 # --- 確定文言（仕様書 §10.2。逐語）------------------------------------------
 
 HEADER_EYEBROW = "MONTHLY REPORT ON LEADING AI CASES"
@@ -136,6 +223,11 @@ SURFACE = "#ffffff"
 MUTED_TEXT = "#7B8A99"
 INVERSE_TEXT = "#ffffff"
 
+# 章色帯の地色（T-48 Step 2）。**確定値のパレット内から選ぶ**（新しい色を作らない）。
+# 囲み（`#F7FAFC`）ではなく外枠背景と同じ値にしてあるのは、巻頭言・むすびの
+# 囲み（§10.2-2・§10.2-5 の確定値）と章の帯を見分けられるようにするため。
+CHAPTER_BAND_BACKGROUND = PAGE_BACKGROUND
+
 
 class MonthlyRenderError(Exception):
     """月刊 HTML を組み立てられない入力。"""
@@ -153,6 +245,78 @@ def _check_referenced_columns() -> None:
 
 
 _check_referenced_columns()
+
+
+def _check_case_label_split() -> None:
+    """バッジ化した `CASE NN` が確定文言の前半そのものか（import 時に落とす）。
+
+    ⚠️ **§10.2-4 の確定文言は `CASE_LABEL_FORMAT`（`CASE NN ／ 企業名`）1つ。**
+    T-48 Step 2 でバッジと企業名に割ったが、書式を2箇所に持つと確定文言を直した
+    ときにバッジだけ古いまま静かに食い違う。ここで「前半＋区切り＋後半＝確定文言」
+    を突き合わせる（T-25 が `CHAPTER_LABEL_FORMAT` から正規表現を導いたのと同じ
+    考え方）。
+    """
+    composed = CASE_NUMBER_FORMAT + CASE_LABEL_SEPARATOR + "{organizations}"
+    if composed != CASE_LABEL_FORMAT:
+        raise MonthlyRenderError(
+            "事例ラベルの分解が確定文言と一致しません: "
+            f"{composed!r} != {CASE_LABEL_FORMAT!r}"
+        )
+
+
+_check_case_label_split()
+
+
+# --- キーとなる数値の抜き書き（T-48 Step 2）-----------------------------------
+
+
+def key_figure_quote(
+    commentary: object,
+    *,
+    limit: int = KEY_FIGURE_QUOTE_MAX_FULLWIDTH_CHARS,
+) -> str | None:
+    """解説から「キーとなる数値」を含む文を1つ抜き書きする。
+
+    ⚠️ **本文を書き換えない・要約しない**（§1.1 で render は AI を呼べない）。
+    解説の中から**最初に数値＋単位が現れる文をそのまま**取り出すだけで、解説の
+    段落は別途全段そのまま描かれる（引用ボックスの文は本文と重複して現れる）。
+
+    ⚠️ **見つからなければ `None`**（ボックスを出さない）。数値の無い事例に空の箱を
+    置くと、章の視覚的な区切りより先に空箱が目に入る。
+
+    Args:
+        commentary: 列8「解説」の値（`\\n\\n` 区切りの文字列、または段落の列）
+        limit: 引用の上限（全角字）
+
+    Returns:
+        `。` で終わる1文（上限超過なら末尾 `…`）。該当が無ければ `None`
+
+    Examples:
+        >>> key_figure_quote("導入した。問い合わせ対応の工数を月120時間削減した。")
+        '問い合わせ対応の工数を月120時間削減した。'
+        >>> key_figure_quote("方針を見直した。") is None
+        True
+    """
+    for paragraph in m.split_paragraphs(commentary):
+        for sentence in _sentences(paragraph):
+            if _KEY_FIGURE_RE.search(sentence):
+                return m.truncate_fullwidth(
+                    sentence, limit=limit, ellipsis=QUOTE_ELLIPSIS
+                )
+    return None
+
+
+def _sentences(paragraph: str) -> list[str]:
+    """段落を文へ割る（`。` は各文の末尾に残す）。
+
+    末尾に `。` が無い言い切り（箇条書きの断片など）も1文として扱う。
+    """
+    parts = [part for part in paragraph.split(_SENTENCE_END) if part.strip()]
+    tail = paragraph.rstrip().endswith(_SENTENCE_END)
+    return [
+        part.strip() + _SENTENCE_END if tail or index < len(parts) - 1 else part.strip()
+        for index, part in enumerate(parts)
+    ]
 
 
 # --- 生成テキスト -------------------------------------------------------------
@@ -508,50 +672,83 @@ def _contents(chapters: Sequence[Chapter], *, case_count: int) -> str:
     return m.row([m.cell(card, style="padding:26px 30px 0 30px")])
 
 
-def _chapter_header(chapter: Chapter, intro: str | None) -> str:
-    """§10.2-4 章ヘッダ（下端 `2px solid #4FA8DB`）。"""
-    badge = chapter.badge
-    parts = [
+def _chapter_number_badge(badge: str) -> str:
+    """章ヘッダの大型ナンバーバッジ（T-48 Step 2）。
+
+    ネイビー地の白抜きチップ。`<div>` ではなく幅なしの1セル table で作るのは、
+    inline 要素の `padding` がメールクライアントによって効かないため（T-23）。
+    """
+    return m.block(
         m.element(
             "p",
-            "".join(
-                filter(
-                    None,
-                    [
-                        m.element(
-                            "span",
-                            m.escape(badge),
-                            style=m.styles(
-                                f"color:{ACCENT}",
-                                "font-size:11px",
-                                "font-weight:bold",
-                            ),
-                        )
-                        if badge
-                        else None,
-                        m.element(
-                            "span",
-                            m.escape(chapter.title),
-                            style=m.styles(
-                                f"color:{NAVY}",
-                                "font-size:16px",
-                                "font-weight:bold",
-                                "padding-left:10px" if badge else None,
-                            ),
-                        ),
-                    ],
-                )
+            m.escape(badge),
+            style=m.styles(
+                "margin:0",
+                "font-size:14px",
+                "font-weight:bold",
+                f"color:{INVERSE_TEXT}",
+                "letter-spacing:0.06em",
+                "line-height:1.3",
+                "white-space:nowrap",
             ),
-            style="margin:0;line-height:1.6",
+        ),
+        style=m.styles(f"background-color:{NAVY}", "border-radius:4px"),
+        cell_style="padding:8px 12px",
+        width=None,
+    )
+
+
+def _chapter_header(chapter: Chapter, intro: str | None) -> str:
+    """§10.2-4 章ヘッダ（下端 `2px solid #4FA8DB`）＋ T-48 Step 2 の視覚強化。
+
+    ⚠️ **確定値の下端罫（`2px solid #4FA8DB`）は残す。** 足したのは
+    **左端の章色帯**（`6px solid #4FA8DB`）と**淡い地色**（`#F7FAFC`）、そして
+    大型のナンバーバッジ（`_chapter_number_badge()`）。
+
+    バッジとタイトルは2セルの table で横に並べる（バッジが幅なし table なので、
+    同じ行へ置くにはセルへ入れる必要がある）。書式に合わない章ラベル
+    （`badge is None`）はタイトルだけを描く（T-25 の方針のまま章を落とさない）。
+    """
+    badge = chapter.badge
+    title = m.element(
+        "p",
+        m.escape(chapter.title),
+        style=m.styles(
+            "margin:0",
+            f"color:{NAVY}",
+            "font-size:17px",
+            "font-weight:bold",
+            "line-height:1.5",
+        ),
+    )
+
+    if badge:
+        heading = m.table(
+            [
+                m.row(
+                    [
+                        m.cell(
+                            _chapter_number_badge(badge),
+                            style="width:1%",
+                            attrs={"valign": "top"},
+                        ),
+                        m.spacer_cell("12px"),
+                        m.cell(title, attrs={"valign": "middle"}),
+                    ]
+                )
+            ]
         )
-    ]
+    else:
+        heading = title
+
+    parts = [heading]
     if intro:
         parts.append(
             m.element(
                 "p",
                 m.escape(intro),
                 style=m.styles(
-                    "margin:10px 0 0 0",
+                    "margin:12px 0 0 0",
                     "font-size:12px",
                     "line-height:1.9",
                     f"color:{BODY_TEXT}",
@@ -563,7 +760,11 @@ def _chapter_header(chapter: Chapter, intro: str | None) -> str:
             m.cell(
                 "".join(parts),
                 style=m.styles(
-                    "padding:30px 30px 12px 30px",
+                    "padding:20px 24px 16px 20px",
+                    # 章色帯（T-48 Step 2）。
+                    f"background-color:{CHAPTER_BAND_BACKGROUND}",
+                    f"border-left:6px solid {ACCENT}",
+                    # §10.2-4 の確定値。**動かさない**。
                     f"border-bottom:2px solid {ACCENT}",
                 ),
             )
@@ -571,13 +772,70 @@ def _chapter_header(chapter: Chapter, intro: str | None) -> str:
     )
 
 
+def _case_number_badge(no: int) -> str:
+    """事例カードの `CASE NN` バッジ（T-48 Step 2）。
+
+    水色地にネイビーの白抜き**ではない**（地が淡いので文字はネイビー）。章の
+    ナンバーバッジ（ネイビー地）と地色を分けてあるのは、章と事例の階層が
+    ひと目で分かるようにするため。
+    """
+    return m.block(
+        m.element(
+            "p",
+            m.escape(CASE_NUMBER_FORMAT.format(no=no)),
+            style=m.styles(
+                "margin:0",
+                "font-size:12px",
+                "font-weight:bold",
+                f"color:{NAVY}",
+                "letter-spacing:0.08em",
+                "line-height:1.3",
+                "white-space:nowrap",
+            ),
+        ),
+        style=m.styles(f"background-color:{ACCENT_LIGHT}", "border-radius:3px"),
+        cell_style="padding:4px 10px",
+        width=None,
+    )
+
+
+def _key_figure_box(quote: str) -> str:
+    """キーとなる数値の引用ボックス（T-48 Step 2）。
+
+    ⚠️ **本文からの抜き書き**（`key_figure_quote()`）。解説の段落は別途全段
+    そのまま描かれるので、この文は本文と重複して現れる。
+    """
+    return m.block(
+        m.element(
+            "p",
+            m.escape(quote),
+            style=m.styles(
+                "margin:0",
+                "font-size:15px",
+                "font-weight:bold",
+                f"color:{NAVY}",
+                "line-height:1.7",
+            ),
+        ),
+        style=m.styles(
+            f"background-color:{PANEL_BACKGROUND}",
+            f"border-left:4px solid {ACCENT}",
+            "margin:0 0 14px 0",
+        ),
+        cell_style="padding:12px 16px",
+    )
+
+
 def _case_card(case: Mapping[str, Any]) -> str:
-    """§10.2-4 事例カード（`CASE NN ／ 〈企業〉`／タイトル／本文／出典行）。"""
+    """§10.2-4 事例カード（`CASE NN` バッジ＋企業名／タイトル／本文／出典行）。
+
+    T-48 Step 2 で `CASE NN` をバッジへ出し、解説にキーとなる数値があれば
+    引用ボックスを本文の前に置く。**本文（`解説` の段落）は全段そのまま。**
+    """
     # ⚠️ `NN` は列1「No」そのもの（レンダラ側で数え直さない）。`No` が章の
     # グルーピング順を表す通し番号なので、表と HTML で番号が食い違わない。
-    label = CASE_LABEL_FORMAT.format(
-        no=int(case[COLUMN_NO]), organizations=organizations_of(case)
-    )
+    no = int(case[COLUMN_NO])
+    organizations = organizations_of(case)
     source = m.element(
         "p",
         m.escape(case.get(COLUMN_SOURCE)),
@@ -589,51 +847,74 @@ def _case_card(case: Mapping[str, Any]) -> str:
             f"color:{MUTED_TEXT}",
         ),
     )
-    body = "".join(
+    # `CASE NN` バッジと企業名を横並びにする（区切りの `／` はバッジの境界が担う）。
+    head = m.table(
         [
-            m.element(
-                "p",
-                m.escape(label),
-                style=m.styles(
-                    "margin:0",
-                    "font-size:11px",
-                    "font-weight:bold",
-                    f"color:{ACCENT}",
-                    "letter-spacing:0.04em",
-                ),
-            ),
-            m.element(
-                "p",
-                m.link(
-                    case.get(COLUMN_TITLE),
-                    case.get(COLUMN_URL),
-                    style=m.styles(f"color:{NAVY}", "text-decoration:none"),
-                ),
-                style=m.styles(
-                    "margin:8px 0 14px 0",
-                    "font-size:16px",
-                    "font-weight:bold",
-                    "line-height:1.6",
-                    f"color:{NAVY}",
-                ),
-            ),
-            _body_paragraphs(
-                case.get(COLUMN_COMMENTARY),
-                # §10.3「最終段落は示唆／持ち帰りトーン」。文面は AI 側（T-21）が
-                # 書くので、この層は**見え方だけ**を分ける。
-                last_style=m.styles(
-                    "margin:12px 0 0 0",
-                    "font-size:13px",
-                    "line-height:1.95",
-                    f"color:{NAVY}",
-                    f"border-left:3px solid {ACCENT_LIGHT}",
-                    "padding-left:12px",
-                ),
-            ),
-            source,
+            m.row(
+                [
+                    m.cell(
+                        _case_number_badge(no),
+                        style="width:1%",
+                        attrs={"valign": "middle"},
+                    ),
+                    m.spacer_cell("10px"),
+                    m.cell(
+                        m.element(
+                            "p",
+                            m.escape(organizations),
+                            style=m.styles(
+                                "margin:0",
+                                "font-size:12px",
+                                "font-weight:bold",
+                                f"color:{ACCENT}",
+                                "letter-spacing:0.04em",
+                            ),
+                        ),
+                        attrs={"valign": "middle"},
+                    ),
+                ]
+            )
         ]
     )
-    return m.row([m.cell(body, style="padding:22px 30px 0 30px")])
+
+    parts = [
+        head,
+        m.element(
+            "p",
+            m.link(
+                case.get(COLUMN_TITLE),
+                case.get(COLUMN_URL),
+                style=m.styles(f"color:{NAVY}", "text-decoration:none"),
+            ),
+            style=m.styles(
+                "margin:10px 0 14px 0",
+                "font-size:16px",
+                "font-weight:bold",
+                "line-height:1.6",
+                f"color:{NAVY}",
+            ),
+        ),
+    ]
+    if quote := key_figure_quote(case.get(COLUMN_COMMENTARY)):
+        parts.append(_key_figure_box(quote))
+    parts.append(
+        _body_paragraphs(
+            case.get(COLUMN_COMMENTARY),
+            # §10.3「最終段落は示唆／持ち帰りトーン」。文面は AI 側（T-21）が
+            # 書くので、この層は**見え方だけ**を分ける。
+            last_style=m.styles(
+                "margin:12px 0 0 0",
+                "font-size:13px",
+                "line-height:1.95",
+                f"color:{NAVY}",
+                f"border-left:3px solid {ACCENT_LIGHT}",
+                "padding-left:12px",
+            ),
+        )
+    )
+    parts.append(source)
+
+    return m.row([m.cell("".join(parts), style="padding:22px 30px 0 30px")])
 
 
 def _closing(narrative: MonthlyNarrative) -> str:
@@ -794,9 +1075,16 @@ def _render(
     if (narrative.editorial or "").strip():
         rows.append(_editorial(narrative))
     rows.append(_contents(chapters, case_count=len(cases)))
+    quoted = 0
     for chapter in chapters:
+        # 章色帯（T-48 Step 2）が前の事例カードへ張り付かないよう間を空ける。
+        # `padding-top` ではなく余白行なのは、帯の地色を上に伸ばさないため。
+        rows.append(m.spacer_row("24px"))
         rows.append(_chapter_header(chapter, narrative.intro_for(chapter.label)))
-        rows.extend(_case_card(case) for case in chapter.cases)
+        for case in chapter.cases:
+            if key_figure_quote(case.get(COLUMN_COMMENTARY)):
+                quoted += 1
+            rows.append(_case_card(case))
     if (narrative.closing or "").strip():
         rows.append(_closing(narrative))
     rows.append(m.spacer_row("34px"))
@@ -848,10 +1136,13 @@ def _render(
     )
 
     logger.info(
-        "monthly html rendered (period=%s, cases=%d, chapters=%d)",
+        "monthly html rendered (period=%s, cases=%d, chapters=%d, key_figures=%d)",
         parsed.text,
         len(cases),
         len(chapters),
+        # 引用ボックスが出た事例数（T-48 Step 2）。0 が続くなら解説に数値が
+        # 入っていない＝抜き出す単位（`KEY_FIGURE_UNITS`）の見直しの手がかり。
+        quoted,
     )
     return _mail_safe(markup, period=parsed.text), chapters
 
@@ -1004,6 +1295,9 @@ class MonthlyRenderer:
 __all__ = [
     "BRAND_TITLE",
     "CASE_LABEL_FORMAT",
+    "CASE_LABEL_SEPARATOR",
+    "CASE_NUMBER_FORMAT",
+    "CHAPTER_BADGE_FORMAT",
     "CLOSING_HEADING",
     "CONTENTS_SUMMARY_FORMAT",
     "EDITORIAL_HEADING",
@@ -1011,6 +1305,9 @@ __all__ = [
     "FOOTER_CHAPTER_BADGE_FORMAT",
     "HEADER_EYEBROW",
     "ISSUE_BADGE_FORMAT",
+    "KEY_FIGURE_QUOTE_MAX_FULLWIDTH_CHARS",
+    "KEY_FIGURE_UNITS",
+    "QUOTE_ELLIPSIS",
     "REFERENCED_COLUMNS",
     "Chapter",
     "MonthlyNarrative",
@@ -1019,6 +1316,7 @@ __all__ = [
     "RenderedHtml",
     "ensure_ascending_numbers",
     "group_into_chapters",
+    "key_figure_quote",
     "organizations_of",
     "render_monthly_html",
     "split_chapter_label",

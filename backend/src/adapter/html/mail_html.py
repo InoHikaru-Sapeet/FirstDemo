@@ -41,6 +41,7 @@ style 値でもエスケープする。
 import html
 import logging
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
 
@@ -278,6 +279,51 @@ def link(
     return element("a", label, style=style, attrs={"href": href, "target": "_blank"})
 
 
+def truncate_fullwidth(text: object, *, limit: int, ellipsis: str = "…") -> str:
+    """テキストを「全角 `limit` 字ぶん」で切る（T-48）。
+
+    ⚠️ **切る位置は文字数ではなく見た目の幅で決める**。日本語と英数字が混ざる
+    テキストで字数を数えると、英数字ばかりの行が全角 `limit` 字の2倍近い長さに
+    なり、カードの高さが揃わない。`east_asian_width` の `F`（全角）・`W`（広）・
+    `A`（曖昧）を全角として数える（`A` を全角側へ寄せているのは、日本語環境で
+    全角表示される記号（`§`・`…`）が半角として数えられると行が想定より長く
+    なるため）。
+
+    ⚠️ **`ellipsis` を足すぶんの幅は上限から引かない**（1文字ぶんの超過を許す）。
+    差し引くと上限ぎりぎりのテキストが2文字短くなり、切れていないのに切れて
+    見える。
+
+    Args:
+        text: 元のテキスト（`None` は空文字）
+        limit: 上限（**全角字**。半角は0.5字ぶん）
+        ellipsis: 切ったときに末尾へ足す文字
+
+    Returns:
+        改行と連続空白を1つの空白へ潰し、上限を超えたら末尾を `ellipsis` に
+        した1行。空なら空文字
+
+    Examples:
+        >>> truncate_fullwidth("AIが契約書を作る。", limit=5)
+        'AIが契約…'
+        >>> truncate_fullwidth("短い。", limit=5)
+        '短い。'
+    """
+    flat = " ".join(str(text).split()) if text is not None else ""
+    if not flat:
+        return ""
+
+    budget = limit * 2
+    used = 0
+    kept: list[str] = []
+    for char in flat:
+        width = 2 if unicodedata.east_asian_width(char) in ("F", "W", "A") else 1
+        if used + width > budget:
+            return "".join(kept).rstrip() + ellipsis
+        kept.append(char)
+        used += width
+    return flat
+
+
 def split_paragraphs(text: object) -> list[str]:
     """`\\n\\n` 区切りのテキストを段落へ分ける（仕様書 §10.3）。
 
@@ -431,4 +477,5 @@ __all__ = [
     "split_paragraphs",
     "styles",
     "table",
+    "truncate_fullwidth",
 ]

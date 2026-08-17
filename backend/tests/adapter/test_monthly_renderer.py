@@ -15,6 +15,7 @@
 import copy
 import json
 import os
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -23,16 +24,30 @@ import pytest
 
 from adapter.html import mail_html
 from adapter.html.monthly_renderer import (
+    ACCENT,
+    ACCENT_LIGHT,
     BRAND_TITLE,
+    CASE_LABEL_FORMAT,
+    CASE_LABEL_SEPARATOR,
+    CASE_NUMBER_FORMAT,
+    CHAPTER_BADGE_FORMAT,
+    CHAPTER_BAND_BACKGROUND,
     CLOSING_HEADING,
     EDITORIAL_HEADING,
     HEADER_EYEBROW,
+    INVERSE_TEXT,
+    KEY_FIGURE_QUOTE_MAX_FULLWIDTH_CHARS,
+    NAVY,
+    PAGE_BACKGROUND,
+    PANEL_BACKGROUND,
+    QUOTE_ELLIPSIS,
     REFERENCED_COLUMNS,
     MonthlyNarrative,
     MonthlyRenderer,
     MonthlyRenderError,
     ensure_ascending_numbers,
     group_into_chapters,
+    key_figure_quote,
     organizations_of,
     render_monthly_html,
     split_chapter_label,
@@ -290,10 +305,26 @@ def test_the_chapter_introduction_is_rendered_when_it_is_given(
 def test_a_case_is_labelled_with_a_zero_padded_number_and_its_organizations(
     config: IntelligenceConfig,
 ) -> None:
+    """T-48 Step 2 でバッジと企業名に割れた（区切りの `／` は描かない）。"""
     markup = render([case(no=1, organizations=("大手不動産", "AIベンダ"))], config)
 
     joined = ORGANIZATION_SEPARATOR.join(["大手不動産", "AIベンダ"])
-    assert f"CASE 01 ／ {joined}" in markup
+    assert "CASE 01" in markup
+    assert joined in markup
+    assert f"CASE 01{CASE_LABEL_SEPARATOR}" not in markup
+
+
+def test_the_case_badge_and_organizations_are_derived_from_the_fixed_wording() -> None:
+    """⚠️ **確定文言の正は `CASE_LABEL_FORMAT` 1つ**（§10.2-4）。
+
+    バッジ（前半）と区切りを別に持っているので、確定文言を直したときに片方だけ
+    古いまま食い違わないよう、組み直して一致を固定する（実装側も import 時に
+    同じ検査をしている）。
+    """
+    composed = CASE_NUMBER_FORMAT + CASE_LABEL_SEPARATOR + "{organizations}"
+
+    assert composed == CASE_LABEL_FORMAT
+    assert CASE_NUMBER_FORMAT.format(no=7) == "CASE 07"
 
 
 def test_the_case_number_comes_from_the_no_column(
@@ -361,6 +392,156 @@ def test_multiple_organizations_are_joined_with_the_shared_separator() -> None:
     assert organizations_of({}) == ""
 
 
+# --- 視覚強化（T-48 Step 2。装飾のみ・本文は不変）-----------------------------
+
+
+def test_the_chapter_number_badge_is_a_filled_navy_chip(
+    config: IntelligenceConfig,
+) -> None:
+    markup = render([case(chapter=chapter_label(1, "基幹業務の作り替え"))], config)
+
+    assert f"background-color:{NAVY};border-radius:4px" in markup
+    assert f"color:{INVERSE_TEXT}" in markup
+    assert CHAPTER_BADGE_FORMAT.format(number=1) in markup
+
+
+def test_the_chapter_header_carries_a_color_band(config: IntelligenceConfig) -> None:
+    """章色帯（左端 `6px` の帯＋地色）。⚠️ **確定値の下端罫は残す**。"""
+    markup = render([case()], config)
+
+    assert f"border-left:6px solid {ACCENT}" in markup
+    assert f"background-color:{CHAPTER_BAND_BACKGROUND}" in markup
+    assert f"border-bottom:2px solid {ACCENT}" in markup  # §10.2-4 の確定値
+
+
+def test_the_chapter_band_does_not_invent_a_new_colour() -> None:
+    """帯の地色は確定パレット内から選ぶ（新しい色を作らない）。"""
+    assert CHAPTER_BAND_BACKGROUND == PAGE_BACKGROUND
+    assert CHAPTER_BAND_BACKGROUND != PANEL_BACKGROUND
+
+
+def test_a_chapter_without_a_badge_still_renders_its_title(
+    config: IntelligenceConfig,
+) -> None:
+    """書式に合わない章ラベルは**バッジ無しでタイトルだけ**（T-25 の方針のまま）。"""
+    markup = render([case(chapter="章の書式に合わないラベル")], config)
+
+    assert "章の書式に合わないラベル" in markup
+    assert f"background-color:{NAVY};border-radius:4px" not in markup
+
+
+def test_the_case_number_is_shown_as_a_light_blue_badge(
+    config: IntelligenceConfig,
+) -> None:
+    """事例バッジは水色地（章のネイビー地と地色を分けて階層を出す）。
+
+    ⚠️ 地色だけを探さない（§10.2-1 の号バッジも同じ水色）。`CASE 04` を囲む
+    チップそのものが出ていることを見る。
+    """
+    markup = render([case(no=4)], config)
+
+    chip = re.compile(
+        re.escape(f'style="background-color:{ACCENT_LIGHT};border-radius:3px">')
+        + r"<tr><td[^>]*><p[^>]*>CASE 04</p>"
+    )
+    assert chip.search(markup) is not None
+
+
+# --- キーとなる数値の引用ボックス（T-48 Step 2）-------------------------------
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "問い合わせ対応の工数を月120時間削減した。",
+        "作業時間を40％短縮した。",
+        "残業を3割減らせた。",
+        "外注費を年1,200万円抑えた。",
+        "処理量は5倍になった。",
+        "立ち上げは3か月で済んだ。",
+        "調達コストは50万ドル下がった。",
+        "応答時間は30秒まで縮んだ。",
+        "工数は月20人時ぶん空いた。",
+    ],
+)
+def test_a_sentence_with_a_key_figure_is_quoted(sentence: str) -> None:
+    assert key_figure_quote(f"導入した。{sentence}確認は担当者が担う。") == sentence
+
+
+@pytest.mark.parametrize(
+    "commentary",
+    [
+        "方針を見直した。手順ごと組み替えた。",
+        "3件の事例を集めた。担当は5名だった。",  # 数え上げは対象にしない
+        "",
+        None,
+    ],
+)
+def test_a_commentary_without_a_key_figure_is_not_quoted(commentary: object) -> None:
+    assert key_figure_quote(commentary) is None
+
+
+def test_the_first_key_figure_in_the_commentary_wins() -> None:
+    text = "工数を月120時間削減した。\n\n外注費も年800万円下がった。"
+
+    assert key_figure_quote(text) == "工数を月120時間削減した。"
+
+
+def test_a_long_quote_is_cut_at_the_limit() -> None:
+    long_sentence = "あ" * KEY_FIGURE_QUOTE_MAX_FULLWIDTH_CHARS + "で30％削減した。"
+
+    quote = key_figure_quote(long_sentence)
+
+    assert quote is not None
+    assert quote.endswith(QUOTE_ELLIPSIS)
+
+
+def test_a_sentence_without_a_trailing_period_is_still_quoted() -> None:
+    assert key_figure_quote("工数を120時間削減") == "工数を120時間削減"
+
+
+def test_the_quote_box_appears_before_the_body(config: IntelligenceConfig) -> None:
+    quoted = "問い合わせ対応の工数を月120時間削減した。"
+    markup = render(
+        [
+            case(
+                paragraphs=(
+                    "契約業務をAIエージェントへ移した。",
+                    quoted,
+                    "自社では書式の揃った領域から試すのが早い。",
+                )
+            )
+        ],
+        config,
+    )
+
+    box = f"background-color:{PANEL_BACKGROUND};border-left:4px solid {ACCENT}"
+    assert box in markup
+    assert markup.index(box) < markup.index("契約業務をAIエージェントへ移した。")
+
+
+def test_quoting_does_not_remove_the_sentence_from_the_body(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ **本文は不変**（引用は抜き書きで、段落は全段そのまま出る）。"""
+    quoted = "工数を月120時間削減した。"
+    paragraphs = ("前置き。", quoted, "むすび。")
+
+    markup = render([case(paragraphs=paragraphs)], config)
+
+    assert markup.count(quoted) == 2  # 引用ボックス＋本文
+    for paragraph in paragraphs:
+        assert f">{paragraph}</p>" in markup
+
+
+def test_a_case_without_a_key_figure_has_no_empty_box(
+    config: IntelligenceConfig,
+) -> None:
+    markup = render([case(paragraphs=("数値の無い解説。",))], config)
+
+    assert f"border-left:4px solid {ACCENT}" not in markup
+
+
 # --- 生成テキスト（§10.2-2・§10.2-5）---------------------------------------
 
 
@@ -374,7 +555,10 @@ def test_the_editorial_and_closing_are_rendered_when_they_are_given(
     assert "『導入したか』ではなく『作り直したか』が問われた月" in markup
     assert ">第1段落。</p>" in markup
     assert ">来月の視点。</p>" in markup
-    assert markup.count("background-color:#F7FAFC") == 2
+    # ⚠️ 地色だけを数えない（T-48 Step 2 の引用ボックスも `#F7FAFC` を使う）。
+    # §10.2-2・§10.2-5 の囲みは**枠線つき**（`border:1px solid #DCE7F0`）なので、
+    # そこまで含めた署名で数える。
+    assert markup.count("background-color:#F7FAFC;border:1px solid #DCE7F0") == 2
 
 
 def test_rendering_fails_when_the_required_editorial_is_missing(
@@ -591,8 +775,10 @@ def golden_cases() -> list[dict[str, Any]]:
             source="ITmedia（2026-07-08）",
             paragraphs=(
                 "契約書のドラフト作成をAIエージェントへ移した。",
+                # ⚠️ **キーとなる数値を1件だけ入れてある**（T-48 Step 2 の引用
+                # ボックスがゴールデンを実際に通るように）。
                 "ひな型のある書類から着手し、差分の確認は担当者が担う形にした。"
-                "月あたりの作成件数は変えずに、確認へ回る時間が増えた。",
+                "ドラフト作成の工数は月120時間ぶん減った。",
                 "自社では書式の揃っている領域から試すのが早い。",
             ),
         ),

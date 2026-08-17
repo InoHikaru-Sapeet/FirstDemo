@@ -68,7 +68,6 @@ filter が作ったまま全件持っており、**この層が描画時に間�
 """
 
 import logging
-import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -384,22 +383,12 @@ def select_articles(
 # --- 組み立て -----------------------------------------------------------------
 
 
-def _character_halfwidths(char: str) -> int:
-    """1文字の見た目の幅（半角=1・全角=2）。
-
-    `east_asian_width` の `F`（全角）・`W`（広）・`A`（曖昧）を全角として数える。
-    `A` を全角側に寄せているのは、日本語環境で全角表示される記号（`§`・`…`・
-    ギリシャ文字など）が半角として数えられると**行が想定より長くなる**ため。
-    """
-    return 2 if unicodedata.east_asian_width(char) in ("F", "W", "A") else 1
-
-
 def one_line_summary(text: object, *, limit: int = SUMMARY_MAX_FULLWIDTH_CHARS) -> str:
     """一言要約を「1行」へ詰める（T-48 Step 1）。
 
-    ⚠️ **切る位置は文字数ではなく見た目の幅で決める**（全角 `limit` 字ぶん）。
-    日本語と英数字が混ざる要約で「60文字」を字数で数えると、英数字ばかりの
-    要約が全角60字の2倍近い長さになってカードの高さが揃わない。
+    切り方（見た目の幅で数える・`…` ぶんは引かない）は T-23 の部品
+    `mail_html.truncate_fullwidth()` が持つ。**月刊の引用ボックス（T-48 Step 2）
+    と同じ実装を使う**ため、この層は既定の上限を与えるだけ。
 
     Args:
         text: 中間xlsx 列4「一言要約」の値
@@ -407,27 +396,8 @@ def one_line_summary(text: object, *, limit: int = SUMMARY_MAX_FULLWIDTH_CHARS) 
 
     Returns:
         改行を空白へ潰し、上限を超えたら末尾を `…` にした1行。空なら空文字
-
-    Examples:
-        >>> one_line_summary("AIが契約書を作る。", limit=5)
-        'AIが契約…'
     """
-    flat = " ".join(str(text).split()) if text is not None else ""
-    if not flat:
-        return ""
-
-    budget = limit * 2
-    used = 0
-    kept: list[str] = []
-    for char in flat:
-        width = _character_halfwidths(char)
-        if used + width > budget:
-            # ⚠️ `…` を足すぶんの幅は引かない（1文字ぶんの超過は許す）。差し引くと
-            # 上限ぎりぎりの要約が2文字短くなり、切れていないのに切れて見える。
-            return "".join(kept).rstrip() + ELLIPSIS
-        kept.append(char)
-        used += width
-    return flat
+    return m.truncate_fullwidth(text, limit=limit, ellipsis=ELLIPSIS)
 
 
 def category_labels(config: IntelligenceConfig) -> dict[str, str]:
