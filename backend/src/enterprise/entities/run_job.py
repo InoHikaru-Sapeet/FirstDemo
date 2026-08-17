@@ -39,14 +39,19 @@ CLI 実行か API 実行かは `RunJob.trigger` が持つ。
 
 import secrets
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Final, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from enterprise.entities.period import PeriodError, parse_period
+from enterprise.entities.period import (
+    PeriodError,
+    monthly_period_of,
+    parse_period,
+    weekly_period_of,
+)
 
 # --- 種別・段・状態 -----------------------------------------------------------
 
@@ -182,6 +187,23 @@ def run_type_of(period: str) -> RunType:
         PeriodError: どちらの表記でもない／実在しない期間
     """
     return RunType.WEEKLY if parse_period(period).is_weekly else RunType.MONTHLY
+
+
+def resolve_period(run_type: RunType, *, today: date) -> str:
+    """period 省略時の対象期間（設計書 §8.1 の「period 解決」列 ／ 仕様書 §13.1）。
+
+    週次は `{{ISO_WEEK}}`＝**実行日が属する週**（毎週月曜 08:00 に当週を回す）、
+    月次は `{{PREV_MONTH}}`＝**実行日の前月**（毎月1日 09:00 に前月ぶんを作る）。
+
+    ⚠️ **基準は Asia/Tokyo**（呼び出し側が `Settings.tzinfo` の今日を渡す）。
+    UTC の今日で解決すると、日本時間の月曜早朝・月初に1つ前の期間を指す。
+
+    ⚠️ **CLI（`make run-weekly`）と API（`POST /run/weekly`）で同じ規則を使う。**
+    片方だけが解決すると、cron が叩く口によって対象期間がずれる。
+    """
+    if run_type is RunType.WEEKLY:
+        return weekly_period_of(today)
+    return monthly_period_of(today.replace(day=1) - timedelta(days=1))
 
 
 # `job_id` の形。⚠️ **パス区切りを含めないこと**
@@ -370,6 +392,7 @@ __all__ = [
     "Step",
     "new_job_id",
     "period_matches_type",
+    "resolve_period",
     "run_type_of",
     "steps_from",
 ]

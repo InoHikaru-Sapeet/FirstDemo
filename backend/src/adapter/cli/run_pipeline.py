@@ -36,7 +36,7 @@ import asyncio
 import time
 from argparse import ArgumentParser, Namespace
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 # ⚠️ import の副作用（`logging.basicConfig`）が目的。ワーカーの進捗ログ
 # （`logger.info`：crawl started / filter finished 等）を手元の端末へ出すために要る。
@@ -66,11 +66,7 @@ from application.usecases.run_orchestrator import (
 )
 from config import get_settings
 from enterprise.entities.json_document import DocumentParseError
-from enterprise.entities.period import (
-    PeriodError,
-    monthly_period_of,
-    weekly_period_of,
-)
+from enterprise.entities.period import PeriodError
 from enterprise.entities.run_job import (
     JobStatus,
     JobTrigger,
@@ -78,6 +74,7 @@ from enterprise.entities.run_job import (
     RunJob,
     RunType,
     Step,
+    resolve_period,
 )
 
 EXIT_OK = 0
@@ -186,20 +183,9 @@ def hint_for_error_type(name: str | None) -> str | None:
 
 
 # --- period の解決（仕様書 §13.1 と同じ規則）---------------------------------
-
-
-def resolve_period(run_type: RunType, *, today: date) -> str:
-    """PERIOD 省略時の対象期間（設計書 §8.1 の「period 解決」列）。
-
-    週次は `{{ISO_WEEK}}`＝**実行日が属する週**（毎週月曜 08:00 に当週を回す）、
-    月次は `{{PREV_MONTH}}`＝**実行日の前月**（毎月1日 09:00 に前月ぶんを作る）。
-
-    ⚠️ **基準は Asia/Tokyo**（呼び出し側が `Settings.tzinfo` の今日を渡す）。
-    UTC の今日で解決すると、日本時間の月曜早朝・月初に1つ前の期間を指す。
-    """
-    if run_type is RunType.WEEKLY:
-        return weekly_period_of(today)
-    return monthly_period_of(today.replace(day=1) - timedelta(days=1))
+# ⚠️ **解決規則そのものは `enterprise.entities.run_job.resolve_period` が持つ。**
+# `POST /run`（T-27）も period 省略を受けるので、ここに写しを作ると
+# **cron が叩く口（CLI / API）によって対象期間がずれる**。ここは再輸出だけ。
 
 
 # --- 実行 --------------------------------------------------------------------

@@ -255,13 +255,25 @@ class ReportStore:
             self._store.monthly_cases_path(), period, MONTHLY_CASE_SHEET
         )
 
-    def read_exclusions(self) -> list[dict[str, Any]]:
-        """除外ログの全行を読む（積まれた順）。"""
-        return self._read_sheet(
-            self._store.weekly_report_path(),
-            EXCLUSION_LOG_SHEET_NAME,
-            EXCLUSION_LOG_SHEET,
-        )
+    def read_exclusions(self, period: str | None = None) -> list[dict[str, Any]]:
+        """除外ログの行を読む（積まれた順）。
+
+        Args:
+            period: 指定するとその期間ぶんだけ返す（`GET /reports/{period}` の
+                `summary.excluded`。T-27）。⚠️ **振り分けは `収集日` から行う**
+                ので、`収集日` が空の行はどの期間にも入らない
+                （`_exclusions_by_period()` の理由と同じ）。省略すると全行
+
+        Returns:
+            除外ログの行（列名 → 値）
+        """
+        if period is None:
+            return self._read_sheet(
+                self._store.weekly_report_path(),
+                EXCLUSION_LOG_SHEET_NAME,
+                EXCLUSION_LOG_SHEET,
+            )
+        return list(self._exclusions_by_period().get(period, ()))
 
     def read_history(self, periods: Sequence[str]) -> DedupHistory:
         """重複判定（T-18）の履歴を xlsx から組み立てる（T-18 申し送り①）。

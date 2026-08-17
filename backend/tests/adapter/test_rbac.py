@@ -4,7 +4,7 @@
 
 1. **マトリクスの中身が §6.2 と一致しているか**（`PERMISSION_MATRIX` を仕様書の
    表と1:1で突き合わせる）。ここは HTTP を通さない純粋な定数比較で、
-   **未実装のエンドポイント（`GET /reports` / `POST /run`）の行も対象**にする。
+   **ルーターがまだ無い行も対象**にする（現在は `POST /config/dry-run` だけ）。
 2. **HTTP 層が本当にマトリクスどおり弾いているか**（実装済みエンドポイントを
    全ロール＋未認証で叩く）。期待値は `authorize()` から導くので、ここは
    「定数の内容」ではなく **「配線されているか」** を検証している。
@@ -13,9 +13,11 @@
 ルーターが参照していないかもしれず、2 だけなら「マトリクスもコードも同じように
 間違っている」を検出できない。
 
-⚠️ **`GET /reports/{period}` と `POST /run/{type}` の HTTP テストは無い**
-（ルーターが T-27 で未実装のため）。定数としては 1 の対象に含めてある。
-**T-27 でルーターを作ったら 2 の `REQUESTS` へ2行足すこと**（TASKS.md T-27）。
+（2026-08-17 T-27）`GET /reports/{period}` と `POST /run/{type}` は T-09 の時点で
+「定数はあるが HTTP テストが無い」状態で残してあったが、ルーターができたので
+`REQUESTS` へ入れて穴を塞いだ。同時に増えた `GET /run/{job_id}` と
+`GET /files/{filename}` も対象。⚠️ **残っているのは `POST /config/dry-run`
+（T-29 で実装）だけ。**
 
 なお、各ルーター固有の認可要件（config の存在を 403 の差で悟らせない等）は
 `test_config_router.py` / `test_users_router.py` が引き続き担当する。ここは
@@ -38,7 +40,11 @@ from sqlalchemy.pool import NullPool
 
 from adapter.database.base import Base
 from adapter.database.models.user import User
-from adapter.http.fastapi.auth.dependencies import get_db_session, require_admin
+from adapter.http.fastapi.auth.dependencies import (
+    get_db_session,
+    get_session_factory,
+    require_admin,
+)
 from adapter.http.fastapi.auth.rbac import (
     ADMIN_ONLY_OPERATIONS,
     PERMISSION_MATRIX,
@@ -100,6 +106,15 @@ DESIGN_3_2_ADDITION: dict[Operation, tuple[Decision, Decision, Decision, Decisio
     Operation.POST_CONFIG_DRY_RUN: (ALLOW, DENY, DENY, DENY),
 }
 
+# T-27 の追加行（§6.2 にも §3.2 にも列挙が無い。根拠は `rbac.py` のコメント）。
+# - ジョブ状態の照会は **`POST /run` と同じ**（実行できない viewer は見られない）
+# - 生成物の配信は **`GET /reports/{period}` と同じ**（全ロール可。何を配れるかは
+#   認可ではなく `ArtifactStore.is_servable` の許可リストで絞る）
+TASKS_T27_RUN_ROWS: dict[Operation, tuple[Decision, Decision, Decision, Decision]] = {
+    Operation.GET_RUN_JOB: (ALLOW, ALLOW, DENY, ALLOW),
+    Operation.GET_FILES: (ALLOW, ALLOW, ALLOW, ALLOW),
+}
+
 # TASKS.md T-09「認証系エンドポイントをマトリクスへ追加」（2026-08-13 の方針変更分）。
 TASKS_T09_AUTH_ROWS: dict[Operation, tuple[Decision, Decision, Decision, Decision]] = {
     Operation.POST_AUTH_REGISTER: (ALLOW, ALLOW, ALLOW, ALLOW),
@@ -113,7 +128,9 @@ TASKS_T09_AUTH_ROWS: dict[Operation, tuple[Decision, Decision, Decision, Decisio
     Operation.PATCH_USER_STATUS: (ALLOW, DENY, DENY, DENY),
 }
 
-ALL_EXPECTED_ROWS = SPEC_6_2 | DESIGN_3_2_ADDITION | TASKS_T09_AUTH_ROWS
+ALL_EXPECTED_ROWS = (
+    SPEC_6_2 | DESIGN_3_2_ADDITION | TASKS_T09_AUTH_ROWS | TASKS_T27_RUN_ROWS
+)
 
 
 def actual_row(operation: Operation) -> tuple[Decision, Decision, Decision, Decision]:
@@ -125,8 +142,8 @@ def actual_row(operation: Operation) -> tuple[Decision, Decision, Decision, Deci
 def test_the_matrix_matches_spec_6_2(operation: Operation) -> None:
     """⚠️ **仕様書 §6.2 の確定値。ここを緩めない。**
 
-    未実装（`GET /reports` / `POST /run`）の行も検査対象に含める。ルーターが
-    無くても、マトリクスは §6.2 を写したものとして正しくなければならない。
+    ルーターの有無に関わらず、マトリクスは §6.2 を写したものとして
+    正しくなければならない。
     """
     assert actual_row(operation) == SPEC_6_2[operation]
 
@@ -145,6 +162,38 @@ def test_the_dry_run_row_matches_design_3_2(operation: Operation) -> None:
 def test_the_auth_and_user_rows_match_tasks_t09(operation: Operation) -> None:
     """2026-08-13 の方針変更で増えた行（TASKS.md T-09）。"""
     assert actual_row(operation) == TASKS_T09_AUTH_ROWS[operation]
+
+
+@pytest.mark.parametrize(
+    "operation", sorted(TASKS_T27_RUN_ROWS, key=lambda op: op.value)
+)
+def test_the_run_job_and_files_rows_match_tasks_t27(operation: Operation) -> None:
+    """T-27 で増えた行（ジョブ状態の照会・生成物の配信）。"""
+    assert actual_row(operation) == TASKS_T27_RUN_ROWS[operation]
+
+
+def test_a_viewer_cannot_poll_a_job_it_cannot_start() -> None:
+    """⚠️ ジョブ状態の照会を `POST /run` より広くしない。
+
+    viewer は実行できない（§6.2）。実行できない相手に、いつ何が走ったか
+    （cron の稼働状況・失敗の理由）を見せる要件は仕様書に無い。
+    """
+    assert roles_allowed_over_http(Operation.GET_RUN_JOB) == roles_allowed_over_http(
+        Operation.POST_RUN
+    )
+    assert Role.VIEWER not in roles_allowed_over_http(Operation.GET_RUN_JOB)
+
+
+def test_the_artifact_download_is_open_to_every_role() -> None:
+    """§6.2 の `GET /reports/{period}`（HTML/一覧）が全ロール可なので、実体も同じ。
+
+    ⚠️ **何を配れるかは認可ではなく許可リストの担当**
+    （`ArtifactStore.is_servable`。`config.json` や `scratch/` は載せない）。
+    """
+    assert roles_allowed_over_http(Operation.GET_FILES) == roles_allowed_over_http(
+        Operation.GET_REPORTS
+    )
+    assert roles_allowed_over_http(Operation.GET_FILES) == set(Role)
 
 
 def test_the_matrix_has_no_extra_or_missing_operations() -> None:
@@ -400,6 +449,10 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
             yield session
 
     app.dependency_overrides[get_db_session] = override_db
+    # ⚠️ `POST /run` は「リクエストより長生きするジョブ」のためにセッション
+    # ファクトリを取る（T-26）。ここを差し替えないと**本物の開発 DB**
+    # （`var/ai_intelligence.db`）を掴む。
+    app.dependency_overrides[get_session_factory] = lambda: maker
     with TestClient(app) as test_client:
         test_client._maker = maker  # type: ignore[attr-defined]
         yield test_client
@@ -464,8 +517,8 @@ class Call:
         return response.status_code
 
 
-# 実装済みエンドポイントのみ。⚠️ **T-27 で `/reports` `/run`、T-29 で
-# `/config/dry-run` を実装したらここへ足すこと。**
+# 実装済みエンドポイントのみ。⚠️ **T-29 で `/config/dry-run` を実装したら
+# ここへ足すこと。**（`/run` `/reports` `/files` は T-27 で追加済み）
 REQUESTS = [
     Call(Operation.GET_CONFIG, "GET", "/config"),
     Call(Operation.GET_CONFIG_HISTORY, "GET", "/config/history"),
@@ -507,6 +560,14 @@ REQUESTS = [
         {"email": "nobody@sapeet.com", "password": PASSWORD},
     ),
     Call(Operation.POST_AUTH_LOGOUT, "POST", "/auth/logout"),
+    # --- T-27（TASKS.md T-09 備考が「T-27 で足すこと」と申し送っていた分）-----
+    # ⚠️ 許可されるロールでは 403 以外なら何でもよい。この tmp な artifact_root
+    # には config も成果物も無いので、admin/editor/system は 409（config を
+    # 固定できない）や 404 になる。**認可の配線だけを見ている。**
+    Call(Operation.POST_RUN, "POST", "/run/weekly", {"period": "2026-W31"}),
+    Call(Operation.GET_RUN_JOB, "GET", "/run/job_nope"),
+    Call(Operation.GET_REPORTS, "GET", "/reports/2026-W31"),
+    Call(Operation.GET_FILES, "GET", "/files/monthly_belief_2026-07.html"),
 ]
 
 

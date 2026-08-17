@@ -16,6 +16,7 @@
 """
 
 import os
+import re
 import shutil
 import tempfile
 from collections.abc import Iterator
@@ -43,6 +44,23 @@ MONTHLY_CASES_FILENAME = "monthly_ai_leading_cases.xlsx"
 # `parse_period()` を呼ぶ crawl / filter の責務）。
 WEEKLY_PERIOD_RE = period_entity.WEEKLY_PERIOD_RE
 MONTHLY_PERIOD_RE = period_entity.MONTHLY_PERIOD_RE
+
+# 生成 HTML の正規名（週刊は業界ごとに1通＝T-46 Step 4）。⚠️ **`weekly_html_path()` /
+# `monthly_html_path()` と同じ形をここでも書いている。** 片方を変えたら
+# もう片方も変えること（`tests/adapter/test_artifact_store.py` が一致を固定）。
+WEEKLY_HTML_PREFIX = "weekly_ai_intelligence_newsletter_"
+MONTHLY_HTML_PREFIX = "monthly_belief_"
+WEEKLY_HTML_RE = re.compile(
+    rf"^{re.escape(WEEKLY_HTML_PREFIX)}(?P<industry>.+)_(?P<period>\d{{4}}-W\d{{2}})\.html$"
+)
+MONTHLY_HTML_RE = re.compile(
+    rf"^{re.escape(MONTHLY_HTML_PREFIX)}(?P<period>\d{{4}}-\d{{2}})\.html$"
+)
+
+# 期間に紐づかない配信対象（固定名の中間xlsx）。⚠️ `config.json` は入れない。
+SERVABLE_FIXED_FILENAMES: frozenset[str] = frozenset(
+    {WEEKLY_REPORT_FILENAME, MONTHLY_CASES_FILENAME}
+)
 
 
 class ArtifactStoreError(Exception):
@@ -165,10 +183,62 @@ class ArtifactStore:
     def weekly_html_path(self, industry: str, period: str) -> Path:
         _validate_segment(industry, label="industry")
         validate_period(period)
-        return self.root / f"weekly_ai_intelligence_newsletter_{industry}_{period}.html"
+        return self.root / f"{WEEKLY_HTML_PREFIX}{industry}_{period}.html"
 
     def monthly_html_path(self, period: str) -> Path:
-        return self.root / f"monthly_belief_{validate_period(period)}.html"
+        return self.root / f"{MONTHLY_HTML_PREFIX}{validate_period(period)}.html"
+
+    def weekly_html_paths(self, period: str) -> list[Path]:
+        """その週に**実際に出力された**週刊 HTML（業界ごとに1通。T-46 Step 4）。
+
+        ⚠️ **config の `target_industries` からではなく、置いてあるファイルから
+        数える。** 理由は2つ:
+
+        1. `GET /reports/{period}`（T-27）は**全ロールが叩ける**が、config は
+           admin 以外に**存在も中身も返さない**（仕様書 §2・§6.1）。config を
+           見て一覧を作ると、対象業界の設定値を非 admin へ露出する経路になる。
+        2. 過去の period を引いたときに、**その時点で出したもの**が並ぶ
+           （設定を変えた後でも、出していない業界のリンクを並べない）。
+        """
+        validate_period(period)
+        return sorted(self.root.glob(f"{WEEKLY_HTML_PREFIX}*_{period}.html"))
+
+    # --- 配信できる成果物（T-27。生成物配信の許可リスト）------------------
+
+    def is_servable(self, filename: str) -> bool:
+        """`GET /files/{filename}` で外へ出してよいファイル名か。
+
+        ⚠️ **許可リスト方式**（「危ないものを弾く」ではなく「これだけ通す」）。
+        `artifact_root` には `config.json`（admin 限定・§6.1）・`raw_articles_*`・
+        `validation_*`・`narrative_*`・`_history/`・`_runs/`・`scratch/`
+        （ドライランの隔離出力・設計判断C）が同居している。**除外リスト方式に
+        すると、新しい種類の成果物を足すたびに配信経路が黙って広がる。**
+
+        通すのは §3.3 が `html_url` / `xlsx_url` として挙げているものだけ:
+
+        - 週刊 HTML `weekly_ai_intelligence_newsletter_{industry}_{period}.html`
+        - 月刊 HTML `monthly_belief_{period}.html`
+        - 中間xlsx（週次・月次の固定名2つ）
+        """
+        try:
+            _validate_segment(filename, label="filename")
+        except ArtifactStoreError:
+            return False
+        if filename in SERVABLE_FIXED_FILENAMES:
+            return True
+        return bool(WEEKLY_HTML_RE.match(filename) or MONTHLY_HTML_RE.match(filename))
+
+    def servable_path(self, filename: str) -> Path | None:
+        """配信してよい実在のファイル。**それ以外は `None`**。
+
+        ⚠️ 「配信対象外」と「存在しない」を**呼び出し元へ区別させない**
+        （どちらも `None`）。区別できると、404 と 403 の差から
+        `config.json` の有無を推定できてしまう（config ルーターと同じ理屈）。
+        """
+        if not self.is_servable(filename):
+            return None
+        path = self.root / filename
+        return path if path.is_file() else None
 
     def dry_run_dir(self, dry_run_id: str) -> Path:
         """ドライランの隔離出力先。正規の成果物とは決して混ぜない（設計判断C）。"""

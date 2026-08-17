@@ -1101,10 +1101,10 @@ flowchart TD
   - ⚠️ **`_runs/` は成果物ではないが `artifact_root` の下に置いた**（設計書 §2 に記述が無い置き場）。→ **T-38 の確認対象**。
   - **実績**: `make lint` / `make type-check`（診断数は着手前と同じ7件＝新規ゼロ） / `make test` すべて通過。テストは **1894件**（T-26 で +83：状態機械 27 / ジョブ記録とロック 26 / Orchestrator 39 ＝ 新規 92 に対し、T-45 の CLI テスト 37件を 28件へ置換）。
 
-#### - [ ] T-27: `POST /run/{type}` / `GET /reports/{period}` / 生成物配信
+#### - [x] T-27: `POST /run/{type}` / `GET /reports/{period}` / 生成物配信
 - **対応**: §3.2・§3.3
 - **依存**: T-09, T-10, T-26
-- **成果物**: `backend/src/adapter/http/fastapi/routers/run.py`, `backend/src/adapter/http/fastapi/routers/reports.py`（`all_routers` へ登録）, テスト
+- **成果物**: `backend/src/adapter/http/fastapi/routers/run.py`, `backend/src/adapter/http/fastapi/routers/reports.py`, `backend/src/adapter/http/fastapi/routers/files.py`（3本とも `all_routers` へ登録）, `backend/src/adapter/http/fastapi/auth/rbac.py`（行の追加）, `backend/src/adapter/storage/artifact_store.py`（配信の許可リスト）, テスト
 - **完了条件**:
   - `POST /run/{weekly|monthly}`：Request `{ period, resume_from? }` → `202 { job_id, type, period, status }`。admin/editor/system 可、viewer は 403
   - `GET /reports/{period}`：`200 { period, type, html_url, xlsx_url, summary: {adopted, excluded} }`。全ロール可
@@ -1113,6 +1113,20 @@ flowchart TD
   - ジョブ状態の取得手段（`GET /run/{job_id}` 等）を用意し、フロントがポーリングできる
   - ⚠️ **T-09 のマトリクステスト（`tests/adapter/test_rbac.py`）へ `/reports`・`/run` の行を追加する。** T-09 の時点ではルーターが存在せず、この2行だけ**マトリクス定数はあるが HTTP 経由の網羅テストが無い**状態で残してある（T-09 備考「網羅テストの範囲」）。ルーターを作るこのタスクで、他のエンドポイントと同じ形（全ロール＋未認証）のケースを足して穴を塞ぐこと
 - **備考**: 認可の判定を新規に書かないこと。`auth/rbac.py` の権限マトリクス（T-09）に行が定義済みなので、そこから導出する依存（`require_permission` 相当）を使う。
+- **備考（実績 2026-08-17）**: ルーターは3本（`run` / `reports` / `files`）。**認可の判定は1行も書いていない**（すべて `require_permission` 経由でマトリクスから導出）。
+  - **ジョブ状態の照会は `GET /run/{job_id}`**（T-27 の完了条件が例示していた形）。`POST /run/{run_type}` とはメソッドが違うのでパスは衝突しない。⚠️ **返すのはジョブ記録1ファイルだけ**（成果物の実在確認も xlsx の読み込みもしない）。ポーリングされる口なので軽く保つ。
+  - ⚠️ **ジョブ記録の絶対パスを返さない。** `artifacts` はサーバのファイルパス（`/srv/.../artifacts/...`）なので、配信できるものだけ `/files/...` の URL に直し、それ以外（`raw_articles` / `validation` / `narrative`）は **`artifact_count` に数えるだけ**にした。
+  - ⚠️ **`GET /run/{job_id}` と `GET /files/{filename}` はマトリクスに行が無かった**ので追加した（§6.2 にも §3.2 にも無い）。**照会は `POST /run` と同じ行**（viewer は 403。実行できない相手に cron の稼働状況を見せる要件が無い）、**配信は `GET /reports` と同じ行**（全ロール可。一覧を返しながら実体を配らないのは意味を成さない）。→ **§3.2 の表への追記が必要（T-38）**。
+  - ⚠️ **`GET /reports/{period}` は `html_url`（単数）→ `html_urls`（複数）に変えた。** 週刊は業界ごとに1通出る（T-46 Step 4）ので、単数だと「どれか1通」しか返せず残りへ到達できない。月刊は要素1件（`industry: null`）で**形を2つに割らない**（フロントが種別で分岐せず一覧を描ける）。→ **§3.3 の改訂が必要（T-38）**。
+  - ⚠️ **一覧は config ではなく置いてあるファイルから作る**（`ArtifactStore.weekly_html_paths()`）。この口は**全ロールが叩ける**のに対し config は admin 以外に存在も中身も返さない（§6.1）ので、`target_industries` を読むと設定値の漏洩経路になる。過去の period で「その時点で出したもの」が並ぶ利点もある。
+  - **生成物配信は許可リスト方式**（`ArtifactStore.is_servable()`）。`artifact_root` には `config.json`・`raw_articles_*`・`validation_*`・`narrative_*`・`_history/`・`_runs/`・`scratch/`（ドライランの隔離出力）が同居しているので、**除外リストにすると成果物の種類が増えるたびに配信経路が黙って広がる**。通すのは §3.3 が挙げる4種（週刊 HTML・月刊 HTML・中間xlsx 2つ）だけ。⚠️ **配信対象外と不在を区別せず、どちらも 404**（区別できると応答の差から `config.json` の有無を推し量れる）。
+  - **`POST /run` は `period` を省略できるようにした**（§3.3 の例は必須の形）。cron のコマンドを固定文字列にするため（T-28）で、解決は CLI と**同じ関数**（`enterprise.entities.run_job.resolve_period`。写しを作ると叩く口によって対象期間がずれる）。本文ごと省略も可。→ **§3.3 への追記が必要（T-38）**。
+  - **HTTP ステータスの割り当て**：二重起動 → **409** `already_running`／config を固定できない → **409** `config_not_pinnable`（入力の不備ではなく「実行できる状態にない」）／period の表記・種別違いと再開ポイントの前段欠落 → **422** `invalid_request`。本文はプロジェクト共通の `detail` 封筒。
+  - **実行の切り離しは `RunLauncher`（`asyncio.create_task`）**。⚠️ **タスクへの強い参照を `_RUNNING` に保つ**（`create_task` の戻り値を捨てると走行中でも GC されうる）。テストは同期に走らせる実装へ差し替えるので、待ち合わせ無しで「202 の後に本当に走るか」を固定できる。
+  - **`get_session_factory()` を `auth/dependencies.py` へ追加した。** `get_db_session` はリクエスト1回ぶんのセッションだが、ジョブは応答後 90分走るので閉じたセッションを掴めない。テストはここを差し替える（差し替え忘れると**本物の開発 DB** を掴む）。
+  - **T-09 の申し送りを消化**：`/reports`・`/run` の HTTP 網羅テストを `test_rbac.py` の `REQUESTS` へ追加（`/run/{job_id}`・`/files/{filename}` も）。⚠️ **残る未実装行は `POST /config/dry-run`（T-29）だけ**。
+  - **`ReportStore.read_exclusions()` に `period` を足した**（既存の `_exclusions_by_period()` を使う後方互換の追加）。除外ログは週次ブックに全期間ぶん積まれる（§8.1）ので、`summary.excluded` はそこから期間で切り出す。
+  - **実績**: `make lint` / `make type-check`（診断数は着手前と同じ7件） / `make test` すべて通過。テストは **1985件**（T-27 で +91：run ルーター 22 / reports・files ルーター 39 / RBAC 30）。
 
 #### - [ ] T-28: ローカル実行ターゲットと本番cron TODO
 - **対応**: §8.1
@@ -1322,6 +1336,13 @@ flowchart TD
     - 設計書 §7.3・§8.2 の週刊の出力 → **対象業界の数だけ HTML が出る**（`weekly_..._{industry}_{period}.html` を業界ごとに1通）
     - 実装は `enterprise/entities/config.py`（`target_industries` / 読み出し口 `WeeklyThresholds.industries`）・`config_validation.py`（`check_target_industries_reference` と新コード `duplicate_industry_reference`）・`adapter/html/weekly_renderer.py`（`resolve_industry()`）
   - ⚠️ **仕様書 §5.2 の確定 JSON に `tunable_thresholds.dedup.monthly_lookback_months`（既定 3）を追記する**（2026-08-16 の決定2＝要確認事項 #11）。あわせて **§11.1 の「直近数ヶ月」をこの鍵の参照へ書き換え**、§7.2 の「重複判定パラメータ `dedup.*`」がこの鍵を含むことを確認する
+  - ⚠️ **設計書 §3.2・§3.3 をジョブ実行 API の実装に合わせて改訂する**（2026-08-17 の T-27）：
+    - §3.2 のエンドポイント表に **`GET /run/{job_id}`**（○ / ○ / 403 / ○。`POST /run` と同じ行）と **`GET /files/{filename}`**（全ロール ○。`GET /reports/{period}` と同じ行）を追加する。認可の根拠は `auth/rbac.py` のコメント
+    - §3.3 の `GET /reports/{period}` の **`html_url`（単数）→ `html_urls`（`[{industry, url}]`）** へ改訂する（週刊は業界ごとに1通＝T-46 Step 4。月刊は要素1件で `industry: null`）
+    - §3.3 の `POST /run/{type}` の Request で **`period` を省略可**にする（省略時は §13.1 の規則＝週次は当週・月次は前月。cron のコマンドを固定文字列にするため）
+    - §3.3 に **エラーの割り当て**を追記する：409 `already_running`（二重起動）／409 `config_not_pinnable`（開始時 revision を固定できない）／422 `invalid_request`。本文はプロジェクト共通の `detail` 封筒（§3.3 は封筒なしの形。T-13 の申し送りと同じ論点）
+    - §3.3 の `xlsx_url` / `html_url` の `/files/...` について、**配信は許可リスト方式**（週刊 HTML・月刊 HTML・中間xlsx 2つだけ。`config.json` / `raw_articles` / `validation` / `narrative` / `scratch` / `_history` / `_runs` は配信しない）ことを明記する
+    - 実装は `adapter/http/fastapi/routers/{run,reports,files}.py`・`auth/rbac.py`・`adapter/storage/artifact_store.py`（`is_servable` / `weekly_html_paths`）
   - ⚠️ **設計書 §8.3・§8.4 をジョブ実行の実装に合わせて改訂する**（2026-08-17 の T-26）：
     - §8.4 の状態遷移図に **`Queued --> Failed`** を1本足す（受付の後・1段目に入る前に落ちた場合を「実行中でも完了でもない」まま残さないため）
     - §8.3 に **`resume_from=auto`**（前段成果物の存在確認で crawl だけを省く）を追記し、**render まで自動で飛ばさない**ことを明記する

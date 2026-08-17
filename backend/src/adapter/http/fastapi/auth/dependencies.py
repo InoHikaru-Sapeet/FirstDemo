@@ -36,6 +36,7 @@ from adapter.http.fastapi.auth.session_backend import (
 )
 from application.usecases.auth import AuthUsecase, LoginPolicy, SessionPolicy
 from application.usecases.manage_users import ManageUsersUsecase
+from application.usecases.run_orchestrator import SessionFactory
 from config import Settings, get_settings
 from enterprise.entities.principal import Principal
 
@@ -50,6 +51,19 @@ FORBIDDEN_MESSAGE = "この操作には管理者権限が必要です。"
 async def get_db_session() -> AsyncIterator[AsyncSession]:
     async with db_manager.session() as session:
         yield session
+
+
+def get_session_factory() -> SessionFactory:
+    """**リクエストより長生きする処理**のためのセッション払い出し口（T-26 / T-27）。
+
+    ⚠️ `get_db_session` はリクエスト1回に1つのセッションを渡すが、
+    `POST /run` が起動するジョブは**応答を返した後 90分走る**。閉じたセッションを
+    掴んだままにしないよう、ジョブ側は「必要なときに開いて閉じる」ためのこの
+    ファクトリを受け取る（`RunOrchestrator` の⚠️「DB セッションを握り続けない」）。
+
+    テストは `app.dependency_overrides[get_session_factory]` で差し替える。
+    """
+    return db_manager.session
 
 
 def build_session_policy(settings: Settings) -> SessionPolicy:

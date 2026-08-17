@@ -31,10 +31,13 @@
 
 ⚠️ **未実装エンドポイントの行も定数には含める。**
 
-`GET /reports/{period}` と `POST /run/{type}` は §6.2 の行だが、ルーターは T-27 で作る。
-マトリクスは §6.2 を**そのまま**写すのが役目なので行は定義し、`ROUTE_OPERATIONS`
-（実ルートとの対応）にだけ載せない。**T-27 でルートを足すときに対応を追加し、
-`tests/adapter/test_rbac.py` の網羅テストへ 2行分のケースを足すこと**（TASKS.md T-27）。
+マトリクスは §6.2 を**そのまま**写すのが役目なので、ルーターが無い行も定義し、
+`ROUTE_OPERATIONS`（実ルートとの対応）にだけ載せない。現在この状態なのは
+`POST /config/dry-run`（T-29）だけ。**ルートを足すときに対応を追加し、
+`tests/adapter/test_rbac.py` の網羅テストへケースを足すこと。**
+
+（2026-08-17 T-27 実施）`GET /reports/{period}` と `POST /run/{type}` は
+ルーターができたので `ROUTE_OPERATIONS` へ登録し、網羅テストの対象に入れた。
 """
 
 from enum import StrEnum
@@ -85,9 +88,11 @@ class Operation(StrEnum):
     POST_CONFIG_DRY_RUN = "POST /config/dry-run"
 
     # --- run / reports ファミリ（仕様書 §6.2）--------------------------------
-    # ⚠️ ルーターは未実装（T-27）。行だけ定義してある。
     GET_REPORTS = "GET /reports/{period}"
     POST_RUN = "POST /run/{type}"
+    # §6.2 に列挙が無い設計時追加分（T-27）。理由は下の PERMISSION_MATRIX を参照。
+    GET_RUN_JOB = "GET /run/{job_id}"
+    GET_FILES = "GET /files/{filename}"
 
     # --- 認証（2026-08-13 の方針変更で増えた分。TASKS.md T-09）---------------
     POST_AUTH_REGISTER = "POST /auth/register"
@@ -149,6 +154,32 @@ PERMISSION_MATRIX: Final[Mapping[Operation, Mapping[Role, Decision]]] = (
             # === 設計書 §3.2 の追加行（認可根拠は §3.4）=======================
             Operation.POST_CONFIG_DRY_RUN: _row(
                 admin=_ALLOW, editor=_DENY, viewer=_DENY, system=_DENY
+            ),
+            # === T-27 の追加行（§6.2 にも §3.2 にも列挙が無い）================
+            # ⚠️ **ジョブ状態の照会は `POST /run` と同じ行にする**（viewer は 403）。
+            # §3.4 と同じ立て付けの判断で、根拠は3つ:
+            #   1. **run ファミリの一部**。ジョブ状態は「実行した人が実行の進み方を
+            #      見る」ためのもので（T-27 の完了条件「フロントがポーリングできる」）、
+            #      実行できない viewer が見る場面が無い。
+            #   2. **`POST /run` より広くしない。** 実行を許していない相手に、
+            #      いつ何が走ったか（cron の稼働状況・失敗の理由）を見せる要件は
+            #      仕様書にない。狭いほうへ倒すのが安全側。
+            #   3. **成果物は別の口で見られる。** viewer が要るのは出来上がった
+            #      レポート（`GET /reports/{period}` は全ロール可）で、
+            #      ジョブの内部状態ではない。
+            # → §3.2 の表への追記が必要（T-38）。
+            Operation.GET_RUN_JOB: _row(
+                admin=_ALLOW, editor=_ALLOW, viewer=_DENY, system=_ALLOW
+            ),
+            # ⚠️ **生成物の配信は `GET /reports/{period}` と同じ行**（全ロール可）。
+            # §6.2 の「`GET /reports/{period}`（HTML/一覧）」が指しているのは
+            # まさに生成物の閲覧で、一覧を全ロールへ返しながら実体を配らないのは
+            # 意味を成さない。**何を配れるかは認可ではなく許可リストで絞る**
+            # （`ArtifactStore.is_servable`：config.json / raw / validation /
+            # narrative / scratch / _history / _runs は配信経路に載せない）。
+            # → §3.2 の表への追記が必要（T-38）。
+            Operation.GET_FILES: _row(
+                admin=_ALLOW, editor=_ALLOW, viewer=_ALLOW, system=_ALLOW
             ),
             # === 認証（TASKS.md T-09。§6.2 には無い方針変更分）===============
             # 未認証で到達する経路。ロール別の升目は「ログイン済みでも叩ける」意。
@@ -218,8 +249,13 @@ ROUTE_OPERATIONS: Final[Mapping[tuple[str, str], Operation]] = MappingProxyType(
         ("GET", "/users"): Operation.GET_USERS,
         ("PATCH", "/users/{user_id}/role"): Operation.PATCH_USER_ROLE,
         ("PATCH", "/users/{user_id}/status"): Operation.PATCH_USER_STATUS,
-        # ⚠️ `POST /config/dry-run`（T-29）・`GET /reports/{period}`・
-        # `POST /run/{type}`（T-27）は**ルート未実装のため未登録**。
+        # T-27。⚠️ **パスはルートのテンプレートそのまま。** `POST /run/{run_type}`
+        # と `GET /run/{job_id}` は**同じ接頭辞だがメソッドが違う**ので別の行。
+        ("POST", "/run/{run_type}"): Operation.POST_RUN,
+        ("GET", "/run/{job_id}"): Operation.GET_RUN_JOB,
+        ("GET", "/reports/{period}"): Operation.GET_REPORTS,
+        ("GET", "/files/{filename}"): Operation.GET_FILES,
+        # ⚠️ `POST /config/dry-run`（T-29）は**ルート未実装のため未登録**。
         # 実装時にここへ足すこと（足し忘れは `test_rbac.py` の
         # `test_every_route_is_covered_by_the_matrix` が検出する）。
     }
