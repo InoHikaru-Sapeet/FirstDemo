@@ -556,7 +556,7 @@ flowchart TD
   - **非admin は 403 のみでボディに config 情報を含まない**（エラーメッセージからも推測できないこと）
   - OpenAPI にレスポンススキーマが出る（T-31 の型生成の入力になる）
 - **備考**（実績 2026-08-14）: `make lint` / `make type-check` / `make test` すべて通過。テストは **732件**（T-12・T-13 で追加したのは 89件：ルーター 70 / patch 許可リスト 19）。
-  - ⚠️ **依存の T-09（RBAC）が未着手のまま着手した。** T-42 と同じく `auth/dependencies.py` の `require_admin()` を使っている。~~**T-09 で `auth/rbac.py` を作ったら、config ファミリ4行も権限マトリクスから導出する形へ寄せ、網羅テストの対象に含めること。**~~ → **2026-08-14 実施済み（T-09）**。config ファミリ3行（実装済み分）は `test_rbac.py` の網羅テストに入った。`POST /config/dry-run` はマトリクスに行だけあり、HTTP テストは T-29 で足す。
+  - ⚠️ **依存の T-09（RBAC）が未着手のまま着手した。** T-42 と同じく `auth/dependencies.py` の `require_admin()` を使っている。~~**T-09 で `auth/rbac.py` を作ったら、config ファミリ4行も権限マトリクスから導出する形へ寄せ、網羅テストの対象に含めること。**~~ → **2026-08-14 実施済み（T-09）**。config ファミリ3行（実装済み分）は `test_rbac.py` の網羅テストに入った。`POST /config/dry-run` はマトリクスに行だけあり、HTTP テストは T-29 で足す。→ **2026-08-17 実施済み（T-29）**。
   - **「存在も中身も見せない」の担保は「認可をハンドラの手前で終わらせる」こと。** `require_admin` は依存として解決され、**ボディ検証より先に**走る（FastAPI が sub-dependency を先に解決するため。実測でテスト固定済み）。結果として非 admin のリクエストは **`config.json` を一度も読まない**。これが次の2つを同時に満たす：
     1. **存在の秘匿**：config が有る場合と無い場合で、非 admin への応答が**ステータス・本文とも完全に同一**（`test_the_denial_is_identical_whether_or_not_the_config_exists`）。状態依存にすると 403/404 の差で存在が分かる。
     2. **構造の秘匿**：非 admin の `PUT` は patch の中身（固定項目・未知キー・不正 revision）に関わらず応答が1種類（`test_a_denied_update_never_reveals_the_config_structure`）。項目別 422 を返すと config のキー構成が漏れる。
@@ -1124,7 +1124,7 @@ flowchart TD
   - **HTTP ステータスの割り当て**：二重起動 → **409** `already_running`／config を固定できない → **409** `config_not_pinnable`（入力の不備ではなく「実行できる状態にない」）／period の表記・種別違いと再開ポイントの前段欠落 → **422** `invalid_request`。本文はプロジェクト共通の `detail` 封筒。
   - **実行の切り離しは `RunLauncher`（`asyncio.create_task`）**。⚠️ **タスクへの強い参照を `_RUNNING` に保つ**（`create_task` の戻り値を捨てると走行中でも GC されうる）。テストは同期に走らせる実装へ差し替えるので、待ち合わせ無しで「202 の後に本当に走るか」を固定できる。
   - **`get_session_factory()` を `auth/dependencies.py` へ追加した。** `get_db_session` はリクエスト1回ぶんのセッションだが、ジョブは応答後 90分走るので閉じたセッションを掴めない。テストはここを差し替える（差し替え忘れると**本物の開発 DB** を掴む）。
-  - **T-09 の申し送りを消化**：`/reports`・`/run` の HTTP 網羅テストを `test_rbac.py` の `REQUESTS` へ追加（`/run/{job_id}`・`/files/{filename}` も）。⚠️ **残る未実装行は `POST /config/dry-run`（T-29）だけ**。
+  - **T-09 の申し送りを消化**：`/reports`・`/run` の HTTP 網羅テストを `test_rbac.py` の `REQUESTS` へ追加（`/run/{job_id}`・`/files/{filename}` も）。⚠️ ~~残る未実装行は `POST /config/dry-run`（T-29）だけ~~ → **2026-08-17 に T-29 が消化し、未実装行は無くなった**（明細のダウンロード行も同時に追加）。
   - **`ReportStore.read_exclusions()` に `period` を足した**（既存の `_exclusions_by_period()` を使う後方互換の追加）。除外ログは週次ブックに全期間ぶん積まれる（§8.1）ので、`summary.excluded` はそこから期間で切り出す。
   - ⚠️ **正規名の二重定義を残した**（週刊 HTML の形を、生成する `weekly_html_path()`・照合する `WEEKLY_HTML_RE`・探索する `weekly_html_paths()` の glob の**3箇所**に書いていた。コメントで「片方を変えたらもう片方も」と注意していただけ）。→ **2026-08-17 の T-29 Step 0 で解消**（`ArtifactNameFormat` の書式1つから3用途を導く形へ）。
   - **実績**: `make lint` / `make type-check`（診断数は着手前と同じ7件） / `make test` すべて通過。テストは **1985件**（T-27 で +91：run ルーター 22 / reports・files ルーター 39 / RBAC 30）。
@@ -1149,10 +1149,10 @@ flowchart TD
 
 ### P8. ドライラン（設計書 §3.4 ／ 設計判断C）
 
-#### - [ ] T-29: `POST /config/dry-run`
+#### - [x] T-29: `POST /config/dry-run`
 - **対応**: §3.3・§3.4／設計判断C（→ 仕様書 §7.3-5）
 - **依存**: T-13, T-21
-- **成果物**: `backend/src/adapter/http/fastapi/routers/config.py`（追記）, `backend/src/application/usecases/dry_run.py`, テスト
+- **成果物**: `backend/src/adapter/http/fastapi/routers/config.py`（追記）, `backend/src/application/usecases/dry_run.py`, `backend/src/adapter/xlsx/report_writer.py`（`write_dry_run`）, `backend/src/application/usecases/update_config.py`（`apply_patch_with_paths`）, `backend/src/application/usecases/filter.py`（`rejection_reason_for_scores`）, `backend/src/adapter/http/fastapi/auth/rbac.py`, テスト
 - **完了条件**:
   - Request：`{ period, candidate_config_patch }`（未保存の編集値）
   - 収集済みデータに候補 config を適用して再フィルタし、**`scratch/dry-run/{dry_run_id}/` へ隔離出力**（正規ファイルは一切上書きしない）
@@ -1160,7 +1160,29 @@ flowchart TD
   - 明細（除外区分・除外理由つき）がダウンロードできる
   - TTL 経過分の自動削除（T-02）
   - **admin のみ 202、editor / viewer は 403、system は割り当てない**（§3.4 の結論どおり config ファミリ扱い）
-- **備考**: §3.4 の判断根拠（dry-run は config 値とその適用挙動を露出するため、run ファミリではなく config ファミリ）をコードコメントに残す。
+- **備考（実績 2026-08-17）**: §3.4 の判断根拠（dry-run は config 値とその適用挙動を露出するため、run ファミリではなく config ファミリ）はルーターと `rbac.py` のコメントに残した。T-09 が「マトリクスに行だけあって HTTP テストが無い」と申し送っていた最後の1行を消化し、**未実装行は無くなった**。
+  - ### ★ **採点をやり直すか、決定的に再適用するか → 決定的再適用を選定**
+    - 選択肢は (A) `raw_articles_{period}.json` から AI 呼び出しをやり直して丸ごと再フィルタ ／ (B) 保存済みの採点結果（中間xlsx の軸点列）へ候補 config の決定的な部分だけを当て直す、の2つ。**(B) を選定**した。理由は3つで、3つ目が決め手:
+      1. **費用と時間**：初運用の実測で採点だけに **55件 × 7秒 ＋ 約$4**。§7.3-5 は「結果件数を**即プレビュー**」＝ admin がしきい値を上げ下げしながら何度も叩く前提で、1回6分・$4 は釣り合わない
+      2. **§7.3-5 の用途に足りる**：この画面で admin が動かすのは掲載しきい値・信頼性しきい値・採用区分しきい値で、**どれも6軸の点数から決定的に決まる**（`rejection_reason_for_scores` / `decide_adoption_class`）。点数さえ残っていれば AI は要らない
+      3. **★ 再採点はプレビューとして成立しない**：AI の採点は同じ記事・同じ config でも実行ごとに揺れる（決定的な判断を Python 側へ寄せてあるのはまさにそのため＝T-17・T-19）。再採点すると **「しきい値を変えた効果」と「AI が違う点を付けた効果」が混ざり**、before → after の比較にならない。**変更点だけを動かす**のが (B)
+    - **ヒントで問われた2点の整理**：
+      - **除外ルールの enabled / severity は「事実申告済みだから再適用可能」か** → **判定ロジックとしては可能。ただし現状の成果物では不可能。** T-17 は事実（`matched_rule_nos` / `is_stale`）と config だけで判定し、AI には `severity` も `enabled` も見せていない（T-19）ので、強度を変えても事実は動かない。**しかしその事実がどの成果物にも書かれていない**（`ArticleFacts` は `FilterResult` の中だけ）。除外ログの `除外理由` にはルール名が入るが、それは「最初に当たった1件」であって当たり全部ではなく、除外された記事の点数も残っていないので採否まで追えない。よって `NOT_PREVIEWABLE_PATHS` へ（→ T-38 に `analysis_{period}.json` の案として記録）
+      - **カテゴリや軸配点の変更は再採点が要るか** → **要る。** 軸の `weight` は**得点上限そのもの**（`axis_score_bounds()`。出力スキーマも `0〜weight` で作る）なので、古い上限で付いた点を新しい上限へ引き伸ばすのは点数の捏造になる。`information_categories[].priority` と `weekly.target_industries` は**分類プロンプトの本文に載る**（後者は顧客関連度の判断基準）ので、変更後も同じ点が出るとは言えない。3件とも `RESCORE_REQUIRED_PATHS` へ
+  - **設計の中心は `EDITABLE_PATHS`（§7.2 の21項目）の3分割**。`DETERMINISTIC_PATHS`（5件＝しきい値だけ。受け付ける）／`RESCORE_REQUIRED_PATHS`（3件）／`NOT_PREVIEWABLE_PATHS`（13件）。**3つで `EDITABLE_PATHS` を過不足なく覆っていることをテストで固定**（`test_every_editable_path_is_classified`）。編集項目を足したときに「ドライランが黙って無視する」状態を作らないため。
+  - ⚠️ **試算できない変更は 422 `not_previewable` で断り、「効果ゼロ」として通さない。** 通すと admin は「この変更は件数に影響しない」と読むが、実際は「この機能では分からない」で意味が逆。`issues[].code` は `rescore_required` / `not_previewable` の2つを `ConfigIssueCode` へ追加（フロントが「直してください」と「保存して実行するしかありません」を出し分けられる）。**patch の許可リスト違反（`validation_failed`）とは別の `error`** にしてある（あちらは「保存もできない」）。
+  - ⚠️ **明細の配信口は `GET /config/dry-run/{id}/result.xlsx`**（設計書 §3.3 の `scratch_url` は `/scratch/dry-run/...` という生パス）。`GET /files/{filename}` は**全ロールが叩ける**うえ許可リストが scratch を通さない（T-27）ので、そこからは配れない。ファイルの実体は設計判断Cどおり `scratch/dry-run/{id}/` のまま、**口だけ config ファミリの下**に置いた。→ §3.3 の記法の改訂が必要（T-38）。
+  - ⚠️ **レスポンスに `baseline`（試算前の件数）を足した**（§3.3 は `summary` だけ）。「件数を即プレビュー」は before が無いと読めない。**T-46 の複数業界による差分は無い**——採否は業界に依らず、業界ごとに分かれるのは render 段（週刊 HTML の本数）だけなので、`summary` は単一の `{adopted, excluded}` のままでよい。→ §3.3 への追記が必要（T-38）。
+  - **降格（`low_priority`）は引き継ぐ。** 採用区分を候補 config で決め直すと、§5.4 の降格が黙って取り消される（降格したという事実は成果物に残らず、残るのは下げた後の値だけ）。**現行 config で決め直した区分と保存値がちょうど1段ずれていれば降格が当たっていたと読み**、候補側にも同じ1段を当てる。⚠️ **1段で説明が付かない場合は推測しない**（警告ログを出して決め直した値をそのまま使う）。
+  - **採否の判定は1関数に保った**：`filter.rejection_reason()` を点数だけを入口にする `rejection_reason_for_scores()` へ切り出し、ドライランはそちらを呼ぶ。写しを作ると「保存では落ちるのにプレビューでは通る」が起きる。同じ理由で、**patch が触れたパスの列挙も `apply_patch` と同じ1本の走査**（`apply_patch_with_paths`）が返す。
+  - **合計スコアは列の値を鵜呑みにせず6軸の和を取り直す**（「合計はアプリ側が決める」＝T-19 の約束をここでも守る）。軸の配点変更は断ってあるので値は保存時と一致する。
+  - **明細 xlsx は `ReportStore.write_dry_run()`**（xlsx の読み書き口を1つに保つ）。⚠️ 正規名の解決も**既存ブックの読み込みも履歴退避もしない**——既存を読むとその中身が試算へ混ざり、退避するとドライランのたびに世代が1つ消える。列と並びは正規の週次シートと同じで、**1行目・2行目だけがドライランである旨を宣言する**（scratch から持ち出されても取り違えない）。
+  - **TTL の掃除役は立てなかった。** scratch に触る2つの口（試算の書き込み前・明細のダウンロード時）が `purge_expired_scratch()` を呼ぶ。専用のスケジューラを増やさずに「TTL 経過分の自動削除」を満たす。
+  - ⚠️ **既知の限界を3つ、テストで仕様として固定した**（消えるのは分析結果を成果物に残したとき＝T-38）：
+    1. **しきい値を下げても件数は増えない**（除外ログに点数が無いので、戻る記事を評価できない）。試算できるのは「今載っている記事のうち何件落ちるか」まで
+    2. **月次 period は 422**（月次実行は採点済みの22列を1行も書かない。書くのは8列の事例だけ）
+    3. **重複判定パラメータは試算できない**（判定の入力は「除外を通り抜けた記事」だが、残っているのは重複を落とした後の一覧なので、緩めたときに戻る記事が出ない＝片側だけの誤解を招く数字になる）
+  - **実績**: `make lint` / `make type-check`（診断数は着手前と同じ7件） / `make test` すべて通過。テストは **2091件**（Step 0 の正規名の集約で +21、T-29 本体で +85：ドライランのユースケース 41 / config ルーター 21 / RBAC 15（網羅テストは呼び出し元5通り＋未認証で1ケースが6件に増える）/ `write_dry_run` 4 / `apply_patch_with_paths` 4）。
 
 ---
 
@@ -1351,6 +1373,18 @@ flowchart TD
     - §3.3 に **エラーの割り当て**を追記する：409 `already_running`（二重起動）／409 `config_not_pinnable`（開始時 revision を固定できない）／422 `invalid_request`。本文はプロジェクト共通の `detail` 封筒（§3.3 は封筒なしの形。T-13 の申し送りと同じ論点）
     - §3.3 の `xlsx_url` / `html_url` の `/files/...` について、**配信は許可リスト方式**（週刊 HTML・月刊 HTML・中間xlsx 2つだけ。`config.json` / `raw_articles` / `validation` / `narrative` / `scratch` / `_history` / `_runs` は配信しない）ことを明記する
     - 実装は `adapter/http/fastapi/routers/{run,reports,files}.py`・`auth/rbac.py`・`adapter/storage/artifact_store.py`（`is_servable` / `weekly_html_paths`）
+  - ⚠️ **設計書 §3.2・§3.3・§3.4 と仕様書 §7.3-5 をドライランの実装に合わせて改訂する**（2026-08-17 の T-29）：
+    - §3.2 のエンドポイント表に **`GET /config/dry-run/{dry_run_id}/result.xlsx`**（○ / 403 / 403 / ×。`POST /config/dry-run` と同じ行）を追加する。明細ファイルの中身は「未保存の config を適用した結果」＝ config の値とその適用挙動そのもの（§3.4 の根拠2）なので、dry-run 自体より広くはできない
+    - §3.3 の `POST /config/dry-run` の Response `scratch_url` の値を **`/config/dry-run/{id}/result.xlsx`** へ改訂する（例は `/scratch/dry-run/dry_.../result.xlsx` という生パス）。**`GET /files/{filename}` は全ロールが叩ける口で、許可リストが scratch を通さない**ため、そのパスからは配れない。ファイルの実体は設計判断Cどおり `scratch/dry-run/{id}/` に置いたまま、口だけ config ファミリの下に置いた
+    - §3.3 の Response に **`baseline: {adopted, excluded}`**（試算前の件数）と **`period` / `base_revision`** を追記する。§7.3-5 は「結果件数を即プレビュー」だが、**before が無いと増減が読めない**（「9件」だけでは判断できない）。値は同じ成果物から数えているので追加の読み込みは無い
+    - §3.3 に **エラーの割り当て**を追記する：404 `no_scored_data`（その period の採点済みデータが無い）／409 `revision_conflict`（`base_revision` を付けた場合）／422 `validation_failed`（§7.2 の許可リスト違反）／422 **`not_previewable`**（後述）／422 `invalid_period`
+    - §7.3-5「任意で『この基準で再フィルタ（ドライラン）』」に、**適用できるのは既存の採点結果へ決定的に再適用できる変更（掲載しきい値・信頼性しきい値・採用区分しきい値）だけ**であることと、それ以外は 422 で断ることを明記する。⚠️ **「効果ゼロ」として黙って通さない**のが要点（通すと admin が「この変更は件数に影響しない」と読む）
+    - 実装は `application/usecases/dry_run.py`（3分割 `DETERMINISTIC_PATHS` / `RESCORE_REQUIRED_PATHS` / `NOT_PREVIEWABLE_PATHS`）・`adapter/http/fastapi/routers/config.py`・`auth/rbac.py`・`adapter/xlsx/report_writer.py`（`write_dry_run`）
+  - ⚠️ **成果物に「分析結果」を残すかを判断する**（2026-08-17 の T-29 で判明した制約。**新しい成果物の追加＝設計書 §2・§8 への差分になるので単独で判断すること**）：
+    - **問題**：AI が記事ごとに出した**軸点・タグ・事実申告（該当除外ルール番号・鮮度）**は `FilterResult` の中だけに在り、どの成果物にも書かれない。中間xlsx の週次シート（22列）に残るのは**採用された記事の軸点まで**で、除外された記事は6列の除外ログ（点数なし）に落ちる。月次実行に至っては採点済みの22列を1行も書かない（書くのは8列の事例だけ）
+    - **その結果ドライラン（T-29）にできないこと**：(a) しきい値を**下げた**ときに何件**増える**かの試算（落ちた記事の点数が無い）／(b) **除外ルールの enabled・severity** を変えたときの試算（事実申告が無い。⚠️ **判定ロジック自体は決定的で再適用可能**——AI には severity も enabled も見せていない＝T-19 ので、事実さえ残っていれば再採点は要らない。**残っていないことだけが理由**）／(c) **月次 period** のドライラン全般／(d) **重複判定パラメータ**の試算（判定の入力は「除外を通り抜けた記事」だが、残っているのは重複を落とした後の一覧）
+    - **案**：`analysis_{period}.json`（全記事 × 軸点・タグ・要約・事実申告・除外判定の結果）を filter 段で書く。TTL・世代退避は設計判断B に合わせる。これがあれば上の (a)〜(d) がすべて解け、ドライランは「保存済みの分析へ config を丸ごと当て直す」形になり、`DETERMINISTIC_PATHS` を大幅に広げられる
+    - **論点**：成果物を1種類増やすこと（§8 は「ファイルが正」で成果物の一覧を確定値として持つ）／`raw_articles` と同じく**配信しない**扱いにすること／週次55件で数百KB規模になること／T-21 が「成果物は増やさない」と明記していること（あちらは**診断のため**に増やさないという判断で、ここは**機能のため**なので別の判断になりうる）
   - ⚠️ **設計書 §8.3・§8.4 をジョブ実行の実装に合わせて改訂する**（2026-08-17 の T-26）：
     - §8.4 の状態遷移図に **`Queued --> Failed`** を1本足す（受付の後・1段目に入る前に落ちた場合を「実行中でも完了でもない」まま残さないため）
     - §8.3 に **`resume_from=auto`**（前段成果物の存在確認で crawl だけを省く）を追記し、**render まで自動で飛ばさない**ことを明記する

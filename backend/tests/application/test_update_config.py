@@ -20,6 +20,7 @@ from application.usecases.update_config import (
     LIST_SELECTORS,
     ConfigPatchError,
     apply_patch,
+    apply_patch_with_paths,
 )
 from enterprise.entities.config import IntelligenceConfig
 from enterprise.entities.config_validation import ConfigIssueCode, validate_config
@@ -285,3 +286,57 @@ def test_the_rejected_input_is_never_normalized(config: IntelligenceConfig) -> N
     weights = {axis.id: axis.weight for axis in candidate.scoring_axes}
     assert weights["customer_relevance"] == 30
     assert weights["practical_usability"] == 20  # 按分されていない
+
+
+# --- 触れたパスの列挙（T-29 のドライランが仕分けに使う）----------------------
+
+
+def test_the_touched_paths_use_the_allow_list_notation(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ **適用と列挙が同じ1本の走査であること**（表記がずれない）。
+
+    配列要素は `*` に畳み、セレクタ（`id` / `no`）は「どの要素か」の指定なので
+    含めない。ドライラン（T-29）はこの表記で `DETERMINISTIC_PATHS` と突き合わせる。
+    """
+    _, touched = apply_patch_with_paths(
+        config,
+        {
+            "tunable_thresholds": {
+                "min_total_score_to_publish": 62,
+                "adoption_class_score_map": {"reference_info": 72},
+            },
+            "exclusion_rules": [
+                {"no": 11, "enabled": False},
+                {"no": 12, "enabled": False},
+            ],
+        },
+    )
+
+    assert set(touched) <= EDITABLE_PATHS
+    assert set(touched) == {
+        "tunable_thresholds.min_total_score_to_publish",
+        "tunable_thresholds.adoption_class_score_map.reference_info",
+        "exclusion_rules.*.enabled",
+    }
+
+
+def test_an_empty_patch_touches_nothing(config: IntelligenceConfig) -> None:
+    assert apply_patch_with_paths(config, {})[1] == ()
+
+
+def test_a_selector_alone_is_not_a_change(config: IntelligenceConfig) -> None:
+    """`{"no": 11}` だけの要素は「どれか」の指定であって変更ではない。"""
+    assert apply_patch_with_paths(config, {"exclusion_rules": [{"no": 11}]})[1] == ()
+
+
+def test_a_rejected_patch_reports_no_paths(config: IntelligenceConfig) -> None:
+    """1件でも違反があれば何も適用しない＝列挙も返らない（部分適用しない）。"""
+    with pytest.raises(ConfigPatchError):
+        apply_patch_with_paths(
+            config,
+            {
+                "tunable_thresholds": {"min_total_score_to_publish": 62},
+                "scoring_total": 90,
+            },
+        )

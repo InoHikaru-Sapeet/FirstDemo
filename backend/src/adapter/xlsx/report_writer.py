@@ -76,6 +76,17 @@ WEEKLY_SHEET_DESCRIPTION = (
     "合計スコア降順。"
 )
 
+# ドライランの隔離出力（設計判断C ／ T-29）。**正規の成果物と見分けがつく前置きに
+# する。** 列と並びは同じ（admin が同じ見方で読めるように）だが、1行目・2行目で
+# 「これは試算であって成果物ではない」と宣言する。ファイルが scratch から
+# 持ち出されても取り違えないように、本文そのものに書いておく。
+DRY_RUN_SHEET_TITLE_FORMAT = "【ドライラン】Weekly AI Intelligence レポート ({period})"
+DRY_RUN_SHEET_DESCRIPTION_FORMAT = (
+    "未保存の判断基準を、保存済みの採点結果へ決定的に再適用した試算"
+    "（dry_run_id={dry_run_id} / base_revision={revision}）。"
+    "正規の成果物ではなく、採点はやり直していない。"
+)
+
 
 class ReportStoreError(Exception):
     """中間xlsx として扱えない要求（period 表記の誤り・行の不整合）。"""
@@ -239,6 +250,83 @@ class ReportStore:
             archived=archived,
             sheet=EXCLUSION_LOG_SHEET_NAME,
             rows=len(exclusions),
+        )
+
+    def write_dry_run(
+        self,
+        path: Path,
+        *,
+        period: str,
+        dry_run_id: str,
+        revision: int,
+        articles: Sequence[Mapping[str, Any]],
+        exclusions: Sequence[Mapping[str, Any]] = (),
+    ) -> WrittenReport:
+        """ドライランの明細を**隔離パスへ**書く（設計判断C ／ T-29）。
+
+        ⚠️ **正規の成果物には一切触れない。** 具体的には、`write_weekly()` と
+        違って次の3つを**しない**:
+
+        1. 正規名の解決（`weekly_report_path()`）——書き先は呼び出し元が渡す
+           `scratch/dry-run/{id}/` 配下のパス
+        2. 既存ブックの読み込み（`_load()`）——毎回まっさらなブックを作る。
+           既存を読むと、その内容がドライランの出力へ混ざる
+        3. 履歴退避（`archive()`）と除外ログの append——退避は正規ファイルの
+           世代管理（設計判断B）で、試算には要らない。除外ログも**その試算ぶん
+           だけ**を書く（正規ブックの `除外ログ` へは積まない）
+
+        列と並びは正規の週次シートと同じ（admin が同じ見方で読める）。1行目・
+        2行目だけがドライランである旨を宣言する。
+
+        Args:
+            path: 書き先（`ArtifactStore.dry_run_dir()` 配下）
+            period: 対象の週次 period
+            dry_run_id: 前置きに載せる識別子
+            revision: 試算の基にした現行 config の revision
+            articles: 再適用後に採用となる週次22列の行（合計スコア降順）
+            exclusions: 除外ログ6列の行（元からの除外＋今回落ちたもの）
+
+        Returns:
+            書き出した結果（`archived` は常に `None`）
+
+        Raises:
+            ReportStoreError: period が週次の表記でない／行が列定義と噛み合わない
+        """
+        parsed = self._parse(period, expect_weekly=True)
+
+        workbook = Workbook()
+        workbook.remove(workbook.active)
+
+        sheet = self._reset_sheet(workbook, parsed.text, WEEKLY_ARTICLE_SHEET)
+        sheet.cell(
+            row=1, column=1, value=DRY_RUN_SHEET_TITLE_FORMAT.format(period=parsed.text)
+        )
+        sheet.cell(
+            row=2,
+            column=1,
+            value=DRY_RUN_SHEET_DESCRIPTION_FORMAT.format(
+                dry_run_id=dry_run_id, revision=revision
+            ),
+        )
+        self._write_table(sheet, WEEKLY_ARTICLE_SHEET, articles)
+
+        log_sheet = self._reset_sheet(
+            workbook, EXCLUSION_LOG_SHEET_NAME, EXCLUSION_LOG_SHEET
+        )
+        self._write_table(log_sheet, EXCLUSION_LOG_SHEET, exclusions)
+
+        buffer = BytesIO()
+        workbook.save(buffer)
+        self._store.write_bytes(path, buffer.getvalue())
+        logger.info(
+            "dry-run detail written (path=%s, period=%s, articles=%d, exclusions=%d)",
+            path,
+            parsed.text,
+            len(articles),
+            len(exclusions),
+        )
+        return WrittenReport(
+            path=path, archived=None, sheet=parsed.text, rows=len(articles)
         )
 
     # --- 読み戻し ---------------------------------------------------------
@@ -504,6 +592,8 @@ def known_columns(layout: SheetLayout) -> tuple[ReportColumn, ...]:
 
 
 __all__ = [
+    "DRY_RUN_SHEET_DESCRIPTION_FORMAT",
+    "DRY_RUN_SHEET_TITLE_FORMAT",
     "WEEKLY_SHEET_DESCRIPTION",
     "WEEKLY_SHEET_TITLE_FORMAT",
     "ReportStore",

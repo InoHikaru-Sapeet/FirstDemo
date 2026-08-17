@@ -171,14 +171,39 @@ def apply_patch(
     Raises:
         ConfigPatchError: 許可外パス・未知キー・要素指定の誤り・型/値域違反
     """
+    return apply_patch_with_paths(current, patch)[0]
+
+
+def apply_patch_with_paths(
+    current: IntelligenceConfig, patch: Mapping[str, Any]
+) -> tuple[IntelligenceConfig, tuple[str, ...]]:
+    """`apply_patch` に加えて、**patch が触れたパス**を返す。
+
+    パスの表記は `EDITABLE_PATHS` と同じ（配列要素は `*` に畳む。セレクタの
+    `id` / `no` は「どの要素か」の指定であって変更ではないので含めない）。
+
+    ⚠️ **列挙を別の関数で書き直さないこと。** 適用と列挙が別の走査になると、
+    ドライラン（T-29）が「触っていないパス」を仕分けたり、逆に触っているのに
+    見落としたりする。ここは `apply_patch` と**同じ1本の走査**が返している。
+
+    ドライランはこの戻り値を「保存済みの採点結果へ決定的に再適用できるか /
+    AI 再採点が要るか」で仕分ける（`application.usecases.dry_run`）。
+
+    Returns:
+        (候補 config, 触れたパス。**patch に現れた順で重複なし**)
+
+    Raises:
+        ConfigPatchError: `apply_patch` と同じ
+    """
     data = current.model_dump(mode="json")
     issues: list[ConfigIssue] = []
-    _apply_mapping(patch, data, prefix="", issues=issues)
+    touched: dict[str, None] = {}
+    _apply_mapping(patch, data, prefix="", issues=issues, touched=touched)
     if issues:
         raise ConfigPatchError(issues)
 
     try:
-        return IntelligenceConfig.model_validate(data)
+        candidate = IntelligenceConfig.model_validate(data)
     except ValidationError as exc:
         raise ConfigPatchError(
             [
@@ -190,6 +215,7 @@ def apply_patch(
                 for error in exc.errors()
             ]
         ) from exc
+    return candidate, tuple(touched)
 
 
 def _apply_mapping(
@@ -198,16 +224,20 @@ def _apply_mapping(
     *,
     prefix: str,
     issues: list[ConfigIssue],
+    touched: dict[str, None],
 ) -> None:
     for key, value in patch.items():
         path = f"{prefix}.{key}" if prefix else key
 
         if path in LIST_SELECTORS:
-            _apply_list(value, target[key], section=path, issues=issues)
+            _apply_list(
+                value, target[key], section=path, issues=issues, touched=touched
+            )
             continue
 
         if path in EDITABLE_PATHS:
             target[key] = value
+            touched.setdefault(path, None)
             continue
 
         if path in _EDITABLE_PREFIXES:
@@ -220,7 +250,9 @@ def _apply_mapping(
                     )
                 )
                 continue
-            _apply_mapping(value, target[key], prefix=path, issues=issues)
+            _apply_mapping(
+                value, target[key], prefix=path, issues=issues, touched=touched
+            )
             continue
 
         issues.append(_not_editable_issue(path, exists=key in target))
@@ -232,6 +264,7 @@ def _apply_list(
     *,
     section: str,
     issues: list[ConfigIssue],
+    touched: dict[str, None],
 ) -> None:
     """配列セクションへ patch を当てる。要素は `id` / `no` で対応づける。
 
@@ -294,8 +327,9 @@ def _apply_list(
             if field == selector:
                 # セレクタ自身は「どれか」の指定であって変更ではない。
                 continue
-            if f"{section}.*.{field}" in EDITABLE_PATHS:
+            if (editable := f"{section}.*.{field}") in EDITABLE_PATHS:
                 target[index][field] = value
+                touched.setdefault(editable, None)
                 continue
             issues.append(
                 _not_editable_issue(
@@ -397,4 +431,5 @@ __all__ = [
     "ConfigPatchError",
     "UpdateConfigUsecase",
     "apply_patch",
+    "apply_patch_with_paths",
 ]

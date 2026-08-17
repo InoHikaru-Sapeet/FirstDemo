@@ -16,8 +16,11 @@
 （2026-08-17 T-27）`GET /reports/{period}` と `POST /run/{type}` は T-09 の時点で
 「定数はあるが HTTP テストが無い」状態で残してあったが、ルーターができたので
 `REQUESTS` へ入れて穴を塞いだ。同時に増えた `GET /run/{job_id}` と
-`GET /files/{filename}` も対象。⚠️ **残っているのは `POST /config/dry-run`
-（T-29 で実装）だけ。**
+`GET /files/{filename}` も対象。
+
+（2026-08-17 T-29）`POST /config/dry-run` を実装し `REQUESTS` へ入れた。
+**「定数はあるが HTTP テストが無い」行はこれで無くなった。** ドライラン明細の
+ダウンロード（`GET /config/dry-run/{dry_run_id}/result.xlsx`）も同時に追加。
 
 なお、各ルーター固有の認可要件（config の存在を 403 の差で悟らせない等）は
 `test_config_router.py` / `test_users_router.py` が引き続き担当する。ここは
@@ -115,6 +118,17 @@ TASKS_T27_RUN_ROWS: dict[Operation, tuple[Decision, Decision, Decision, Decision
     Operation.GET_FILES: (ALLOW, ALLOW, ALLOW, ALLOW),
 }
 
+# T-29 の追加行（§6.2 にも §3.2 にも列挙が無い）。
+# ドライラン明細のダウンロードは **`POST /config/dry-run` と同じ行**。ファイルの
+# 中身は「未保存の config を適用した結果」で、config の値とその適用挙動そのもの
+# （§3.4 の根拠2）。実行を許していない相手に結果ファイルだけ配れば、§3.4 が
+# 塞いだ穴がファイル経由で開く。
+TASKS_T29_DRY_RUN_ROWS: dict[
+    Operation, tuple[Decision, Decision, Decision, Decision]
+] = {
+    Operation.GET_CONFIG_DRY_RUN_RESULT: (ALLOW, DENY, DENY, DENY),
+}
+
 # TASKS.md T-09「認証系エンドポイントをマトリクスへ追加」（2026-08-13 の方針変更分）。
 TASKS_T09_AUTH_ROWS: dict[Operation, tuple[Decision, Decision, Decision, Decision]] = {
     Operation.POST_AUTH_REGISTER: (ALLOW, ALLOW, ALLOW, ALLOW),
@@ -129,7 +143,11 @@ TASKS_T09_AUTH_ROWS: dict[Operation, tuple[Decision, Decision, Decision, Decisio
 }
 
 ALL_EXPECTED_ROWS = (
-    SPEC_6_2 | DESIGN_3_2_ADDITION | TASKS_T09_AUTH_ROWS | TASKS_T27_RUN_ROWS
+    SPEC_6_2
+    | DESIGN_3_2_ADDITION
+    | TASKS_T09_AUTH_ROWS
+    | TASKS_T27_RUN_ROWS
+    | TASKS_T29_DRY_RUN_ROWS
 )
 
 
@@ -170,6 +188,27 @@ def test_the_auth_and_user_rows_match_tasks_t09(operation: Operation) -> None:
 def test_the_run_job_and_files_rows_match_tasks_t27(operation: Operation) -> None:
     """T-27 で増えた行（ジョブ状態の照会・生成物の配信）。"""
     assert actual_row(operation) == TASKS_T27_RUN_ROWS[operation]
+
+
+@pytest.mark.parametrize(
+    "operation", sorted(TASKS_T29_DRY_RUN_ROWS, key=lambda op: op.value)
+)
+def test_the_dry_run_download_row_matches_tasks_t29(operation: Operation) -> None:
+    """T-29 で増えた行（ドライラン明細のダウンロード）。"""
+    assert actual_row(operation) == TASKS_T29_DRY_RUN_ROWS[operation]
+
+
+def test_the_dry_run_detail_is_no_wider_than_the_dry_run_itself() -> None:
+    """⚠️ 明細のダウンロードを `POST /config/dry-run` より広くしない。
+
+    ファイルの中身は「未保存の config を適用した結果」＝ config の値とその適用
+    挙動（設計書 §3.4 の根拠2）。実行できない相手へ結果だけ配ると、§3.4 が
+    塞いだ経路がファイル経由で開く。
+    """
+    assert roles_allowed_over_http(
+        Operation.GET_CONFIG_DRY_RUN_RESULT
+    ) == roles_allowed_over_http(Operation.POST_CONFIG_DRY_RUN)
+    assert roles_allowed_over_http(Operation.GET_CONFIG_DRY_RUN_RESULT) == {Role.ADMIN}
 
 
 def test_a_viewer_cannot_poll_a_job_it_cannot_start() -> None:
@@ -279,6 +318,7 @@ def test_admin_only_operations_are_derived_from_the_matrix() -> None:
         Operation.PUT_CONFIG,
         Operation.GET_CONFIG_HISTORY,
         Operation.POST_CONFIG_DRY_RUN,
+        Operation.GET_CONFIG_DRY_RUN_RESULT,
         Operation.GET_USERS,
         Operation.PATCH_USER_ROLE,
         Operation.PATCH_USER_STATUS,
@@ -517,8 +557,8 @@ class Call:
         return response.status_code
 
 
-# 実装済みエンドポイントのみ。⚠️ **T-29 で `/config/dry-run` を実装したら
-# ここへ足すこと。**（`/run` `/reports` `/files` は T-27 で追加済み）
+# 実装済みエンドポイントのみ。**`ROUTE_OPERATIONS` と1:1**（取りこぼしは
+# `test_the_http_sweep_covers_every_implemented_route` が落とす）。
 REQUESTS = [
     Call(Operation.GET_CONFIG, "GET", "/config"),
     Call(Operation.GET_CONFIG_HISTORY, "GET", "/config/history"),
@@ -568,6 +608,20 @@ REQUESTS = [
     Call(Operation.GET_RUN_JOB, "GET", "/run/job_nope"),
     Call(Operation.GET_REPORTS, "GET", "/reports/2026-W31"),
     Call(Operation.GET_FILES, "GET", "/files/monthly_belief_2026-07.html"),
+    # --- T-29 -----------------------------------------------------------------
+    # ⚠️ この tmp な artifact_root には config も成果物も無いので、admin は 404 に
+    # なる。**認可の配線だけを見ている**（中身は `test_config_router.py` の担当）。
+    Call(
+        Operation.POST_CONFIG_DRY_RUN,
+        "POST",
+        "/config/dry-run",
+        {"period": "2026-W31", "candidate_config_patch": {}},
+    ),
+    Call(
+        Operation.GET_CONFIG_DRY_RUN_RESULT,
+        "GET",
+        "/config/dry-run/dry_nope/result.xlsx",
+    ),
 ]
 
 

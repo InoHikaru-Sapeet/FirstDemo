@@ -672,6 +672,19 @@ def rejection_reason(
 ) -> str | None:
     """採否（§13.3-5）で外すなら、その理由を返す。
 
+    Returns:
+        除外理由。採用するなら `None`
+    """
+    return rejection_reason_for_scores(
+        classified.total_score, classified.scores.get(RELIABILITY_AXIS_ID), config
+    )
+
+
+def rejection_reason_for_scores(
+    total: int, reliability: int | None, config: IntelligenceConfig
+) -> str | None:
+    """採否（§13.3-5）を**点数だけ**から判定する。
+
     条件は2つで、**どちらか一方でも下回れば除外**:
 
     - 合計スコア < `min_total_score_to_publish`
@@ -680,13 +693,22 @@ def rejection_reason(
     境界は `≥` が採用（しきい値ちょうどは載せる）。T-17 の例外採用・T-19 の区分
     決定と同じ向きに揃えてある。
 
+    ⚠️ **採否の判定はこの関数1つが正。** ドライラン（T-29）は保存済みの採点結果
+    （中間xlsx の軸点列）へ新しいしきい値を当て直すので、`ClassifiedArticle` を
+    持たない。**そちら側に判定を写さない**ため、点数だけを入口にしてある
+    （写すと「保存では落ちるのにプレビューでは通る」が起きる）。
+
+    Args:
+        total: 合計スコア（6軸の和）
+        reliability: 信頼性軸の点数。**`None` なら信頼性の条件は見ない**
+        config: 判定に使う config（ドライランでは候補 config）
+
     Returns:
         除外理由。採用するなら `None`
     """
     thresholds = config.tunable_thresholds
     reasons: list[str] = []
 
-    total = classified.total_score
     if total < thresholds.min_total_score_to_publish:
         reasons.append(
             REASON_TOTAL_BELOW.format(
@@ -694,7 +716,6 @@ def rejection_reason(
             )
         )
 
-    reliability = classified.scores.get(RELIABILITY_AXIS_ID)
     if (
         reliability is not None
         and reliability < thresholds.min_reliability_score_to_publish
@@ -805,6 +826,7 @@ __all__ = [
     "low_score_log_entry",
     "score_distribution",
     "rejection_reason",
+    "rejection_reason_for_scores",
     "screened_article",
     "weekly_record",
 ]

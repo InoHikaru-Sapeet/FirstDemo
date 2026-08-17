@@ -18,13 +18,16 @@
 import asyncio
 import copy
 import json
+import os
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -36,6 +39,7 @@ from adapter.database.models.user import User
 from adapter.http.fastapi.auth.dependencies import get_db_session
 from adapter.http.fastapi.main import app
 from adapter.storage.artifact_store import ArtifactStore
+from adapter.xlsx.report_writer import ReportStore
 from config import get_settings
 from enterprise.entities.config import IntelligenceConfig
 from enterprise.entities.principal import Role
@@ -924,3 +928,292 @@ def test_a_denied_update_leaves_no_audit_log(
 
 def test_the_audit_event_type_is_the_documented_one() -> None:
     assert AuditEventType.CONFIG_UPDATE.value == "config_update"
+
+
+# =============================================================================
+# T-29: POST /config/dry-run ／ GET /config/dry-run/{id}/result.xlsx
+# =============================================================================
+#
+# ⚠️ **このセクションの主眼は2つ。**
+#
+# 1. **認可が config ファミリと同じであること**（設計書 §3.4）。dry-run は
+#    未保存の config 値とその適用挙動を露出するので、`POST /run`（editor も 202）
+#    ではなく config ファミリ（admin だけ）。明細ファイルも同じ扱い
+# 2. **ドライランの成果物が正規の経路へ混ざらないこと**（設計判断C）。
+#    `GET /reports/{period}` の件数・一覧も `GET /files/{filename}` も動かない
+#
+# 試算そのもの（何件になるか・限界）は `tests/application/test_dry_run.py` の担当。
+
+
+DRY_RUN_PERIOD = "2026-W31"
+
+
+def seed_weekly_sheet(client: TestClient, totals: list[int]) -> None:
+    """その period の週次シート（採点済み22列）を作る。"""
+    store = ArtifactStore.from_settings(get_settings())
+    rows = [
+        {
+            "収集日": "2026-07-28",
+            "情報カテゴリ": "enterprise_ai_case",
+            "タイトル": f"記事{total}",
+            "一言要約": "AIエージェントを導入した。契約業務が自動化された。",
+            "合計スコア": total,
+            "緊急性鮮度_点": 10,
+            "信頼性_点": 9,
+            "アドバイザリー活用度_点": 15,
+            "AI業界市場インパクト_点": 20,
+            "実務活用可能性_点": 20,
+            "顧客関連度_点": total - 74,
+            "レポート採用区分": "参考情報",
+            "実務活用可能性": "すぐ活用",
+            "顧客関連度": "直接関係",
+            "信頼性": "高",
+            "地域": ["日本"],
+            "情報種別": "専門メディア報道",
+            "業務領域": ["業務プロセス改革"],
+            "業界": ["不動産"],
+            "AIテーマ": ["AIエージェント"],
+            "ソース": "ITmedia",
+            "URL": f"https://example.com/{total}",
+        }
+        for total in totals
+    ]
+    ReportStore(store).write_weekly(
+        period=DRY_RUN_PERIOD, articles=rows, revision=1, run_id="job_seed"
+    )
+
+
+def post_dry_run(
+    client: TestClient,
+    patch: dict[str, Any],
+    period: str = DRY_RUN_PERIOD,
+    **extra: Any,
+) -> Any:
+    body: dict[str, Any] = {"period": period, "candidate_config_patch": patch, **extra}
+    return client.post("/config/dry-run", json=body)
+
+
+def test_an_admin_previews_the_effect_of_an_unsaved_threshold(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83, 76, 75])
+
+    response = post_dry_run(
+        client, {"tunable_thresholds": {"min_total_score_to_publish": 76}}
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["period"] == DRY_RUN_PERIOD
+    assert body["base_revision"] == config.meta.revision
+    assert body["baseline"] == {"adopted": 3, "excluded": 0}
+    assert body["summary"] == {"adopted": 2, "excluded": 1}
+    assert body["ttl_hours"] == get_settings().scratch_ttl_hours
+    assert body["dry_run_id"].startswith("dry_")
+    assert body["scratch_url"].endswith(f"/{body['dry_run_id']}/result.xlsx")
+
+
+def test_the_detail_is_downloadable_from_the_url_the_response_gives(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    """完了条件「明細（除外区分・除外理由つき）がダウンロードできる」。"""
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83, 75])
+
+    accepted = post_dry_run(
+        client, {"tunable_thresholds": {"min_total_score_to_publish": 80}}
+    ).json()
+    response = client.get(accepted["scratch_url"])
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/vnd.openxmlformats")
+    sheet = load_workbook(BytesIO(response.content))["除外ログ"]
+    rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+    assert rows[1][4] == "低スコア/信頼性不足"
+    assert rows[1][5] == "合計スコア 75 < 80"
+
+
+@pytest.mark.parametrize("caller", NON_ADMIN_CALLERS)
+def test_only_an_admin_can_run_a_dry_run(
+    client: TestClient, config: IntelligenceConfig, caller: str
+) -> None:
+    """⚠️ config ファミリ（設計書 §3.4）。**editor も 403**。"""
+    seed_weekly_sheet(client, [83])
+    authenticate_as(client, caller)
+
+    response = post_dry_run(
+        client, {"tunable_thresholds": {"min_total_score_to_publish": 76}}
+    )
+
+    assert response.status_code == expected_status(caller)
+    assert "min_total_score_to_publish" not in response.text
+
+
+@pytest.mark.parametrize("caller", NON_ADMIN_CALLERS)
+def test_only_an_admin_can_download_a_dry_run_detail(
+    client: TestClient, config: IntelligenceConfig, caller: str
+) -> None:
+    """⚠️ ファイル経由で §3.4 の判断を迂回させない。"""
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83])
+    accepted = post_dry_run(client, {}).json()
+    client.cookies.clear()
+    authenticate_as(client, caller)
+
+    response = client.get(accepted["scratch_url"])
+
+    assert response.status_code == expected_status(caller)
+
+
+def test_a_dry_run_does_not_change_what_the_reports_endpoint_lists(
+    client: TestClient, config: IntelligenceConfig, artifact_root: Path
+) -> None:
+    """⚠️ **設計判断C の核心**：試算の出力が正規の一覧・件数へ混ざらないこと。"""
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83, 75])
+    store = ArtifactStore.from_settings(get_settings())
+    store.write_text(store.weekly_html_path("不動産", DRY_RUN_PERIOD), "<html></html>")
+    before = client.get(f"/reports/{DRY_RUN_PERIOD}").json()
+
+    post_dry_run(client, {"tunable_thresholds": {"min_total_score_to_publish": 80}})
+
+    assert client.get(f"/reports/{DRY_RUN_PERIOD}").json() == before
+    assert before["summary"] == {"adopted": 2, "excluded": 0}
+
+
+def test_a_dry_run_result_is_not_served_by_the_public_file_route(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    """`GET /files/{filename}`（全ロール可）へ scratch を通さないこと。"""
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83])
+    accepted = post_dry_run(client, {}).json()
+
+    assert client.get("/files/result.xlsx").status_code == 404
+    assert client.get(f"/files/{accepted['dry_run_id']}_result.xlsx").status_code == 404
+
+
+def test_a_dry_run_leaves_the_canonical_workbook_untouched(
+    client: TestClient, config: IntelligenceConfig, artifact_root: Path
+) -> None:
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83, 75])
+    canonical = artifact_root / "weekly_ai_intelligence_report.xlsx"
+    before = canonical.read_bytes()
+    config_before = config_file_text(artifact_root)
+
+    post_dry_run(client, {"tunable_thresholds": {"min_total_score_to_publish": 80}})
+
+    assert canonical.read_bytes() == before
+    assert config_file_text(artifact_root) == config_before
+
+
+def test_a_change_that_needs_a_rescore_is_refused_with_a_reason(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    """⚠️ 「効果ゼロ」と表示せず、**なぜ試算できないか**を返す。"""
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83])
+
+    response = post_dry_run(
+        client, {"scoring_axes": [{"id": "reliability", "weight": 12}]}
+    )
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["error"] == "not_previewable"
+    assert detail["issues"][0]["path"] == "scoring_axes.*.weight"
+    assert detail["issues"][0]["code"] == "rescore_required"
+
+
+def test_a_change_whose_facts_were_never_stored_is_refused(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83])
+
+    response = post_dry_run(client, {"exclusion_rules": [{"no": 11, "enabled": False}]})
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["error"] == "not_previewable"
+    assert detail["issues"][0]["code"] == "not_previewable"
+
+
+def test_a_patch_outside_the_allow_list_is_the_same_422_as_a_save(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    """許可リスト違反は `PUT /config` と同じ封筒（フロントが同じ処理で扱える）。"""
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83])
+
+    response = post_dry_run(client, {"scoring_total": 90})
+
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert detail["error"] == "validation_failed"
+    assert detail["issues"][0]["code"] == "field_not_editable"
+
+
+def test_a_dry_run_on_a_period_without_scored_data_is_404(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    login_as(client, Role.ADMIN)
+
+    response = post_dry_run(client, {})
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"]["error"] == "no_scored_data"
+
+
+def test_a_monthly_period_is_refused_with_the_reason(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    """月次実行は採点済みの22列を成果物に残さない（→ T-38）。"""
+    login_as(client, Role.ADMIN)
+
+    response = post_dry_run(client, {}, period="2026-07")
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["error"] == "invalid_period"
+
+
+def test_a_stale_base_revision_is_the_same_409_as_a_save(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83])
+
+    response = post_dry_run(client, {}, base_revision=99)
+
+    assert response.status_code == 409, response.text
+    body = response.json()["detail"]
+    assert body["error"] == "revision_conflict"
+    assert body["current_revision"] == config.meta.revision
+
+
+def test_an_unknown_dry_run_id_is_404(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    """⚠️ 形が不正な ID も同じ 404（区別させない）。"""
+    login_as(client, Role.ADMIN)
+
+    assert client.get("/config/dry-run/dry_nope/result.xlsx").status_code == 404
+    assert client.get("/config/dry-run/..%2F..%2Fetc/result.xlsx").status_code == 404
+
+
+def test_an_expired_dry_run_is_gone(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    """TTL 経過分の自動削除（T-02 ／ 設計判断C）。"""
+    login_as(client, Role.ADMIN)
+    seed_weekly_sheet(client, [83])
+    accepted = post_dry_run(client, {}).json()
+    store = ArtifactStore.from_settings(get_settings())
+    directory = store.dry_run_dir(accepted["dry_run_id"])
+    past = (datetime.now(tz=UTC) - timedelta(hours=48)).timestamp()
+    os.utime(directory, (past, past))
+
+    assert client.get(accepted["scratch_url"]).status_code == 404
+    assert not directory.exists()

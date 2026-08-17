@@ -25,6 +25,7 @@ from adapter.xlsx.report_writer import (
 )
 from enterprise.entities.report_columns import (
     EXCLUSION_LOG_COLUMNS,
+    EXCLUSION_LOG_SHEET,
     EXCLUSION_LOG_SHEET_NAME,
     MONTHLY_CASE_COLUMNS,
     MULTI_VALUE_SEPARATOR,
@@ -578,3 +579,99 @@ def test_a_bad_period_in_the_scope_is_skipped(
         assert len(reports.read_history(["2026-13"])) == 0
 
     assert any("読めない period" in record.message for record in caplog.records)
+
+
+# --- ドライランの隔離出力（T-29 ／ 設計判断C）--------------------------------
+
+
+def test_the_dry_run_detail_is_written_where_it_is_told(
+    reports: ReportStore, store: ArtifactStore, tmp_path: Path
+) -> None:
+    target = store.dry_run_dir("dry_1") / "result.xlsx"
+
+    written = reports.write_dry_run(
+        target,
+        period=WEEKLY_PERIOD,
+        dry_run_id="dry_1",
+        revision=3,
+        articles=[weekly_row()],
+        exclusions=[exclusion_row()],
+    )
+
+    assert written.path == target and target.is_file()
+    assert written.archived is None
+    workbook = load_workbook(target)
+    assert workbook.sheetnames == [WEEKLY_PERIOD, EXCLUSION_LOG_SHEET_NAME]
+
+
+def test_the_dry_run_detail_never_reads_or_writes_the_canonical_book(
+    reports: ReportStore, store: ArtifactStore
+) -> None:
+    """⚠️ 既存ブックを読むと、その中身が試算の出力へ混ざる。退避も起こさない。"""
+    reports.write_weekly(
+        period=WEEKLY_PERIOD,
+        articles=[weekly_row(title="正規の記事")],
+        exclusions=[exclusion_row()],
+        revision=1,
+        run_id=RUN_ID,
+    )
+    canonical = store.weekly_report_path()
+    before = canonical.read_bytes()
+
+    reports.write_dry_run(
+        store.dry_run_dir("dry_1") / "result.xlsx",
+        period=WEEKLY_PERIOD,
+        dry_run_id="dry_1",
+        revision=1,
+        articles=[weekly_row(title="試算の記事")],
+    )
+
+    assert canonical.read_bytes() == before
+    assert not store.history_root.exists()
+    detail = load_workbook(store.dry_run_dir("dry_1") / "result.xlsx")
+    titles = [
+        row[header_row(WEEKLY_ARTICLE_COLUMNS).index("タイトル")]
+        for row in detail[WEEKLY_PERIOD].iter_rows(
+            min_row=WEEKLY_ARTICLE_SHEET.first_data_row, values_only=True
+        )
+    ]
+    assert titles == ["試算の記事"]
+
+
+def test_the_dry_run_exclusion_log_is_not_appended_to(
+    reports: ReportStore, store: ArtifactStore
+) -> None:
+    """試算の除外ログは**その試算ぶんだけ**（正規ブックのように積まない）。"""
+    target = store.dry_run_dir("dry_1") / "result.xlsx"
+    reports.write_dry_run(
+        target,
+        period=WEEKLY_PERIOD,
+        dry_run_id="dry_1",
+        revision=1,
+        articles=[],
+        exclusions=[exclusion_row(), exclusion_row()],
+    )
+    reports.write_dry_run(
+        target,
+        period=WEEKLY_PERIOD,
+        dry_run_id="dry_1",
+        revision=1,
+        articles=[],
+        exclusions=[exclusion_row()],
+    )
+
+    sheet = load_workbook(target)[EXCLUSION_LOG_SHEET_NAME]
+    assert sheet.max_row == EXCLUSION_LOG_SHEET.first_data_row  # ヘッダ + 1件
+
+
+def test_the_dry_run_detail_refuses_a_monthly_period(
+    reports: ReportStore, store: ArtifactStore
+) -> None:
+    with pytest.raises(ReportStoreError):
+        reports.write_dry_run(
+            store.dry_run_dir("dry_1") / "result.xlsx",
+            period=MONTHLY_PERIOD,
+            dry_run_id="dry_1",
+            revision=1,
+            articles=[],
+        )

@@ -32,12 +32,17 @@
 ⚠️ **未実装エンドポイントの行も定数には含める。**
 
 マトリクスは §6.2 を**そのまま**写すのが役目なので、ルーターが無い行も定義し、
-`ROUTE_OPERATIONS`（実ルートとの対応）にだけ載せない。現在この状態なのは
-`POST /config/dry-run`（T-29）だけ。**ルートを足すときに対応を追加し、
-`tests/adapter/test_rbac.py` の網羅テストへケースを足すこと。**
+`ROUTE_OPERATIONS`（実ルートとの対応）にだけ載せない。**ルートを足すときに
+対応を追加し、`tests/adapter/test_rbac.py` の網羅テストへケースを足すこと。**
 
 （2026-08-17 T-27 実施）`GET /reports/{period}` と `POST /run/{type}` は
 ルーターができたので `ROUTE_OPERATIONS` へ登録し、網羅テストの対象に入れた。
+
+（2026-08-17 T-29 実施）`POST /config/dry-run` も登録し、**最後まで残っていた
+未実装行が無くなった**。ドライラン明細のダウンロード
+（`GET /config/dry-run/{dry_run_id}/result.xlsx`）は設計時にも列挙が無い追加分で、
+**config ファミリと同じ行**にした（§3.4 の判断をそのまま延長したもの。中身は
+「未保存の config を適用した結果」そのものなので、config より広くはできない）。
 """
 
 from enum import StrEnum
@@ -86,6 +91,8 @@ class Operation(StrEnum):
     # §6.2 に列挙が無い設計時追加分。run ファミリではなく config ファミリへ
     # 寄せる判断の根拠は設計書 §3.4（dry-run は config 値とその適用挙動を露出する）。
     POST_CONFIG_DRY_RUN = "POST /config/dry-run"
+    # T-29 の追加分（設計書 §3.2 にも行が無い）。ドライラン明細のダウンロード。
+    GET_CONFIG_DRY_RUN_RESULT = "GET /config/dry-run/{dry_run_id}/result.xlsx"
 
     # --- run / reports ファミリ（仕様書 §6.2）--------------------------------
     GET_REPORTS = "GET /reports/{period}"
@@ -153,6 +160,17 @@ PERMISSION_MATRIX: Final[Mapping[Operation, Mapping[Role, Decision]]] = (
             ),
             # === 設計書 §3.2 の追加行（認可根拠は §3.4）=======================
             Operation.POST_CONFIG_DRY_RUN: _row(
+                admin=_ALLOW, editor=_DENY, viewer=_DENY, system=_DENY
+            ),
+            # === T-29 の追加行（§6.2 にも §3.2 にも列挙が無い）================
+            # ⚠️ **明細のダウンロードは `POST /config/dry-run` と同じ行。**
+            # ファイルの中身は「未保存の config を適用した結果」＝ config の値と
+            # その適用挙動そのもの（§3.4 の根拠2）。実行を許していない相手に
+            # 結果ファイルだけ配る意味は無く、逆に配れば §3.4 が塞いだ穴が
+            # ファイル経由で開く。**`GET /files/{filename}`（全ロール可）には
+            # 載せない**（`ArtifactStore.is_servable` が scratch を通さない）。
+            # → §3.2 の表への追記が必要（T-38）。
+            Operation.GET_CONFIG_DRY_RUN_RESULT: _row(
                 admin=_ALLOW, editor=_DENY, viewer=_DENY, system=_DENY
             ),
             # === T-27 の追加行（§6.2 にも §3.2 にも列挙が無い）================
@@ -255,9 +273,13 @@ ROUTE_OPERATIONS: Final[Mapping[tuple[str, str], Operation]] = MappingProxyType(
         ("GET", "/run/{job_id}"): Operation.GET_RUN_JOB,
         ("GET", "/reports/{period}"): Operation.GET_REPORTS,
         ("GET", "/files/{filename}"): Operation.GET_FILES,
-        # ⚠️ `POST /config/dry-run`（T-29）は**ルート未実装のため未登録**。
-        # 実装時にここへ足すこと（足し忘れは `test_rbac.py` の
-        # `test_every_route_is_covered_by_the_matrix` が検出する）。
+        # T-29。⚠️ 明細のダウンロードは**パスの末尾がファイル名リテラル**
+        # （`result.xlsx`）。ルートのテンプレートをそのまま書くこと。
+        ("POST", "/config/dry-run"): Operation.POST_CONFIG_DRY_RUN,
+        (
+            "GET",
+            "/config/dry-run/{dry_run_id}/result.xlsx",
+        ): Operation.GET_CONFIG_DRY_RUN_RESULT,
     }
 )
 
