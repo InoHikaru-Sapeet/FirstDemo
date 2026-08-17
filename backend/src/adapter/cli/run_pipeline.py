@@ -155,7 +155,8 @@ FAILURE_HINTS: tuple[tuple[type[BaseException], str], ...] = (
     (
         ConfigPinError,
         "開始時の config revision を固定できない（§8.3）。"
-        "`config.json` と改訂履歴（DB）が食い違っている可能性がある",
+        "`config.json` と改訂履歴（DB）が食い違っている可能性がある"
+        "（手編集したなら `make config-record ARGS='--apply'` で揃える）",
     ),
 )
 

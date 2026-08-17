@@ -591,7 +591,7 @@ flowchart TD
   - ⚠️ **エラー本文はプロジェクト共通の `detail` 封筒に載せた**（`{"detail":{"error":"revision_conflict","current_revision":2}}`）。§3.3 は封筒なしの形で書いているが、T-40・T-42 が既に `detail` 封筒で統一されているのでそちらに合わせた（→ §3.3 の記法を揃えるなら T-38）。
   - **T-05 を必ず通ることはミューテーションで確認済み**：`save()` から `ensure_valid_config()` を外すと5件のテストが落ちる。監査ログの add を外すと2件落ちる。
 
-#### - [ ] T-47: 手編集した `config.json` を履歴へ記録する CLI（`make config-record`）
+#### - [x] T-47: 手編集した `config.json` を履歴へ記録する CLI（`make config-record`）
 - **対応**: §4.3・§6.3（→ 仕様書 §6.3・§7.4）／ §8.3（`ConfigPinError` の修復案内）
 - **依存**: T-05, T-11, T-13, T-26
 - **成果物**: `backend/src/adapter/cli/record_config.py`, `backend/src/adapter/config_repository.py`（追記）, `backend/src/application/usecases/update_config.py`（追記）, `backend/src/application/usecases/run_orchestrator.py`（`ConfigPinError` の文面）, `backend/Makefile`, `backend/tests/adapter/test_record_config_cli.py`
@@ -609,6 +609,16 @@ flowchart TD
   - `ConfigPinError` の修復案内を「`make config-record ARGS='--apply'` を実行（または管理画面から保存）」へ更新
   - テスト：乖離あり／なし／検証失敗／冪等性。`make help` へ1行追加
 - **備考**: 手編集は「ファイルが正」（T-11）の帰結で、禁じる代わりに**履歴へ後から追いつかせる**のがこのタスク。書き込み経路を増やさない（`ConfigRepository.save()` の1本）ことが要点。
+- **備考（実績 2026-08-17）**: `make lint` / `make type-check`（診断7件＝着手前と同じ・新規ゼロ） / `make test` すべて通過。テストは **2180件**（T-47 で +13：乖離あり4 / 乖離なし・冪等3 / dry 1 / 検証失敗3 / 拒否1 / 経路の固定1）。
+  - **`update_config` の再利用は「保存の確定」まで到達した。** `UpdateConfigUsecase` に **`record_current()`** を足し、`execute()`（`PUT /config`）と共通の **`_commit()`**（監査ログを積む → `save()` → 失敗したら rollback）へ両方を通した。**CLI 側に書き込みコードは1行も無い**（`ConfigRepository` も `open()` も直接呼ばない）。再利用できなかったのは patch の適用（`apply_patch`）だけ——**手編集は既にファイルへ入っているので当てる patch が無い**。結果、履歴行・`diff_summary`・監査ログ `config_update`（`revision` / `diff` / `target`）の形は管理画面からの保存と同一で、違うのは `actor` だけ。
+  - ⚠️ **`save()` に `diff_base_data`（差分の基準）を足した。** 既定は従来どおり保存前のファイルで、`PUT /config` の挙動は不変。渡すのは CLI だけ——**手編集の記録では新旧が同じファイル**なので、既定のままでは差分が必ず空になり、履歴が「何も変えていない revision」の列になる。基準を差し替えられる形にしたのは、差分の計算そのもの（`diff_configs`）を2つに増やさないため。
+  - ⚠️ **`ConfigRepository.get_snapshot_data()`（生データのまま1行取得）を足した。** 実運用で壊れていたのは **revision=1 のスナップショットが旧形式（`target_industry`）で現行スキーマでは読めない**状態で、`get_pinned()` は `DocumentParseError` になる。**読めない行を基準にできないと、このコマンドは「何が食い違っているのか」を報告できないまま記録することになる**ので、検証しない口を1つだけ開けた。差分側も `flatten_config_data` / `diff_config_data`（生データ版）へ切り出し、既存の `flatten_config` / `diff_configs` はその薄い口にした。**`list_revisions()` が `config_snapshot` を SELECT しない方針（T-11）は不変**。
+  - **記録の条件に「`meta.revision` が履歴の最新を指しているか」を含めた**（完了条件の「差分」の解釈）。⚠️ **中身の差だけを見ると、ファイルが古い revision を指したままの状態を「変更なし」と答えてしまい、実行は別のスナップショットを固定して走る**。記録後の不変条件を「ファイルの `meta.revision` == 履歴の最新」かつ「その revision のスナップショット == ファイルの中身」＝**`get_pinned()` が固定できる状態**と定義し、そこへ寄せる形にした（`test_the_revision_pointer_alone_is_enough_to_record`）。
+  - ⚠️ **採番は `save()` の規則どおり「ファイルの `meta.revision` + 1」**（完了条件の文面は「履歴の最新+1」）。両者が揃っている通常の状態では同じ値。**ファイルのほうが古い revision を指している**食い違い方では採番先の履歴行が既にあるので、`ConfigRevisionAlreadyRecordedError` で**拒否する**（終了コード1）。revision の正はファイル（T-11）なので、CLI が黙って番号を付け替えると「どちらが正か」の判断を機械が勝手に下すことになる——ここは人が決める。
+  - **楽観ロックは素通りさせていない**（`base_revision` にファイルの `meta.revision` を使う）。読んでから記録するまでに管理画面から保存されたら 409 相当で止まる。
+  - **`actor` は `cli:config-record`**（T-41 の `cli:create-admin` と同じ形）。⚠️ **`admin:` を騙らない**——CLI からの変更を管理画面からの保存に見せかけない。`updated_by` も同じ値なので `GET /config/history` から経路が読める。
+  - **`ConfigPinError` の文面に修復コマンドを入れた**（`run_orchestrator.py`）。`run_pipeline` の `FAILURE_HINTS`（CLI が例外の型から出す説明）にも同じ案内を足した——実際に画面で読むのはこちら。
+  - **実データで確認済み**：手元の壊れた状態（ファイル revision=1・履歴も revision=1 だが旧形式）に対して dry 実行し、**5件の差分**（`target_industry` の消滅と `target_industries` の出現、`max_industry_topics` 5→3、`max_common_topics` 6→3、`min_score_for_case` 80→65）と `revision=2` の予告が出ることを確認した。⚠️ **`--apply` は実行していない**（実データの config と履歴を書き換えるので運用者の判断で）。
 
 #### - [x] T-14: xlsx → config.json 初期マイグレーション CLI
 - **対応**: §10.2・§10.3・§10.4
@@ -1058,7 +1068,7 @@ flowchart TD
 - **スコープ外（今日はやらない）**:
   - ⚠️ **画像・図解の自動生成はやらない**（2026-08-17 の判断）。メールHTML に画像を載せるなら、生成・保管・配信（`GET /files` の許可リスト＝T-27）・代替テキスト・クライアント側の画像ブロックへの対処まで一式が要る。装飾の範囲を大きく超えるので別タスクとして起票し直すこと
   - 週刊の「その他ピックアップ」（§9.2-3 の `<ul>` 列挙形式）への分岐は入れない（T-24 の判断どおり体裁の正を1つに保つ）
-- **備考**: 2026-08-17 の PM 要件（1通あたりのカード数が増えて通読されない／月刊の章立てが視覚的に追いにくい）で起票。**T-47 は欠番**（起票していない）。
+- **備考**: 2026-08-17 の PM 要件（1通あたりのカード数が増えて通読されない／月刊の章立てが視覚的に追いにくい）で起票。~~**T-47 は欠番**（起票していない）。~~ → **T-47 はその後（同日）起票済み**（P3。`make config-record`）。
   - **実績（Step 1・2026-08-17）**: `one_line_summary()`（全角換算で切る）／`_category_badge()`（§7.2 の色を**背景**に敷いて白抜き）／`_card(show_insight=...)` の3点。カード内余白を `18px 20px` → `14px 16px`、カード間を `14px` → `10px` へ詰め、見出し 16px → 15px・要約 13px → 12px。
     - ⚠️ **切る位置は字数ではなく見た目の幅**（`east_asian_width` の `F`/`W`/`A` を全角2・他を半角1として数え、全角60字＝120半角ぶんで切る）。字数で数えると英数字ばかりの要約が全角60字の倍近い長さになり、カードの高さが揃わない。`A`（曖昧幅）を全角側へ寄せているのは日本語環境で全角表示される記号（`§`・`…`）のため。**字数で見ていたら通ってしまう長さ**をテストで固定した
     - ⚠️ **`…` を足すぶんの幅は上限から引かない**（1文字ぶんの超過を許す）。差し引くと上限ぎりぎりの要約が2文字短くなり、切れていないのに切れて見える

@@ -153,7 +153,12 @@ class RevisionSummary:
 
 
 def flatten_config(config: IntelligenceConfig) -> dict[str, Any]:
-    """config をドット区切りパス → 値の平坦な辞書にする。
+    """config を平坦な辞書にする（実体は `flatten_config_data`）。"""
+    return flatten_config_data(config.model_dump(mode="json"))
+
+
+def flatten_config_data(data: dict[str, Any]) -> dict[str, Any]:
+    """**JSON 相当の生データ**を平坦化する（`flatten_config` の実体）。
 
     パス表記は `ConfigIssue.path`（T-05）と同じ（`scoring_axes.0.weight`）。
     フロントが 422 の issues と差分を同じ方法でフィールドへ対応づけられる。
@@ -163,14 +168,19 @@ def flatten_config(config: IntelligenceConfig) -> dict[str, Any]:
     以降の全要素が「変更」に見えてしまう。オブジェクトの配列は件数が固定
     （7 / 10 / 6 / 13。T-04）なので添字で展開して差し支えない。
 
+    ⚠️ **モデルを通っていないデータも受ける**（`config_revisions.config_snapshot` を
+    そのまま渡せる）。**現行スキーマで読めないスナップショット**——鍵の名前が
+    変わる前に保存された行など——との差分を出す唯一の手段で、T-47 の
+    `make config-record` が使う。読めるデータなら `flatten_config()` を使うこと。
+
     Args:
-        config: 平坦化する config
+        data: 平坦化する生データ（`IntelligenceConfig.model_dump(mode="json")` 相当）
 
     Returns:
-        パス → 値。順序は宣言順（＝仕様書 §5.2 のキー順）で安定する
+        パス → 値。順序は与えられたキー順（＝仕様書 §5.2 のキー順）で安定する
     """
     flat: dict[str, Any] = {}
-    _flatten(config.model_dump(mode="json"), "", flat)
+    _flatten(data, "", flat)
     return flat
 
 
@@ -204,8 +214,28 @@ def diff_configs(
     Returns:
         変更のあったパスだけを含む辞書。差分が無ければ空
     """
-    old = flatten_config(before)
-    new = flatten_config(after)
+    return diff_config_data(
+        before.model_dump(mode="json"), after.model_dump(mode="json")
+    )
+
+
+def diff_config_data(
+    before: dict[str, Any], after: dict[str, Any]
+) -> dict[str, dict[str, Any]]:
+    """**生データ同士**の差分（`diff_configs` の実体）。
+
+    片方が現行スキーマで読めないときにだけ使う（`flatten_config_data` の⚠️）。
+    無くなった鍵は `{"before": 値, "after": None}`、増えた鍵はその逆で出る。
+
+    Args:
+        before: 変更前の生データ
+        after: 変更後の生データ
+
+    Returns:
+        `diff_configs()` と同じ形
+    """
+    old = flatten_config_data(before)
+    new = flatten_config_data(after)
 
     diff: dict[str, dict[str, Any]] = {}
     for path in [*old, *(p for p in new if p not in old)]:
@@ -352,14 +382,33 @@ class ConfigRepository:
             ConfigRevisionNotFoundError: その revision の履歴が無い
             DocumentParseError: スナップショットが現行スキーマに合わない
         """
+        return validate_json_data(
+            CONFIG_ADAPTER,
+            await self.get_snapshot_data(revision),
+            label=f"config_revisions[revision={revision}]",
+        )
+
+    async def get_snapshot_data(self, revision: int) -> dict[str, Any]:
+        """スナップショットを**検証せずそのまま**返す（`get_pinned()` の実体）。
+
+        ⚠️ **通常は `get_pinned()` を使うこと。** ここが要るのは、**現行スキーマで
+        読めなくなったスナップショット**（鍵の名前が変わる前に保存された行など）
+        と、いま手元にある `config.json` の差分を出す場合だけ——つまり
+        「ファイルと履歴が食い違っていること自体が入力」である T-47 の
+        `make config-record` の1箇所。読めない行を `get_pinned()` で取ろうとすると
+        `DocumentParseError` になり、**何が食い違っているのかを報告できない**。
+
+        `list_revisions()` が `config_snapshot` を SELECT しない方針
+        （モジュール docstring 4）は変わらない。中身が出るのはこの1行取得だけで、
+        呼び出し元は admin 相当と確定していること。
+
+        Raises:
+            ConfigRevisionNotFoundError: その revision の履歴が無い
+        """
         row = await self._db.get(ConfigRevision, revision)
         if row is None:
             raise ConfigRevisionNotFoundError(revision)
-        return validate_json_data(
-            CONFIG_ADAPTER,
-            row.config_snapshot,
-            label=f"config_revisions[revision={revision}]",
-        )
+        return dict(row.config_snapshot)
 
     async def list_revisions(
         self, *, limit: int | None = None
@@ -436,6 +485,7 @@ class ConfigRepository:
         *,
         base_revision: int,
         updated_by: str,
+        diff_base_data: dict[str, Any] | None = None,
     ) -> IntelligenceConfig:
         """検証を通してから上書き保存し、`revision` を1つ進める（設計書 §4.3）。
 
@@ -450,6 +500,12 @@ class ConfigRepository:
             config: 保存したい内容（`meta` は上書きされる）
             base_revision: 呼び出し元が編集の基にした revision（楽観ロック）
             updated_by: 実行者（T-13 は `Principal.actor` 相当を渡す）
+            diff_base_data: `diff_summary` を取る基準（生データ）。**既定は現行
+                ファイルの内容**で、`PUT /config` はこれで正しい。⚠️ 渡すのは
+                T-47 の `make config-record` だけ——**手編集済みのファイルを
+                そのまま記録する**経路では新旧が同一のファイルなので、既定のままだと
+                差分が必ず空になり、履歴に「何が変わったか」が残らない。あちらは
+                DB の最新スナップショットを渡す
 
         Returns:
             保存後の config（`meta.revision` が新しい値になっている）
@@ -470,11 +526,18 @@ class ConfigRepository:
         stamped = self._stamp(
             config, revision=current.meta.revision + 1, updated_by=updated_by
         )
+        base_data = (
+            current.model_dump(mode="json")
+            if diff_base_data is None
+            else diff_base_data
+        )
         return await self._write(
             stamped,
             revision=stamped.meta.revision,
             updated_by=updated_by,
-            diff_summary=summarize_diff(diff_configs(current, stamped)),
+            diff_summary=summarize_diff(
+                diff_config_data(base_data, stamped.model_dump(mode="json"))
+            ),
             already_stamped=True,
         )
 
@@ -557,7 +620,9 @@ __all__ = [
     "ConfigRevisionConflictError",
     "ConfigRevisionNotFoundError",
     "RevisionSummary",
+    "diff_config_data",
     "diff_configs",
     "flatten_config",
+    "flatten_config_data",
     "summarize_diff",
 ]

@@ -35,6 +35,15 @@ make dev            # http://localhost:8000  (/healthz, /readyz)
 `make migrate-config` は [`docs/source/weekly_ai_intelligence_requirements.xlsx`](./docs/source/weekly_ai_intelligence_requirements.xlsx)（初期投入元）から
 `config.json` を起こす。以後の正は `config.json` で、変更は管理画面（`PUT /config`）から行う。
 
+⚠️ **`artifacts/config.json` を手で編集したら、改訂履歴へ記録すること。** 実行時は
+履歴のスナップショットを固定参照する（設計書 §6.3）ので、揃っていないと通し実行が
+`ConfigPinError` で止まります。
+
+```bash
+make config-record                   # 差分と新しい revision 番号を確認（dry）
+make config-record ARGS="--apply"    # 履歴・監査ログへ記録（config.json も書き戻す）
+```
+
 ### フロントエンド
 
 ```bash

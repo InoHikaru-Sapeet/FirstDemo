@@ -331,8 +331,9 @@ class RepositoryConfigPin:
                 # config で走った」ことが誰にも分からなくなる（§14 の再現性）。
                 raise ConfigPinError(
                     f"revision={revision} のスナップショットを固定できません: {exc}"
-                    "（config.json を手で置き換えた場合に起きます。"
-                    "管理画面から一度保存し直すと履歴と揃います）"
+                    "（config.json を手で編集した場合に起きます。"
+                    "`make config-record ARGS='--apply'` を実行してください"
+                    "（または管理画面から保存）。履歴と監査ログがファイルに追いつきます）"
                 ) from exc
 
 

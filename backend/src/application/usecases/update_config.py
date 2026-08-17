@@ -3,6 +3,10 @@
 管理画面（T-33）から届く **部分更新（patch）** を現行 config へ当て、検証を通し、
 保存し、監査ログを残すまでを1本にまとめる。
 
+`config.json` を手で編集したあとに履歴を追いつかせる CLI（T-47 の
+`make config-record`）も**ここを通る**（`UpdateConfigUsecase.record_current()`）。
+入口は2つでも、履歴・監査・トランザクションの形は1箇所で決まる。
+
 ---
 
 **設計上、動かしてはいけない点**
@@ -38,7 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from adapter.config_repository import (
     ConfigRepository,
     ConfigRevisionConflictError,
-    diff_configs,
+    diff_config_data,
 )
 from adapter.storage.artifact_store import CONFIG_FILENAME
 from application.usecases.audit import AuditService
@@ -344,7 +348,12 @@ def _now() -> datetime:
 
 
 class UpdateConfigUsecase:
-    """`PUT /config`：patch 適用 → 楽観ロック → 検証 → 保存 → 監査ログ。"""
+    """`PUT /config`：patch 適用 → 楽観ロック → 検証 → 保存 → 監査ログ。
+
+    `make config-record`（T-47）も**この1本を通る**（`record_current()`）。
+    入口が2つでも、履歴（`config_revisions`）・監査ログ（`config_update`）・
+    トランザクションの張り方は `_commit()` の1箇所で決まる。
+    """
 
     def __init__(self, db: AsyncSession, repo: ConfigRepository) -> None:
         self._db = db
@@ -390,24 +399,83 @@ class UpdateConfigUsecase:
 
         candidate = apply_patch(current, patch)
 
+        return await self._commit(
+            actor.actor,
+            candidate,
+            base_revision=base_revision,
+            diff_base_data=current.model_dump(mode="json"),
+        )
+
+    async def record_current(
+        self, actor: str, *, diff_base_data: dict[str, Any]
+    ) -> IntelligenceConfig:
+        """**いまファイルにある内容**を、そのまま次の revision として記録する（T-47）。
+
+        patch は無い。編集は既に `config.json` へ手で入っていて、残っているのは
+        「履歴と監査ログを追いつかせる」ことだけ、という経路（`make config-record`）。
+        通る道は `execute()` と同一（検証 → 楽観ロック → 保存 → 監査ログ）で、
+        違うのは**差分の基準**の2点だけ:
+
+        - `PUT /config` の基準は**保存前のファイル**（＝変更前の内容）
+        - こちらの基準は**DB の最新スナップショット**（ファイルは既に変更後なので、
+          ファイルを基準にすると差分が空になり、履歴が「何も変えていない revision」
+          だらけになる）
+
+        ⚠️ **楽観ロックは素通りしない。** `base_revision` にファイルの
+        `meta.revision` を使う＝読んだ直後に別経路（管理画面）が保存していたら
+        `ConfigRevisionConflictError` で落ちる。
+
+        Args:
+            actor: 監査ログの `actor` と `updated_by`（CLI は `cli:config-record`）
+            diff_base_data: 差分の基準（DB 最新スナップショットの**生データ**。
+                現行スキーマで読めない古い形でも渡せる）
+
+        Returns:
+            記録後の config（`meta.revision` が新しい値）
+
+        Raises:
+            ConfigNotFoundError: `config.json` が無い
+            ConfigRevisionConflictError: 読んでから保存するまでに revision が動いた
+            ConfigValidationError: クロスフィールド制約の違反（T-05）
+        """
+        current = self._repo.load()
+        return await self._commit(
+            actor,
+            current,
+            base_revision=current.meta.revision,
+            diff_base_data=diff_base_data,
+        )
+
+    async def _commit(
+        self,
+        actor: str,
+        candidate: IntelligenceConfig,
+        *,
+        base_revision: int,
+        diff_base_data: dict[str, Any],
+    ) -> IntelligenceConfig:
+        """監査ログ → 保存を**同じトランザクション**で確定する（入口共通）。"""
         # ⚠️ 監査ログは**保存と同じトランザクション**に載せる。`save()` が
         # commit するので、ここで add しておけば config_revisions・config.json と
         # 一緒に確定する。保存が失敗したら下の except で rollback して消える。
         self._record_audit(
             actor=actor,
-            revision=current.meta.revision + 1,
-            diff=diff_configs(current, candidate),
+            revision=base_revision + 1,
+            diff=diff_config_data(diff_base_data, candidate.model_dump(mode="json")),
         )
         try:
             return await self._repo.save(
-                candidate, base_revision=base_revision, updated_by=actor.actor
+                candidate,
+                base_revision=base_revision,
+                updated_by=actor,
+                diff_base_data=diff_base_data,
             )
         except Exception:
             await self._db.rollback()
             raise
 
     def _record_audit(
-        self, *, actor: Principal, revision: int, diff: dict[str, dict[str, Any]]
+        self, *, actor: str, revision: int, diff: dict[str, dict[str, Any]]
     ) -> None:
         """`config_update` を積む（commit は `save()`。設計書 §4.4）。
 
@@ -417,7 +485,7 @@ class UpdateConfigUsecase:
         `application/usecases/audit.py` のモジュール docstring を参照。
         """
         self._audit.record_config_update(
-            actor=actor.actor,
+            actor=actor,
             at=_now(),
             revision=revision,
             diff=diff,

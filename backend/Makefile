@@ -5,7 +5,8 @@ APP_MODULE := adapter.http.fastapi.main:app
 PORT ?= 8000
 
 .PHONY: help sync lint format type-check test test-ci dev
-.PHONY: config-schema config-schema-check migrate-config prompts prompts-check
+.PHONY: config-schema config-schema-check migrate-config config-record
+.PHONY: prompts prompts-check
 .PHONY: create-admin service-token
 .PHONY: run-weekly run-monthly run-weekly-api run-monthly-api run-status
 
@@ -22,6 +23,7 @@ help:
 	@echo "  config-schema        - config.json の JSON Schema を生成する"
 	@echo "  config-schema-check  - 生成済み JSON Schema が最新かを検査する"
 	@echo "  migrate-config       - xlsx から config.json を初期投入する（既定は dry。ARGS='--apply' で書き込み）"
+	@echo "  config-record        - 手編集した config.json を改訂履歴へ記録する（既定は dry。ARGS='--apply' で記録）"
 	@echo "  prompts              - 使用中のプロンプトを prompts/*.md へ書き出す"
 	@echo "  prompts-check        - コミット済み prompts/*.md が最新かを検査する"
 	@echo ""
@@ -92,6 +94,19 @@ prompts-check:
 
 migrate-config:
 	PYTHONPATH=src uv run python -m adapter.cli.migrate_config $(ARGS)
+
+# === 手編集した config.json を履歴へ記録する（T-47 / 設計書 §6.3）===
+# `config.json` は「ファイルが正」なので、サーバを立てずに手で調整してよい。
+# ただし実行時は `config_revisions` のスナップショットを固定参照する（§6.3）ので、
+# ⚠️ **手で直したら、このコマンドで履歴と監査ログを追いつかせること。**
+#    揃っていないと通し実行が `ConfigPinError` で止まる（止まるのは設計どおり）。
+# ⚠️ **既定は dry（差分と新しい revision 番号の予告だけ）。** 記録するには
+#    ARGS="--apply" を付ける。検証（T-04 / T-05）に落ちたら何も書かない。
+#    差分が無ければ何もしない（冪等）。書き込む中身・履歴・監査ログの形は
+#    管理画面からの保存（PUT /config）と同じ経路を通る。
+
+config-record:
+	PYTHONPATH=src uv run python -m adapter.cli.record_config $(ARGS)
 
 # === 初期セットアップ（認証。T-41）===
 # 自己登録は必ず viewer なので、最初の admin だけは API では作れない。
