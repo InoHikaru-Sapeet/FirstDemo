@@ -596,7 +596,7 @@ def test_a_renamed_target_industry_follows_into_the_prompt(
 ) -> None:
     """⚠️ 業界名を写さず config から取る（admin の変更に追随する）。"""
     raw = copy.deepcopy(initial_raw)
-    raw["tunable_thresholds"]["weekly"]["target_industry"] = "医薬品"
+    raw["tunable_thresholds"]["weekly"]["target_industries"] = ["医薬品"]
     config = IntelligenceConfig.model_validate(raw)
 
     prompt = build_crawl_prompt(WEEKLY_PERIOD, config, collected_at=TODAY)

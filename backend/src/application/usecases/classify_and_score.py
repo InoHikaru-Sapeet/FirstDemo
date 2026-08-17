@@ -715,7 +715,10 @@ def build_classification_prompt(article: RawArticle, config: IntelligenceConfig)
         "- 分からない項目を推測で埋めないこと。候補の中から記事の内容に最も合うものを"
         "選ぶ。",
         "",
-        f"■ 対象業界（顧客関連度の判断基準）: {thresholds.weekly.target_industry}",
+        # ⚠️ 対象業界は**複数ありうる**（T-46 Step 3）。顧客関連度は
+        # 「いずれかの業界に関係するか」で見る（読み手が業界ごとに分かれるため）。
+        "■ 対象業界（顧客関連度の判断基準。いずれかに関係すれば「関係する」）: "
+        + " / ".join(thresholds.weekly.industries),
         "",
         "■ 対象記事",
         article.model_dump_json(indent=2),

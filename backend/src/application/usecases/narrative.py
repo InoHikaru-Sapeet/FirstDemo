@@ -403,12 +403,12 @@ def build_weekly_narrative_prompt(
             "- 記事の取捨選択・点数・掲載順は**すでに決まっている**。触れないこと。",
             "- URL は提示したものをそのまま使う（短縮・言い換えをしない）。",
             "",
-            f"■ 対象業界（読み手の立場）: {weekly.target_industry}",
+            f"■ 対象業界（読み手の立場）: {_industry_label(weekly)}",
             "",
             "■ 今週のポイント",
             f"- {POINT_OF_WEEK_MIN_SENTENCES}〜{POINT_OF_WEEK_MAX_SENTENCES}文で"
             "当週全体を総括する（1要素＝1文。句点で終える）。",
-            f"- {weekly.target_industry}の読み手にとって何が要点かという視点で書く。",
+            f"- {_industry_label(weekly)}の読み手にとって何が要点かという視点で書く。",
             "- 個々の記事の羅列ではなく、今週まとめて何が起きたのかを述べる。",
             "",
             "■ 記事ごとの示唆",
@@ -421,6 +421,15 @@ def build_weekly_narrative_prompt(
             *_weekly_article_lines(records, labels),
         ]
     )
+
+
+def _industry_label(weekly: Any) -> str:
+    """対象業界の提示（複数なら「A・B」）。
+
+    ⚠️ **Step 4 で業界ごとの生成へ変える**（1業界1回の AI 呼び出し）。それまでは
+    全業界を並べて渡す（読み手の立場が混ざるが、生成テキストが欠けるよりはよい）。
+    """
+    return "・".join(weekly.industries)
 
 
 def _weekly_article_lines(

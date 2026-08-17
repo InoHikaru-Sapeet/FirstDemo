@@ -630,9 +630,13 @@
       "additionalProperties": false,
       "description": "週刊メルマガの可変パラメータ（仕様書 §7.2）。",
       "properties": {
-        "target_industry": {
-          "title": "Target Industry",
-          "type": "string"
+        "target_industries": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Target Industries",
+          "type": "array"
         },
         "max_industry_topics": {
           "minimum": 0,
@@ -650,7 +654,7 @@
         }
       },
       "required": [
-        "target_industry",
+        "target_industries",
         "max_industry_topics",
         "max_common_topics",
         "point_of_week_required"

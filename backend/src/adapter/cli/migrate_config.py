@@ -266,7 +266,9 @@ SPEC_TUNABLE_THRESHOLDS: dict[str, Any] = {
     },
     "min_reliability_score_to_publish": 5,
     "weekly": {
-        "target_industry": "不動産",
+        # ⚠️ §5.2 は `target_industry`（単数）。2026-08-17 の PM 要件で複数形へ
+        # （T-46 Step 3。→ §5.2 の改訂は T-38）。初期値は1件。
+        "target_industries": ["不動産"],
         "max_industry_topics": 5,
         "max_common_topics": 6,
         "point_of_week_required": True,

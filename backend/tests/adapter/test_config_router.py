@@ -279,7 +279,7 @@ def test_a_denied_response_carries_no_config_content(
         "min_total_score_to_publish",
         "exclusion_rules",
         "tunable_thresholds",
-        initial_raw["tunable_thresholds"]["weekly"]["target_industry"],  # 不動産
+        initial_raw["tunable_thresholds"]["weekly"]["target_industries"][0],  # 不動産
         initial_raw["enums"]["adoption_class"][0],  # 次回定例で提案
         str(initial_raw["meta"]["revision"]),
     ]
@@ -470,9 +470,11 @@ def test_an_admin_updates_an_editable_parameter(
             ),
         ),
         (
-            {"tunable_thresholds": {"weekly": {"target_industry": "製造"}}},
+            # 対象業界は複数可（T-46 Step 3）。業界の数だけ週刊 HTML が出る。
+            {"tunable_thresholds": {"weekly": {"target_industries": ["製造", "金融"]}}},
             lambda cfg: (
-                cfg["tunable_thresholds"]["weekly"]["target_industry"] == "製造"
+                cfg["tunable_thresholds"]["weekly"]["target_industries"]
+                == ["製造", "金融"]
             ),
         ),
         (
@@ -576,12 +578,29 @@ def test_an_unknown_target_industry_is_rejected(
     login_as(client, Role.ADMIN)
 
     response = put_config(
-        client, {"tunable_thresholds": {"weekly": {"target_industry": "宇宙開発"}}}
+        client,
+        {"tunable_thresholds": {"weekly": {"target_industries": ["宇宙開発"]}}},
     )
 
     assert response.status_code == 422
     codes = [issue["code"] for issue in response.json()["detail"]["issues"]]
     assert codes == ["unknown_industry_reference"]
+
+
+def test_a_duplicated_target_industry_is_rejected(
+    client: TestClient, config: IntelligenceConfig
+) -> None:
+    """⚠️ 業界の数がそのまま生成物の数（T-46 Step 3）。"""
+    login_as(client, Role.ADMIN)
+
+    response = put_config(
+        client,
+        {"tunable_thresholds": {"weekly": {"target_industries": ["不動産", "不動産"]}}},
+    )
+
+    assert response.status_code == 422
+    codes = [issue["code"] for issue in response.json()["detail"]["issues"]]
+    assert codes == ["duplicate_industry_reference"]
 
 
 def test_all_violations_come_back_at_once(
@@ -594,7 +613,7 @@ def test_all_violations_come_back_at_once(
         client,
         {
             "scoring_axes": [{"id": "customer_relevance", "weight": 30}],
-            "tunable_thresholds": {"weekly": {"target_industry": "宇宙開発"}},
+            "tunable_thresholds": {"weekly": {"target_industries": ["宇宙開発"]}},
         },
     )
 

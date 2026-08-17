@@ -62,7 +62,7 @@ def test_the_allow_list_matches_spec_7_2() -> None:
             "exclusion_rules.*.enabled",
             "exclusion_rules.*.severity",
             "information_categories.*.priority",
-            "tunable_thresholds.weekly.target_industry",
+            "tunable_thresholds.weekly.target_industries",
             "tunable_thresholds.weekly.max_industry_topics",
             "tunable_thresholds.weekly.max_common_topics",
             "tunable_thresholds.monthly.target_case_count",

@@ -16,7 +16,7 @@ Pydantic で表現し、同じ定義から JSON Schema（draft 2020-12）を生�
   `tunable_thresholds.*`。admin が管理画面から編集する対象（仕様書 §7.2）。
 
 このモジュールが見るのは **1フィールド単位の構造・型・値域** だけ。
-`Σ weight == 100`・`adoption_class_score_map` の降順整合・`target_industry` の
+`Σ weight == 100`・`adoption_class_score_map` の降順整合・`target_industries` の
 参照整合といったクロスフィールド制約は JSON Schema 単体で表現できないため、
 設計書 §2.1.1 のとおり別モジュール（T-05）が担う。ここで弾かない理由は
 「JSON Schema と1:1で対応する層」に閉じておきたいから。
@@ -241,8 +241,20 @@ class AdoptionClassScoreMap(_StrictModel):
 class WeeklyThresholds(_StrictModel):
     """週刊メルマガの可変パラメータ（仕様書 §7.2）。"""
 
-    # enums.industry のいずれかであること（参照整合）は T-05（設計書 §2.1.1-3）。
-    target_industry: str
+    # ⚠️ **仕様書 §5.2 は `target_industry`（単数の文字列）**。2026-08-17 に
+    # PM 要件として複数業界対応が確定し、**`target_industries`（1件以上のリスト）**
+    # へ変えた（T-46 Step 3。→ §5.2・§9.2 の改訂は T-38）。週刊は業界ごとに1通
+    # 出す（`weekly_..._{industry}_{period}.html`）ので、**業界の数がそのまま
+    # 生成物の数**になる。
+    #
+    # **既定値は置かない。** 鍵が無い config を黙って `["不動産"]` として読むと、
+    # 移行し忘れた環境が「なぜかその業界版だけ出る」状態で動き続ける
+    # （`monthly_lookback_months` に既定を置いたのとは事情が違う——あちらは
+    # **新しい鍵**で、既存ファイルをそのまま読ませる必要があった。こちらは
+    # **鍵の入れ替え**なので、古い鍵は `extra="forbid"` で必ず落ちる）。
+    #
+    # 各要素が enums.industry に実在すること・重複が無いことは T-05（§2.1.1-3）。
+    target_industries: list[str] = Field(min_length=1)
     max_industry_topics: int = Field(ge=0)
     max_common_topics: int = Field(ge=0)
     point_of_week_required: bool
@@ -252,10 +264,10 @@ class WeeklyThresholds(_StrictModel):
         """対象業界（**必ず1件以上**）。
 
         収集の重点（T-16 / T-46）・顧客関連度の採点（T-19）・生成テキスト（T-44）・
-        描画（T-24）が参照する読み出し口を**1つ**にしてある。フィールドの形
-        （単数 / 複数）が変わっても、参照側はここだけを見ていれば追随できる。
+        描画（T-24）が参照する読み出し口を**1つ**にしてある。参照側はここだけを
+        見ていればよい（フィールドを直接読むと、形が変わるたびに全員が変わる）。
         """
-        return (self.target_industry,)
+        return tuple(self.target_industries)
 
 
 class MonthlyThresholds(_StrictModel):

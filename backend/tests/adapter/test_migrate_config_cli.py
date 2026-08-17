@@ -229,7 +229,7 @@ def test_the_thresholds_come_from_the_spec_initial_values() -> None:
         "share_only": 60,
     }
     assert thresholds["min_reliability_score_to_publish"] == 5
-    assert thresholds["weekly"]["target_industry"] == "不動産"
+    assert thresholds["weekly"]["target_industries"] == ["不動産"]
     assert thresholds["monthly"]["target_case_count"] == 15
     assert thresholds["dedup"]["title_similarity_threshold"] == 0.85
 

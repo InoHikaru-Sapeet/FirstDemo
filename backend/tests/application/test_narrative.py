@@ -284,7 +284,8 @@ async def test_the_prompt_carries_the_target_industry_and_every_url(
     )
 
     prompt = client.prompts[0]
-    assert config.tunable_thresholds.weekly.target_industry in prompt
+    for industry in config.tunable_thresholds.weekly.industries:
+        assert industry in prompt
     assert URL_A in prompt and URL_B in prompt
     assert "自社ではどう捉えるか" in prompt
 

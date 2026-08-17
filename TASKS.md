@@ -927,6 +927,14 @@ flowchart TD
   - 月次は **事例昇格の内訳**（`monthly case selection`：`enterprise_ai_case` 該当 / `>=min_score_for_case(N)` / `dropped_by_target_case_count(N)` / `promoted`）を INFO で出す。⚠️ **内訳を数える場所を判定と同じ関数にした**（`select_cases()` が `CaseSelection` を返し、既存の `select_case_candidates()` はその位置だけを取る薄い口になった）。別関数で数え直すと**昇格条件の写しが2つ**でき、片方だけ変わったときに診断が嘘をつく。
   - **事例0件の WARNING は維持**（内訳の INFO を足しただけ）。`test_the_zero_case_warning_survives_the_breakdown_log` が両方出ることを固定している。
   - テスト filter 52件（+8）。`make test` 全体 **1782件**。
+- **備考（Step 3 実績 2026-08-17）**: `tunable_thresholds.weekly.target_industry`（`str`）→ **`target_industries`（`list[str]`・`min_length=1`）**。⚠️ **仕様書 §5.2 の確定値に対する差分**（PM 要件として確認済み。→ T-38 に改訂項目を記録済み）。
+  - ⚠️ **モデルに既定値を置かなかった。** 鍵が無い config を黙って `["不動産"]` として読むと、移行し忘れた環境が「なぜかその業界版だけ出る」状態で動き続ける。`monthly_lookback_months`（既定 3）とは事情が違う——あちらは**新しい鍵**なので既存ファイルをそのまま読ませる必要があったが、こちらは**鍵の入れ替え**で、古い鍵は `extra="forbid"` が必ず落とす（＝移行漏れは起動時に分かる）。
+  - **既存 `artifacts/config.json` の移行手順**（`artifacts/` は `.gitignore` 対象＝環境ごとの実データなので**コードでは移行しない**）：`"target_industry": "不動産"` の行を **`"target_industries": ["不動産"]`** に手で書き換える（複数にするならここへ業界名を足す）。書き換えずに実行すると `ConfigRepository.load()` が `target_industry` を未知キーとして落とす（黙って既定へ倒れない）。**revision は上げなくてよい**（鍵の形の移行であって基準の変更ではない）。管理画面から変えるなら `PUT /config` の patch に `{"tunable_thresholds":{"weekly":{"target_industries":[...]}}}` を送る（T-13 の許可リストを更新済み）。
+  - **参照側は `WeeklyThresholds.industries`（タプル）だけを見る**（Step 1 で足した読み出し口）。crawl・分類採点・生成テキストはこの1箇所の変更で複数業界に追随した。
+  - **検証は T-05 に置いた**（モデルは件数だけ）：**各要素が `enums.industry` に実在**（違反した要素の索引を path に載せる＝フォームの欄へ対応づけられる）と、**重複禁止**（新コード `duplicate_industry_reference`）。重複を落とすのは**業界の数がそのまま生成物の数**だから（同じ HTML を2回書くと退避の世代を無駄に消費し、2回目が1回目を上書きする）。
+  - **レンダラは「どの業界版か」を引数で受け取る**（`resolve_industry()`）。⚠️ **config に無い業界を指定したら `WeeklyRenderError`**（誰も選んでいない業界版を出さない）。**指定が無いときは先頭を描くが、対象業界が2件以上なら WARNING を出す**（黙って残りの業界版を落とさない）。業界数ぶん回すのは呼び出し側の責務で、**その配線は Step 4**。
+  - 分類・採点のプロンプトは「対象業界（顧客関連度の判断基準。**いずれかに関係すれば**「関係する」）: 不動産 / 金融」の形にした（読み手が業界ごとに分かれるため）。生成テキストのプロンプトは Step 4 で業界ごとの生成に変える。
+  - `schemas/config.schema.json` を再生成（`make config-schema`）。逐語データ（`tests/enterprise/data/config_initial.json`）・T-14 の生成初期値・T-05 の初期値表・T-13 の編集許可リストも更新。テスト +4（対象業界の索引つき違反 / 重複 / 複数業界 / 業界版ごとの描画ほか）。`make test` 全体 **1791件**。
 - **備考（判断）**:
   - **仕様書の確定値を変えるのは Step 3 の `target_industries` だけ**（PM 要件として 2026-08-17 に確認済み）。しきい値（`min_score_for_case` 等）の初期値は**動かさない**——実行時 config で調整できる項目を仕様側で動かすと、キャリブレーションの履歴が config の revision 履歴から消える
   - **xlsx 22列 / 8列は変更しない**（§8.1・§8.2 の確定値）。診断は**ログ**で行う
@@ -1268,6 +1276,12 @@ flowchart TD
     - §13.2 の「収集範囲の観点」に、**7カテゴリの網羅を維持したうえで対象業界（`tunable_thresholds.weekly.target_industries`）に直接関わる記事を必ず含める**という段落を追加する。⚠️ **絞り込みではない**ことを本文に明記する（絞ると業界タグの確定＝T-19・除外＝T-17 の材料が消える）
     - §13.2 の月次の重心「先進企業の具体的活用事例」に、**導入した企業（ユーザー企業）側の事例**であること／**ベンダーの製品・モデル・機能の発表そのものは活用事例として数えない**ことを追記する
     - 実装は `application/usecases/crawl.py` の `INDUSTRY_FOCUS_*` / `INDUSTRY_NOT_A_FILTER_NOTICE` / `MONTHLY_EMPHASIS`（**`PROMPT_VERSION` は 0.1.0 → 0.2.0**）
+  - ⚠️ **仕様書 §5.2 の `tunable_thresholds.weekly.target_industry`（単数）を `target_industries`（1件以上のリスト）へ改訂する**（2026-08-17 の PM 要件＝T-46 Step 3。**確定値の変更**）。同時に直す箇所：
+    - 仕様書 §7.2 の表「週刊：対象業界 `tunable_thresholds.weekly.target_industry` / enum選択(industry)」→ **複数選択**（`target_industries`）
+    - 仕様書 §9.2-1「業界名は `config.weekly.target_industry` から」・§9.3「`業界` に `target_industry` を含む」→ **その号の業界**（週刊は業界ごとに1通出す）
+    - 仕様書 §13.1 の YAML 例・§13.4.1 の `{{target_industry}}` → **業界ごとに1回展開する**書き方へ（出力は業界数ぶん）
+    - 設計書 §2.1 の JSON Schema 抜粋（`weekly.required` / `target_industry`）と §2.1.1-3「`weekly.target_industry ∈ enums.industry`」→ **各要素の参照整合＋重複禁止**へ
+    - 実装は `enterprise/entities/config.py`（`target_industries` / 読み出し口 `WeeklyThresholds.industries`）・`config_validation.py`（`check_target_industries_reference` と新コード `duplicate_industry_reference`）・`adapter/html/weekly_renderer.py`（`resolve_industry()`）
   - ⚠️ **仕様書 §5.2 の確定 JSON に `tunable_thresholds.dedup.monthly_lookback_months`（既定 3）を追記する**（2026-08-16 の決定2＝要確認事項 #11）。あわせて **§11.1 の「直近数ヶ月」をこの鍵の参照へ書き換え**、§7.2 の「重複判定パラメータ `dedup.*`」がこの鍵を含むことを確認する
   - ⚠️ **設計書 §3.3 の `PUT /config` リクエスト例を直す**（T-11 で判明）：例は `min_total_score_to_publish` を 62 にしているが、§5.2 の `share_only` が 60 なので **§2.1.1-2 の降順整合（`share_only ≥ min_total_score_to_publish`）に違反し、実装は 422 を返す**。値を下げるか、`adoption_class_score_map` も併せて上げる例に差し替える
   - **認証まわりの運用手順**を README に明記：初回セットアップ（`make migrate-all` → `make create-admin` → ログイン）／ユーザーの昇格手順／サービストークンの設定

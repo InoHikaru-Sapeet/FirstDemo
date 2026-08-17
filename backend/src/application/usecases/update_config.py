@@ -71,8 +71,9 @@ EDITABLE_PATHS: frozenset[str] = frozenset(
         "exclusion_rules.*.severity",
         # カテゴリ優先度
         "information_categories.*.priority",
-        # 週刊：対象業界（参照整合は T-05）・トピック上限
-        "tunable_thresholds.weekly.target_industry",
+        # 週刊：対象業界（**複数可**。参照整合・重複禁止は T-05）・トピック上限
+        # ⚠️ 業界の数がそのまま週刊 HTML の本数になる（T-46 Step 3/4）。
+        "tunable_thresholds.weekly.target_industries",
         "tunable_thresholds.weekly.max_industry_topics",
         "tunable_thresholds.weekly.max_common_topics",
         # 月刊：目標事例数・章数

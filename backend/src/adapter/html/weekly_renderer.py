@@ -12,10 +12,10 @@
 
 | HTML | 中間xlsx / config |
 |---|---|
-| ヘッダ「〈業界〉版」 | `config.weekly.target_industry` |
+| ヘッダ「〈業界〉版」 | 描画する業界（`config.weekly.target_industries` のどれか） |
 | ヘッダ「対象週」 | シート名（`YYYY-Www`） |
 | 今週のポイント | （生成テキスト → `WeeklyNarrative`） |
-| 業界関連トピック | 列19「業界」に `target_industry` を含む記事 |
+| 業界関連トピック | 列19「業界」に**その業界**を含む記事 |
 | 業界共通トピック | それ以外（「業界横断」等） |
 | ├ カテゴリラベル | 列2「情報カテゴリ」→ §7.2 の色 ＋ config のラベル |
 | ├ タイトル | 列3「タイトル」＋列22「URL」 |
@@ -188,6 +188,49 @@ class WeeklyNarrative:
         return text.strip() if text and text.strip() else None
 
 
+# --- 描画する業界（§9.2-1・§9.2-3）-------------------------------------------
+
+
+def resolve_industry(config: IntelligenceConfig, industry: str | None = None) -> str:
+    """この HTML が「どの業界版」かを1つ決める（T-46 Step 3）。
+
+    週刊は**業界ごとに1通**（`weekly_..._{industry}_{period}.html`）なので、
+    1回の描画で扱う業界は必ず1つ。config が複数業界を持つときに**どれを描くか
+    決めるのは呼び出し側**（業界数ぶん回すのは run_pipeline / T-26 の仕事）。
+
+    Args:
+        config: 実行時 config（固定参照済み）
+        industry: 描画する業界。`None` なら config の**先頭**
+
+    Returns:
+        描画する業界名
+
+    Raises:
+        WeeklyRenderError: config の対象業界に無い業界を指定された場合
+            （誰も選んでいない業界版を出さない）
+    """
+    industries = config.tunable_thresholds.weekly.industries
+    if industry is None:
+        if len(industries) > 1:
+            # ⚠️ 黙って先頭だけを描かない（残りの業界版が出ていないことに
+            # 気づけるように）。業界数ぶん回すのは呼び出し側の責務。
+            logger.warning(
+                "対象業界が %d 件ありますが、業界の指定が無いので先頭（%s）だけを"
+                "描画します: %s",
+                len(industries),
+                industries[0],
+                " / ".join(industries),
+            )
+        return industries[0]
+
+    if industry not in industries:
+        raise WeeklyRenderError(
+            f"config の対象業界に無い業界です: {industry!r}"
+            f"（対象業界: {' / '.join(industries)}）"
+        )
+    return industry
+
+
 # --- 採用条件と業界振り分け（§9.3）-------------------------------------------
 
 
@@ -253,18 +296,24 @@ def industries_of(record: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def select_articles(
-    articles: Sequence[Mapping[str, Any]], config: IntelligenceConfig
+    articles: Sequence[Mapping[str, Any]],
+    config: IntelligenceConfig,
+    *,
+    industry: str | None = None,
 ) -> WeeklySelection:
     """採用条件・業界振り分け・上限・並び順を決める（§9.3・§7.3）。
 
     Args:
         articles: 当週シートの行（列名 → 値）
         config: 実行時 config（固定参照済み）
+        industry: どの業界版として振り分けるか。`None` なら `resolve_industry()`
+            が config から決める
 
     Returns:
         業界関連／業界共通に振り分けた結果
     """
     weekly = config.tunable_thresholds.weekly
+    target = resolve_industry(config, industry)
 
     adopted = [record for record in articles if is_adopted(record, config)]
     untitled = 0
@@ -285,7 +334,7 @@ def select_articles(
                 record.get(COLUMN_URL),
             )
             continue
-        if weekly.target_industry in industries_of(record):
+        if target in industries_of(record):
             industry_topics.append(record)
         else:
             common_topics.append(record)
@@ -541,6 +590,7 @@ def render_weekly_html(
     articles: Sequence[Mapping[str, Any]],
     config: IntelligenceConfig,
     narrative: WeeklyNarrative | None = None,
+    industry: str | None = None,
 ) -> str:
     """当週シートから週刊メルマガ HTML を組み立てる（**AI を呼ばない**）。
 
@@ -549,6 +599,7 @@ def render_weekly_html(
         articles: 当週シートの行（列名 → 値。T-22 の `read_weekly()`）
         config: 実行時 config（固定参照済み）
         narrative: 生成テキスト。`None` なら空（生成テキスト無しで描画）
+        industry: **どの業界版か**（`None` なら config の先頭。`resolve_industry()`）
 
     Returns:
         HTML 文字列（UTF-8 で書き出す前提）
@@ -558,7 +609,11 @@ def render_weekly_html(
             なのに今週のポイントが空／生成物が §7.1 の制約に反する
     """
     markup, _ = _render(
-        period=period, articles=articles, config=config, narrative=narrative
+        period=period,
+        articles=articles,
+        config=config,
+        narrative=narrative,
+        industry=industry,
     )
     return markup
 
@@ -569,12 +624,13 @@ def _render(
     articles: Sequence[Mapping[str, Any]],
     config: IntelligenceConfig,
     narrative: WeeklyNarrative | None,
+    industry: str | None,
 ) -> tuple[str, WeeklySelection]:
     """組み立て本体。**選別を2度走らせない**ため書き出し側もこれを使う。"""
     parsed = _parse_weekly(period)
     narrative = narrative or WeeklyNarrative()
     weekly = config.tunable_thresholds.weekly
-    industry = weekly.target_industry
+    industry = resolve_industry(config, industry)
 
     point_of_week = (narrative.point_of_week or "").strip()
     if weekly.point_of_week_required and not point_of_week:
@@ -583,7 +639,7 @@ def _render(
             "生成テキストは filter 側が作って `WeeklyNarrative` で渡してください"
         )
 
-    selection = select_articles(articles, config)
+    selection = select_articles(articles, config, industry=industry)
     if selection.rendered == 0:
         logger.warning(
             "カードになる記事がありません（period=%s・採用 %d 件）",
@@ -701,6 +757,7 @@ class WeeklyRenderer:
         articles=ReportStore(store).read_weekly("2026-W31"),
         config=pinned_config,
         narrative=narrative,
+        industry="不動産",          # ← 対象業界が複数なら業界ごとに1回ずつ
         revision=pinned_config.meta.revision,
         run_id=run_id,
     )
@@ -720,22 +777,31 @@ class WeeklyRenderer:
         articles: Sequence[Mapping[str, Any]],
         config: IntelligenceConfig,
         narrative: WeeklyNarrative | None = None,
+        industry: str | None = None,
         revision: int,
         run_id: str,
     ) -> RenderedHtml:
         """組み立てて `weekly_ai_intelligence_newsletter_{industry}_{period}.html` へ。
 
+        ⚠️ **1回の呼び出しで書くのは1業界ぶん**（正規名に業界が入る）。対象業界が
+        複数ある config では**業界ごとに呼ぶ**（回すのは呼び出し側＝run_pipeline /
+        T-26。`resolve_industry()`）。
+
         ⚠️ **退避が先**（設計判断B。T-22 の `_save()` と同じ順序）。上書き後に
         退避すると、退避されるのは新しい内容になる。
 
         Raises:
-            WeeklyRenderError: 組み立てられない入力
+            WeeklyRenderError: 組み立てられない入力／config に無い業界の指定
             ArtifactStoreError: industry / period をファイル名へ埋め込めない
         """
+        industry = resolve_industry(config, industry)
         markup, selection = _render(
-            period=period, articles=articles, config=config, narrative=narrative
+            period=period,
+            articles=articles,
+            config=config,
+            narrative=narrative,
+            industry=industry,
         )
-        industry = config.tunable_thresholds.weekly.target_industry
         path = self._store.weekly_html_path(industry, period)
         archived = self._store.archive(
             path, period=period, revision=revision, run_id=run_id
@@ -763,6 +829,7 @@ __all__ = [
     "WeeklySelection",
     "category_labels",
     "industries_of",
+    "resolve_industry",
     "is_adopted",
     "render_weekly_html",
     "select_articles",

@@ -31,7 +31,7 @@ from enterprise.entities.config_validation import (
     ConfigValidationError,
     check_adoption_threshold_order,
     check_fixed_identities,
-    check_target_industry_reference,
+    check_target_industries_reference,
     check_value_source_references,
     check_weight_sum,
     ensure_valid_config,
@@ -215,20 +215,51 @@ def test_equal_thresholds_satisfy_the_descending_order(
     assert check_adoption_threshold_order(config) == []
 
 
-# --- §2.1.1-3: weekly.target_industry ∈ enums.industry ----------------------
+# --- §2.1.1-3: weekly.target_industries[*] ∈ enums.industry -----------------
 
 
 def test_target_industry_outside_the_enum_is_rejected(
     config: IntelligenceConfig,
 ) -> None:
-    config.tunable_thresholds.weekly.target_industry = "存在しない業界"
+    config.tunable_thresholds.weekly.target_industries = ["存在しない業界"]
 
-    issues = check_target_industry_reference(config)
+    issues = check_target_industries_reference(config)
 
-    assert _paths(issues) == ["tunable_thresholds.weekly.target_industry"]
+    assert _paths(issues) == ["tunable_thresholds.weekly.target_industries.0"]
     assert _codes(issues) == [ConfigIssueCode.UNKNOWN_INDUSTRY_REFERENCE]
     assert "存在しない業界" in issues[0].reason
     # 選べる値を示して直せるようにする
+    assert "不動産" in issues[0].reason
+
+
+def test_each_unknown_industry_is_reported_with_its_index(
+    config: IntelligenceConfig,
+) -> None:
+    """T-46 Step 3：違反した要素だけをフォームの欄へ対応づけられること。"""
+    config.tunable_thresholds.weekly.target_industries = [
+        "不動産",
+        "存在しない業界",
+        "宇宙開発",
+    ]
+
+    issues = check_target_industries_reference(config)
+
+    assert _paths(issues) == [
+        "tunable_thresholds.weekly.target_industries.1",
+        "tunable_thresholds.weekly.target_industries.2",
+    ]
+
+
+def test_a_duplicated_target_industry_is_rejected(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ 業界の数がそのまま生成物の数（同じ HTML を2回書かせない）。"""
+    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融", "不動産"]
+
+    issues = check_target_industries_reference(config)
+
+    assert _paths(issues) == ["tunable_thresholds.weekly.target_industries"]
+    assert _codes(issues) == [ConfigIssueCode.DUPLICATE_INDUSTRY_REFERENCE]
     assert "不動産" in issues[0].reason
 
 
@@ -237,9 +268,16 @@ def test_any_industry_in_the_enum_is_accepted(
     config: IntelligenceConfig, industry: str
 ) -> None:
     """対象業界は可変（仕様書 §7.2「週刊：対象業界」）。"""
-    config.tunable_thresholds.weekly.target_industry = industry
+    config.tunable_thresholds.weekly.target_industries = [industry]
 
-    assert check_target_industry_reference(config) == []
+    assert check_target_industries_reference(config) == []
+
+
+def test_several_industries_are_accepted(config: IntelligenceConfig) -> None:
+    """複数業界（2026-08-17 の PM 要件。T-46 Step 3）。"""
+    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融", "製造"]
+
+    assert check_target_industries_reference(config) == []
 
 
 def test_reference_integrity_follows_the_enum_not_a_hardcoded_list(
@@ -247,9 +285,9 @@ def test_reference_integrity_follows_the_enum_not_a_hardcoded_list(
 ) -> None:
     """enums.industry に足せばその業界も選べる（参照整合であること）。"""
     config.enums.industry = [*config.enums.industry, "建設"]
-    config.tunable_thresholds.weekly.target_industry = "建設"
+    config.tunable_thresholds.weekly.target_industries = ["建設"]
 
-    assert check_target_industry_reference(config) == []
+    assert check_target_industries_reference(config) == []
 
 
 # --- §2.1.1-4: value_source の参照先 enum が実在 -----------------------------
@@ -445,8 +483,10 @@ def test_initial_constants_agree_with_the_confirmed_config(
             lambda c: setattr(c.tunable_thresholds, "min_total_score_to_publish", 62),
         ),
         (
-            "tunable_thresholds.weekly.target_industry",
-            lambda c: setattr(c.tunable_thresholds.weekly, "target_industry", "金融"),
+            "tunable_thresholds.weekly.target_industries",
+            lambda c: setattr(
+                c.tunable_thresholds.weekly, "target_industries", ["金融"]
+            ),
         ),
         (
             "tunable_thresholds.dedup.title_similarity_threshold",
@@ -505,7 +545,7 @@ def test_all_violations_across_rules_are_returned_together(
     """1回の保存で複数の違反をまとめて直せること（T-34 の表示要件）。"""
     config.scoring_axes[0].weight = 30
     config.tunable_thresholds.adoption_class_score_map.reference_info = 90
-    config.tunable_thresholds.weekly.target_industry = "存在しない業界"
+    config.tunable_thresholds.weekly.target_industries = ["存在しない業界"]
     config.required_tags[2].value_source = "enums.sector"
     config.exclusion_rules[0], config.exclusion_rules[1] = (
         config.exclusion_rules[1],

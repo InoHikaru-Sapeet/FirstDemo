@@ -3,7 +3,7 @@
 重点（§7.3 のマッピング表の各行）:
 
 - **採用条件**（`採用区分 ≠ 不採用` かつ `合計スコア ≥ min_total_score_to_publish`）
-- **業界振り分け**（`業界` に `target_industry` を含む → 業界関連／それ以外 → 共通）
+- **業界振り分け**（`業界` に描画対象の業界を含む → 業界関連／それ以外 → 共通）
 - **上限件数**（`max_industry_topics` / `max_common_topics`）と**合計スコア降順**
 - カード5要素（カテゴリラベルの色／タイトル `<a>`／一言要約／示唆ボックス／出典行）
 - **§7.1 の禁止事項が出力に混ざらない**（T-23 の lint を通す）
@@ -293,13 +293,71 @@ def test_the_header_carries_the_brand_industry_and_week(
 def test_the_industry_name_comes_from_config_not_a_literal(
     config: IntelligenceConfig,
 ) -> None:
-    config.tunable_thresholds.weekly.target_industry = "金融"
+    config.tunable_thresholds.weekly.target_industries = ["金融"]
 
     markup = render([article(title="地銀のAI活用", industries=("金融",))], config)
 
     assert "金融 版" in markup
     assert "金融関連トピック" in markup
     assert "不動産" not in markup
+
+
+def test_each_target_industry_gets_its_own_edition(
+    config: IntelligenceConfig,
+) -> None:
+    """T-46 Step 3：週刊は**業界ごとに1通**（どの業界版かは呼び出し側が決める）。
+
+    同じ当週シートから、業界の指定だけを変えて別の号が出る。振り分けもその業界で
+    行う（他方の業界の記事は「業界共通トピック」へ回る）。
+    """
+    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融"]
+    articles = [
+        article(title="大手不動産のAI活用", industries=("不動産",)),
+        article(
+            title="地銀のAI活用", url="https://example.com/news/2", industries=("金融",)
+        ),
+    ]
+
+    for industry, other in (("不動産", "金融"), ("金融", "不動産")):
+        markup = render_weekly_html(
+            period=PERIOD,
+            articles=articles,
+            config=config,
+            narrative=WeeklyNarrative(point_of_week="今週の総括。"),
+            industry=industry,
+        )
+
+        assert f"{industry} 版" in markup
+        assert INDUSTRY_SECTION_FORMAT.format(industry=industry) in markup
+        assert INDUSTRY_SECTION_FORMAT.format(industry=other) not in markup
+        assert COMMON_SECTION_HEADING in markup  # もう一方の業界の記事はこちら
+
+
+def test_an_industry_outside_the_config_is_rejected(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ 誰も選んでいない業界版を出さない（正規名に業界が入る）。"""
+    with pytest.raises(WeeklyRenderError, match="対象業界"):
+        render_weekly_html(
+            period=PERIOD,
+            articles=[article()],
+            config=config,
+            narrative=WeeklyNarrative(point_of_week="今週の総括。"),
+            industry="金融",
+        )
+
+
+def test_rendering_without_an_industry_warns_when_several_are_configured(
+    config: IntelligenceConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """指定が無ければ先頭を描くが、**黙って**残りを落とさない。"""
+    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融"]
+
+    with caplog.at_level("WARNING"):
+        markup = render([article()], config)
+
+    assert "不動産 版" in markup
+    assert any("先頭" in record.getMessage() for record in caplog.records)
 
 
 def test_the_footer_states_it_is_not_advice(config: IntelligenceConfig) -> None:

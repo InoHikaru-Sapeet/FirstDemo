@@ -52,6 +52,8 @@ class ConfigIssueCode(StrEnum):
     WEIGHT_SUM_MISMATCH = "weight_sum_mismatch"
     ADOPTION_THRESHOLD_ORDER = "adoption_threshold_order"
     UNKNOWN_INDUSTRY_REFERENCE = "unknown_industry_reference"
+    # ⚠️ 対象業界（複数可）に同じ業界が2回並んでいる（T-46 Step 3）。
+    DUPLICATE_INDUSTRY_REFERENCE = "duplicate_industry_reference"
     UNKNOWN_ENUM_REFERENCE = "unknown_enum_reference"
     FIXED_ID_CHANGED = "fixed_id_changed"
     INITIAL_VALUE_MISMATCH = "initial_value_mismatch"
@@ -145,7 +147,9 @@ INITIAL_TUNABLE_THRESHOLDS: dict[str, Any] = {
     "tunable_thresholds.adoption_class_score_map.reference_info": 70,
     "tunable_thresholds.adoption_class_score_map.share_only": 60,
     "tunable_thresholds.min_reliability_score_to_publish": 5,
-    "tunable_thresholds.weekly.target_industry": "不動産",
+    # ⚠️ **§5.2 は `target_industry`（単数）**。2026-08-17 の PM 要件で複数形へ
+    # 変えた（T-46 Step 3。→ §5.2 の改訂は T-38）。初期値は1件。
+    "tunable_thresholds.weekly.target_industries": ["不動産"],
     "tunable_thresholds.weekly.max_industry_topics": 5,
     "tunable_thresholds.weekly.max_common_topics": 6,
     "tunable_thresholds.weekly.point_of_week_required": True,
@@ -176,7 +180,7 @@ _ADOPTION_ORDER_TEXT = " ≥ ".join(label for _, label in _ADOPTION_THRESHOLD_CH
 
 
 def _attr(root: object, path: str) -> Any:
-    """`tunable_thresholds.weekly.target_industry` のようなドット区切りで値を引く。"""
+    """`tunable_thresholds.weekly.max_common_topics` のようなドット区切りで引く。"""
     value: Any = root
     for name in path.split("."):
         value = getattr(value, name)
@@ -243,29 +247,57 @@ def check_adoption_threshold_order(config: IntelligenceConfig) -> list[ConfigIss
     return issues
 
 
-# --- §2.1.1-3: weekly.target_industry ∈ enums.industry ----------------------
+# --- §2.1.1-3: weekly.target_industries[*] ∈ enums.industry -----------------
+
+TARGET_INDUSTRIES_PATH = "tunable_thresholds.weekly.target_industries"
 
 
-def check_target_industry_reference(config: IntelligenceConfig) -> list[ConfigIssue]:
-    """週刊メルマガの対象業界が `enums.industry` に実在するか（参照整合）。
+def check_target_industries_reference(config: IntelligenceConfig) -> list[ConfigIssue]:
+    """週刊メルマガの対象業界（複数可）を検証する（参照整合と重複）。
 
-    `target_industry` は出力ファイル名にも入る（`weekly_..._{industry}_{period}.html`）
+    ⚠️ **対象業界は出力ファイル名に入る**（`weekly_..._{industry}_{period}.html`）
     ので、enum 外の値を通すとレンダラ（T-24）が誰も選べない業界版を出してしまう。
-    """
-    industry = config.tunable_thresholds.weekly.target_industry
-    if industry in config.enums.industry:
-        return []
 
-    return [
+    ⚠️ **重複も落とす**（T-46 Step 3）。業界の数がそのまま生成物の数なので、
+    同じ業界が2回並ぶと**同じファイルを2回書く**（＝退避の世代を無駄に消費し、
+    2回目が1回目を上書きする）。件数が1以上であることはモデル（T-04）が持つ。
+
+    違反は要素ごとに1件返す（フォームの該当欄へ対応づけられるよう、path に索引を
+    付ける）。重複はどの1件が悪いとも言えないのでセクションの path に置く。
+    """
+    industries = config.tunable_thresholds.weekly.target_industries
+
+    issues = [
         ConfigIssue(
-            path="tunable_thresholds.weekly.target_industry",
+            path=f"{TARGET_INDUSTRIES_PATH}.{index}",
             reason=(
                 f"enums.industry に存在しない業界 {industry!r}。"
                 f"選択できるのは: {' / '.join(config.enums.industry)}"
             ),
             code=ConfigIssueCode.UNKNOWN_INDUSTRY_REFERENCE,
         )
+        for index, industry in enumerate(industries)
+        if industry not in config.enums.industry
     ]
+
+    duplicated = [
+        industry
+        for industry in dict.fromkeys(industries)
+        if industries.count(industry) > 1
+    ]
+    if duplicated:
+        issues.append(
+            ConfigIssue(
+                path=TARGET_INDUSTRIES_PATH,
+                reason=(
+                    f"同じ業界が複数回指定されている（{'、'.join(duplicated)}）。"
+                    "業界ごとに1通の週刊メルマガを出すので、"
+                    "重複すると同じファイルを2回書くことになる"
+                ),
+                code=ConfigIssueCode.DUPLICATE_INDUSTRY_REFERENCE,
+            )
+        )
+    return issues
 
 
 # --- §2.1.1-4: required_tags[*].value_source の参照先 enum が実在 -----------
@@ -488,7 +520,7 @@ def validate_config(config: IntelligenceConfig) -> list[ConfigIssue]:
     return [
         *check_weight_sum(config),
         *check_adoption_threshold_order(config),
-        *check_target_industry_reference(config),
+        *check_target_industries_reference(config),
         *check_value_source_references(config),
         *check_fixed_identities(config),
     ]
