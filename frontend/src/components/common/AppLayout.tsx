@@ -1,4 +1,5 @@
 import { Link, Outlet } from "react-router";
+import { AdminNavLink } from "@/components/common/AdminNavLink";
 import { LogoutButton } from "@/components/common/LogoutButton";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 
@@ -13,8 +14,8 @@ const ROLE_LABELS = {
 /**
  * ログイン済みの画面の外枠（ナビ＋利用者表示＋ログアウト）。
  *
- * ナビの出し分け（「判断基準（管理者）」を admin のみに出す）は T-32 の担当。
- * ここでは T-43 の範囲として**ログアウト導線と現在のロール表示**までを置く。
+ * ナビの出し分け（「判断基準（管理者）」を admin のみに出す）は `AdminNavLink`
+ * （T-32）が持つ。⚠️ **非表示は補助**で、アクセス制御の実体はサーバーの 403。
  */
 export function AppLayout() {
 	const { user } = useCurrentUser();
@@ -23,9 +24,8 @@ export function AppLayout() {
 		<div className="min-h-screen">
 			<nav className="flex items-center gap-4 border-b p-4 text-sm">
 				<Link to="/">レポート一覧</Link>
-				{/* admin以外にはサーバ側でも403（設計書§5.1・§7.1）。
-				    リンク自体を admin のみに出すのは T-32。 */}
-				<Link to="/admin/config">判断基準（管理者）</Link>
+				{/* admin 以外にはリンクを出さない（実体はサーバー側 403。§6.1・§6.2）。 */}
+				<AdminNavLink />
 				<div className="ml-auto flex items-center gap-3">
 					{user !== null && (
 						<span className="text-muted-foreground">
