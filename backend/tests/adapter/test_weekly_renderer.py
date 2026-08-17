@@ -23,18 +23,23 @@ import pytest
 from adapter.html import mail_html
 from adapter.html.category_colors import CATEGORY_COLORS
 from adapter.html.weekly_renderer import (
+    BADGE_TEXT,
     BRAND_TITLE,
     COMMON_SECTION_HEADING,
+    ELLIPSIS,
     FOOTER_NOTE,
     INDUSTRY_SECTION_FORMAT,
+    INSIGHTS_PER_SECTION,
     NOT_ADOPTED,
     POINT_OF_WEEK_HEADING,
     REFERENCED_COLUMNS,
+    SUMMARY_MAX_FULLWIDTH_CHARS,
     WeeklyNarrative,
     WeeklyRenderer,
     WeeklyRenderError,
     industries_of,
     is_adopted,
+    one_line_summary,
     render_weekly_html,
     select_articles,
 )
@@ -381,10 +386,27 @@ def test_the_outer_frame_is_centered_at_680px(config: IntelligenceConfig) -> Non
 def test_a_card_shows_the_category_label_in_its_mapped_color(
     config: IntelligenceConfig,
 ) -> None:
+    """T-48 Step 1 で**バッジ（背景に色）**になった。色の値は §7.2 のまま。"""
     markup = render([article(category="ai_governance_risk")], config)
 
     assert "AIガバナンス・法規制・リスク" in markup  # ラベルは config が正
-    assert f"color:{CATEGORY_COLORS['ai_governance_risk']}" in markup
+    assert f"background-color:{CATEGORY_COLORS['ai_governance_risk']}" in markup
+
+
+def test_the_category_badge_is_a_filled_chip_not_colored_text(
+    config: IntelligenceConfig,
+) -> None:
+    """バッジは色を**背景**に敷いて白抜き（T-48 Step 1）。
+
+    ⚠️ `background-color:#dc2626` は `color:#dc2626` を部分文字列として含むので、
+    「色つき文字のまま」との違いを固定するには文字色まで見る必要がある。
+    """
+    color = CATEGORY_COLORS["ai_governance_risk"]
+    markup = render([article(category="ai_governance_risk")], config)
+
+    assert f"background-color:{color};border-radius:3px" in markup
+    assert f"font-weight:bold;color:{color};letter-spacing" not in markup
+    assert f"color:{BADGE_TEXT}" in markup
 
 
 def test_a_card_links_the_title_to_the_url_column(config: IntelligenceConfig) -> None:
@@ -397,6 +419,50 @@ def test_a_card_shows_the_one_line_summary(config: IntelligenceConfig) -> None:
     markup = render([article(summary="要約テキスト。")], config)
 
     assert "要約テキスト。" in markup
+
+
+# --- 圧縮（T-48 Step 1）------------------------------------------------------
+
+
+def test_a_summary_within_the_limit_is_left_alone() -> None:
+    assert one_line_summary("短い要約。") == "短い要約。"
+
+
+def test_a_summary_over_the_limit_is_cut_with_an_ellipsis() -> None:
+    text = "あ" * (SUMMARY_MAX_FULLWIDTH_CHARS + 10)
+
+    cut = one_line_summary(text)
+
+    assert cut == "あ" * SUMMARY_MAX_FULLWIDTH_CHARS + ELLIPSIS
+    assert cut.endswith(ELLIPSIS)
+
+
+def test_the_cut_is_measured_in_fullwidth_units_not_characters() -> None:
+    """半角は0.5字ぶん（**字数で数えていたら通ってしまう長さ**を固定する）。"""
+    halfwidth = "a" * (SUMMARY_MAX_FULLWIDTH_CHARS * 2)
+
+    assert one_line_summary(halfwidth) == halfwidth
+    assert one_line_summary(halfwidth + "bb").endswith(ELLIPSIS)
+
+
+def test_a_summary_is_flattened_to_a_single_line() -> None:
+    """「1行要約」なので改行・連続空白は1つの空白へ潰す。"""
+    assert one_line_summary("前半。\n\n 後半。") == "前半。 後半。"
+
+
+def test_an_empty_summary_does_not_become_an_ellipsis() -> None:
+    for value in (None, "", "   "):
+        assert one_line_summary(value) == ""
+
+
+def test_a_long_summary_is_cut_in_the_card(config: IntelligenceConfig) -> None:
+    tail = "ここは切り落とされる。"
+    markup = render(
+        [article(summary="あ" * SUMMARY_MAX_FULLWIDTH_CHARS + tail)], config
+    )
+
+    assert ELLIPSIS in markup
+    assert tail not in markup
 
 
 def test_a_card_ends_with_the_source_line(config: IntelligenceConfig) -> None:
@@ -488,6 +554,95 @@ def test_a_card_without_an_insight_has_no_empty_box(
     markup = render([article()], config)
 
     assert "#eef2ff" not in markup
+
+
+def test_only_the_first_card_of_a_section_shows_its_insight_box(
+    config: IntelligenceConfig,
+) -> None:
+    """T-48 Step 1：示唆はセクション先頭 `INSIGHTS_PER_SECTION` 件だけ。"""
+    articles = [
+        article(
+            title=f"記事{index}",
+            url=f"https://example.com/{index}",
+            total=90 - index,
+        )
+        for index in range(3)
+    ]
+    narrative = WeeklyNarrative(
+        point_of_week="総括。",
+        insights={
+            f"https://example.com/{index}": f"示唆{index}。" for index in range(3)
+        },
+    )
+
+    markup = render(articles, config, narrative)
+
+    assert "示唆0。" in markup
+    assert "示唆1。" not in markup
+    assert "示唆2。" not in markup
+    assert markup.count("background-color:#eef2ff") == INSIGHTS_PER_SECTION
+
+
+def test_each_section_gets_its_own_first_insight(
+    config: IntelligenceConfig,
+) -> None:
+    """「先頭1件」はセクション単位（業界関連と業界共通で別々に数える）。"""
+    articles = [
+        article(title="業界1", url="https://example.com/i1", total=90),
+        article(title="業界2", url="https://example.com/i2", total=89),
+        article(
+            title="共通1",
+            url="https://example.com/c1",
+            total=88,
+            industries=("業界横断",),
+        ),
+        article(
+            title="共通2",
+            url="https://example.com/c2",
+            total=87,
+            industries=("業界横断",),
+        ),
+    ]
+    narrative = WeeklyNarrative(
+        point_of_week="総括。",
+        insights={
+            "https://example.com/i1": "業界の示唆。",
+            "https://example.com/i2": "出ない示唆。",
+            "https://example.com/c1": "共通の示唆。",
+            "https://example.com/c2": "これも出ない。",
+        },
+    )
+
+    markup = render(articles, config, narrative)
+
+    assert "業界の示唆。" in markup
+    assert "共通の示唆。" in markup
+    assert "出ない示唆。" not in markup
+    assert "これも出ない。" not in markup
+
+
+def test_holding_back_an_insight_does_not_change_the_narrative(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ **絞るのは表示だけ**（生成テキストは filter が作ったまま全件残る）。
+
+    Web の閲覧ページ（T-36）は同じ `narrative` から全件をトグルで開けるので、
+    レンダラが `narrative` を書き換えてしまうと閲覧側の材料が消える。
+    """
+    insights = {
+        "https://example.com/0": "示唆0。",
+        "https://example.com/1": "示唆1。",
+    }
+    narrative = WeeklyNarrative(point_of_week="総括。", insights=insights)
+    articles = [
+        article(title="記事0", url="https://example.com/0", total=90),
+        article(title="記事1", url="https://example.com/1", total=89),
+    ]
+
+    render(articles, config, narrative)
+
+    assert narrative.insight_for("https://example.com/1") == "示唆1。"
+    assert dict(narrative.insights) == insights
 
 
 # --- §7.1 の制約とエスケープ --------------------------------------------------
@@ -660,7 +815,12 @@ def test_the_same_input_always_produces_the_same_output(
 
 
 def golden_articles() -> list[dict[str, Any]]:
-    """ゴールデンファイル用の当週シート（体裁の各要素が1度は出る形）。"""
+    """ゴールデンファイル用の当週シート（体裁の各要素が1度は出る形）。
+
+    ⚠️ **圧縮（T-48 Step 1）の3要素がそれぞれ1度は出るようにしてある**：
+    2件目は要約が全角60字を超えて `…` で切れ、示唆はセクション先頭でないので
+    出ない（生成テキスト側には持たせてある。`golden_narrative()`）。
+    """
     return [
         article(
             title="大手不動産がAIエージェントで契約業務を自動化",
@@ -675,7 +835,11 @@ def golden_articles() -> list[dict[str, Any]]:
             title="賃貸仲介の問い合わせ対応をAIが一次受け",
             url="https://example.com/news/2",
             source="日経クロステック",
-            summary="夜間の問い合わせをAIが受ける。翌朝の折り返し件数が減った。",
+            summary=(
+                "夜間の問い合わせをAIが一次受けする仕組みを入れた。"
+                "翌朝の折り返し件数が減り、担当者は内見の調整に時間を回せるように"
+                "なったという。導入から3か月で応答率は9割を超えた。"
+            ),
             category="enterprise_ai_case",
             total=81,
             industries=("不動産", "業界横断"),
@@ -719,11 +883,36 @@ def golden_narrative() -> WeeklyNarrative:
             "https://example.com/news/1": (
                 "自社では契約書のひな型が揃っている領域から試すのが早い。"
             ),
+            # ⚠️ **業界関連セクションの2件目**なので、メール HTML には出ない
+            # （T-48 Step 1）。生成テキストとしては残り、Web の閲覧ページ
+            # （T-36）ではトグルで開ける。
+            "https://example.com/news/2": (
+                "一次受けの範囲をどこで切るかは自社の応対品質基準と揃えて決める。"
+            ),
             "https://example.com/news/3": (
                 "分割前提で組んだ社内の前処理を見直す余地がある。"
             ),
         },
     )
+
+
+def test_the_golden_file_holds_back_an_insight_it_was_given(
+    config: IntelligenceConfig,
+) -> None:
+    """ゴールデンが圧縮（示唆の間引き）を実際に通っていることの歯止め。
+
+    間引きを外す改変が入ったときに、ゴールデン比較だけでなく**意図を述べた
+    テスト**でも落ちるようにしてある。
+    """
+    markup = render_weekly_html(
+        period=PERIOD,
+        articles=golden_articles(),
+        config=config,
+        narrative=golden_narrative(),
+    )
+
+    assert "一次受けの範囲をどこで切るか" not in markup
+    assert markup.count("background-color:#eef2ff") == INSIGHTS_PER_SECTION * 2
 
 
 def test_the_rendered_html_matches_the_golden_file(

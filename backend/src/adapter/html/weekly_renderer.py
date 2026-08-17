@@ -46,9 +46,29 @@
 §12.1 の非空必須リストに「タイトル」が無いので、フォーマットチェック（T-20）は
 タイトル欠落を落とさない。カードの見出しに使うのはこの層なので、ここでガードして
 `logger.warning` に出す（見出しの無いカードを出す方が読み手に不親切）。
+
+---
+
+**⚠️ 見た目の圧縮（2026-08-17 の T-48 Step 1）**
+
+1通に 20 件近いカードが並ぶと通読されない、という PM 要件で**カードを圧縮した**。
+§9.2-4 に対する差分は3つで、いずれも**表示だけの変更**（採否・並び順・生成
+テキストの中身は一切動かない）。→ **T-38 の改訂対象として記録済み**。
+
+1. **カテゴリラベルを色つきバッジへ**（§9.2-4 は「カテゴリラベル（小・色分け）」）。
+   色は §7.2 の確定マップそのままで、**文字色をその色にする代わりに背景へ回した**
+2. **本文要約を全角 60 字で切る**（`one_line_summary()`。末尾 `…`）。§9.2-4 は
+   「本文要約（`一言要約` を流用可）」で全文前提
+3. **示唆ボックスは各セクションの先頭カード1件だけフル表示**し、残りは出さない。
+   §9.2-4 は各カードの要素として挙げている
+
+⚠️ **3 は `narrative` を絞らない。** 生成テキスト（`narrative_{period}.json`）は
+filter が作ったまま全件持っており、**この層が描画時に間引いているだけ**（Web の
+閲覧ページ＝T-36 は全件をトグルで開ける）。
 """
 
 import logging
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,6 +125,17 @@ SOURCE_LINE_FORMAT = "出典：{source} ／ "
 READ_MORE_LABEL = "記事を読む"
 DOCUMENT_TITLE_FORMAT = "{brand}｜{badge}（{period}）"
 
+# --- 圧縮の確定値（T-48 Step 1）-----------------------------------------------
+
+SUMMARY_MAX_FULLWIDTH_CHARS = 60
+"""カードの1行要約の上限（**全角字**）。半角は0.5字ぶんとして数える。"""
+
+ELLIPSIS = "…"
+"""切り詰めた要約の末尾（1文字。三点リーダ）。"""
+
+INSIGHTS_PER_SECTION = 1
+"""示唆ボックスをフル表示するカード数（**各セクションの先頭から**）。"""
+
 # §9.2-5 フッタ注記（「編集部整理であり投資・法務助言でない旨」）。
 FOOTER_NOTE = (
     "本レポートは編集部が公開情報をもとに整理したものであり、"
@@ -132,6 +163,9 @@ TEXT = "#111827"
 BODY_TEXT = "#374151"
 MUTED_TEXT = "#6b7280"
 INSIGHT_TEXT = "#3730a3"
+
+# カテゴリ色バッジの文字色（背景に §7.2 の確定色を敷くので白抜き。T-48 Step 1）。
+BADGE_TEXT = "#ffffff"
 
 
 class WeeklyRenderError(Exception):
@@ -350,6 +384,52 @@ def select_articles(
 # --- 組み立て -----------------------------------------------------------------
 
 
+def _character_halfwidths(char: str) -> int:
+    """1文字の見た目の幅（半角=1・全角=2）。
+
+    `east_asian_width` の `F`（全角）・`W`（広）・`A`（曖昧）を全角として数える。
+    `A` を全角側に寄せているのは、日本語環境で全角表示される記号（`§`・`…`・
+    ギリシャ文字など）が半角として数えられると**行が想定より長くなる**ため。
+    """
+    return 2 if unicodedata.east_asian_width(char) in ("F", "W", "A") else 1
+
+
+def one_line_summary(text: object, *, limit: int = SUMMARY_MAX_FULLWIDTH_CHARS) -> str:
+    """一言要約を「1行」へ詰める（T-48 Step 1）。
+
+    ⚠️ **切る位置は文字数ではなく見た目の幅で決める**（全角 `limit` 字ぶん）。
+    日本語と英数字が混ざる要約で「60文字」を字数で数えると、英数字ばかりの
+    要約が全角60字の2倍近い長さになってカードの高さが揃わない。
+
+    Args:
+        text: 中間xlsx 列4「一言要約」の値
+        limit: 上限（**全角字**。半角は0.5字ぶん）
+
+    Returns:
+        改行を空白へ潰し、上限を超えたら末尾を `…` にした1行。空なら空文字
+
+    Examples:
+        >>> one_line_summary("AIが契約書を作る。", limit=5)
+        'AIが契約…'
+    """
+    flat = " ".join(str(text).split()) if text is not None else ""
+    if not flat:
+        return ""
+
+    budget = limit * 2
+    used = 0
+    kept: list[str] = []
+    for char in flat:
+        width = _character_halfwidths(char)
+        if used + width > budget:
+            # ⚠️ `…` を足すぶんの幅は引かない（1文字ぶんの超過は許す）。差し引くと
+            # 上限ぎりぎりの要約が2文字短くなり、切れていないのに切れて見える。
+            return "".join(kept).rstrip() + ELLIPSIS
+        kept.append(char)
+        used += width
+    return flat
+
+
 def category_labels(config: IntelligenceConfig) -> dict[str, str]:
     """カテゴリID → ラベル（config が正。色は §7.2 の ID 別マップ）。"""
     return {category.id: category.label for category in config.information_categories}
@@ -500,27 +580,51 @@ def _source_line(record: Mapping[str, Any]) -> str:
     )
 
 
+def _category_badge(label: str, *, color: str) -> str:
+    """カテゴリ色バッジ（T-48 Step 1）。
+
+    ⚠️ **色は §7.2 の確定マップそのまま**（`color_of()`）。文字色ではなく背景に
+    敷いて白抜きにしただけで、色の値は動かしていない。
+
+    バッジは `<div>` ではなく幅なしの1セル table（`block(width=None)`）で作る。
+    inline 要素の `padding` はメールクライアントによって効かないため。
+    """
+    return m.block(
+        m.element(
+            "p",
+            m.escape(label),
+            style=m.styles(
+                "margin:0",
+                "font-size:10px",
+                "font-weight:bold",
+                f"color:{BADGE_TEXT}",
+                "letter-spacing:0.04em",
+                "line-height:1.4",
+            ),
+        ),
+        style=m.styles(f"background-color:{color}", "border-radius:3px"),
+        cell_style="padding:3px 8px",
+        width=None,
+    )
+
+
 def _card(
     record: Mapping[str, Any],
     *,
     labels: Mapping[str, str],
     narrative: WeeklyNarrative,
+    show_insight: bool,
 ) -> str:
-    """記事1件のカード（§9.2-4 の5要素）。"""
+    """記事1件のコンパクトカード（T-48 Step 1）。
+
+    構成は **カテゴリ色バッジ → 見出し（リンク）→ 1行要約 → ［示唆ボックス］→
+    出典行**。示唆ボックスは `show_insight=True` のカードだけに出す
+    （各セクション先頭の `INSIGHTS_PER_SECTION` 件。モジュール docstring）。
+    """
     category_id = record.get(COLUMN_CATEGORY)
     key = str(category_id) if category_id else ""
     parts = [
-        m.element(
-            "p",
-            m.escape(labels.get(key, key)),
-            style=m.styles(
-                "margin:0",
-                "font-size:11px",
-                "font-weight:bold",
-                f"color:{color_of(key)}",
-                "letter-spacing:0.04em",
-            ),
-        ),
+        _category_badge(labels.get(key, key), color=color_of(key)),
         m.element(
             "p",
             m.link(
@@ -530,24 +634,24 @@ def _card(
             ),
             style=m.styles(
                 "margin:8px 0 0 0",
-                "font-size:16px",
+                "font-size:15px",
                 "font-weight:bold",
-                "line-height:1.6",
+                "line-height:1.5",
                 f"color:{TEXT}",
             ),
         ),
         m.element(
             "p",
-            m.escape(record.get(COLUMN_SUMMARY)),
+            m.escape(one_line_summary(record.get(COLUMN_SUMMARY))),
             style=m.styles(
-                "margin:10px 0 0 0",
-                "font-size:13px",
-                "line-height:1.9",
+                "margin:6px 0 0 0",
+                "font-size:12px",
+                "line-height:1.75",
                 f"color:{BODY_TEXT}",
             ),
         ),
     ]
-    if insight := narrative.insight_for(record.get(COLUMN_URL)):
+    if show_insight and (insight := narrative.insight_for(record.get(COLUMN_URL))):
         parts.append(_insight_box(insight))
     parts.append(_source_line(record))
 
@@ -558,9 +662,9 @@ def _card(
             f"border:1px solid {BORDER}",
             "border-radius:6px",
         ),
-        cell_style="padding:18px 20px",
+        cell_style="padding:14px 16px",
     )
-    return m.row([m.cell(card, style="padding:14px 28px 0 28px")])
+    return m.row([m.cell(card, style="padding:10px 28px 0 28px")])
 
 
 def _footer() -> str:
@@ -652,6 +756,8 @@ def _render(
     if point_of_week:
         rows.append(_point_of_week(point_of_week))
 
+    shown_insights = 0
+    held_insights = 0
     for heading, records in (
         (INDUSTRY_SECTION_FORMAT.format(industry=industry), selection.industry_topics),
         (COMMON_SECTION_HEADING, selection.common_topics),
@@ -659,9 +765,22 @@ def _render(
         if not records:
             continue
         rows.append(_section_heading(heading))
-        rows.extend(
-            _card(record, labels=labels, narrative=narrative) for record in records
-        )
+        for index, record in enumerate(records):
+            # 示唆ボックスは**セクション先頭の1件だけ**（T-48 Step 1）。
+            show_insight = index < INSIGHTS_PER_SECTION
+            if narrative.insight_for(record.get(COLUMN_URL)):
+                if show_insight:
+                    shown_insights += 1
+                else:
+                    held_insights += 1
+            rows.append(
+                _card(
+                    record,
+                    labels=labels,
+                    narrative=narrative,
+                    show_insight=show_insight,
+                )
+            )
 
     rows.append(m.spacer_row("26px"))
     rows.append(_footer())
@@ -699,13 +818,18 @@ def _render(
 
     logger.info(
         "weekly html rendered (period=%s, industry=%s, industry_topics=%d,"
-        " common_topics=%d, adopted=%d, untitled=%d)",
+        " common_topics=%d, adopted=%d, untitled=%d, insights_shown=%d,"
+        " insights_held=%d)",
         parsed.text,
         industry,
         len(selection.industry_topics),
         len(selection.common_topics),
         selection.adopted,
         selection.untitled,
+        shown_insights,
+        # ⚠️ **生成されているのに出していない示唆の件数**（T-48 Step 1）。
+        # 黙って間引くと「示唆が生成されていない」と読まれるので残す。
+        held_insights,
     )
     return _mail_safe(markup, period=parsed.text), selection
 
@@ -815,13 +939,17 @@ class WeeklyRenderer:
 
 
 __all__ = [
+    "BADGE_TEXT",
     "BRAND_TITLE",
     "COMMON_SECTION_HEADING",
+    "ELLIPSIS",
     "FOOTER_NOTE",
     "INDUSTRY_SECTION_FORMAT",
+    "INSIGHTS_PER_SECTION",
     "NOT_ADOPTED",
     "POINT_OF_WEEK_HEADING",
     "REFERENCED_COLUMNS",
+    "SUMMARY_MAX_FULLWIDTH_CHARS",
     "RenderedHtml",
     "WeeklyNarrative",
     "WeeklyRenderError",
@@ -829,6 +957,7 @@ __all__ = [
     "WeeklySelection",
     "category_labels",
     "industries_of",
+    "one_line_summary",
     "resolve_industry",
     "is_adopted",
     "render_weekly_html",
