@@ -4,7 +4,8 @@
 
 重点:
 
-- **往復は period ごとに1回**（記事ごと・章ごとに往復しない＝T-15 のオーバーヘッド）
+- **往復は週次＝業界ごとに1回・月次＝1回**（記事ごと・章ごとには往復しない
+  ＝T-15 のオーバーヘッド。業界ごとになるのは週刊が業界ごとに1通だから＝T-46）
 - **宛先は `Literal` で閉じる**（示唆の URL・導入文の章ラベルを言い換えられない）
 - **段落数・文の数は構造で固定**（別フィールド／要素数の下限・上限）
 - **T-24 / T-25 のレンダラへ無変更で渡せる**（実際に HTML を組み立てて確かめる）
@@ -55,6 +56,8 @@ MONTHLY_PERIOD = parse_period("2026-07")
 
 URL_A = "https://example.com/news/a"
 URL_B = "https://example.com/news/b"
+
+INDUSTRY = "不動産"
 
 CHAPTER_1 = "第1章 業務への組み込み"
 CHAPTER_2 = "第2章 モデルの動向"
@@ -205,9 +208,30 @@ async def test_all_articles_are_covered_in_one_round_trip(
         [record(url=URL_A), record(title="別の記事", url=URL_B)], period=WEEKLY_PERIOD
     )
 
-    assert client.calls == 1
-    assert set(document.insights) == {URL_A, URL_B}
+    assert client.calls == 1  # 対象業界が1件の config
+    assert set(document.for_industry(INDUSTRY).insights) == {URL_A, URL_B}
     assert client.versions == [WEEKLY_NARRATIVE_PROMPT_VERSION]
+
+
+async def test_each_target_industry_gets_its_own_round_trip(
+    config: IntelligenceConfig,
+) -> None:
+    """T-46 Step 4：週刊は業界ごとに1通なので、生成テキストも業界ごとに作る。
+
+    ⚠️ 往復は業界の数だけ増える（1回数分）。**記事ごとの往復は増やさない**。
+    """
+    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融"]
+    client = ScriptedAIClient(weekly_payload(), weekly_payload())
+
+    document = await builder(config, client).build_weekly(
+        [record()], period=WEEKLY_PERIOD
+    )
+
+    assert client.calls == 2
+    assert set(document.industries) == {"不動産", "金融"}
+    # 読み手の立場は混ぜない（プロンプトはその業界版として書かせる）。
+    assert "■ 対象業界（読み手の立場）: 不動産" in client.prompts[0]
+    assert "■ 対象業界（読み手の立場）: 金融" in client.prompts[1]
 
 
 async def test_the_point_of_week_is_assembled_from_the_sentences(
@@ -219,8 +243,9 @@ async def test_the_point_of_week_is_assembled_from_the_sentences(
         [record()], period=WEEKLY_PERIOD
     )
 
-    assert document.point_of_week_sentences == SENTENCES
-    assert document.point_of_week == "".join(SENTENCES)
+    generated = document.for_industry(INDUSTRY)
+    assert generated.point_of_week_sentences == SENTENCES
+    assert generated.point_of_week == "".join(SENTENCES)
     assert document.period == WEEKLY_PERIOD.text
 
 
@@ -235,7 +260,7 @@ async def test_the_insight_key_is_the_url_as_it_appears_in_the_sheet(
         [record(url=url)], period=WEEKLY_PERIOD
     )
 
-    assert list(document.insights) == [url]
+    assert list(document.for_industry(INDUSTRY).insights) == [url]
 
 
 async def test_no_adopted_articles_means_no_ai_call(
@@ -248,8 +273,8 @@ async def test_no_adopted_articles_means_no_ai_call(
         document = await builder(config, client).build_weekly([], period=WEEKLY_PERIOD)
 
     assert client.calls == 0
-    assert document.point_of_week is None
-    assert document.insights == {}
+    assert document.industries == {}
+    assert document.for_industry(INDUSTRY).point_of_week is None
     assert any("対象になる記事がありません" in r.message for r in caplog.records)
 
 
@@ -270,7 +295,7 @@ async def test_a_missing_insight_is_warned_about_but_does_not_fail(
             period=WEEKLY_PERIOD,
         )
 
-    assert set(document.insights) == {URL_A}
+    assert set(document.for_industry(INDUSTRY).insights) == {URL_A}
     assert any("示唆が足りません" in r.message for r in caplog.records)
 
 
@@ -428,7 +453,8 @@ async def test_the_weekly_document_feeds_the_renderer_as_is(
         period=WEEKLY_PERIOD.text,
         articles=[record()],
         config=config,
-        narrative=to_weekly_narrative(document),
+        narrative=to_weekly_narrative(document, INDUSTRY),
+        industry=INDUSTRY,
     )
 
     assert "今週のポイント" in markup

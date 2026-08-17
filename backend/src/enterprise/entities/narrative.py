@@ -33,6 +33,16 @@ T-24 / T-25 のレンダラが受け取るのは `\\n\\n` 区切りの文字列�
 
 ---
 
+**⚠️ 週次は業界ごとに持つ**（T-46 Step 4）
+
+週刊は対象業界ごとに1通出す（`weekly_..._{industry}_{period}.html`）ので、
+今週のポイントも示唆も業界版ごとに別の文章になる。ファイルは
+`industries: {業界名: {...}}` の形で持ち、レンダラへ渡すときに業界を1つ選ぶ
+（`to_weekly_narrative(document, industry)`）。**月次は業界別ではない**
+（月刊ビリーフは1通）。
+
+---
+
 **示唆の鍵は記事URL（正規化しない生の値）**
 
 `insights` の鍵は中間xlsx 列22「URL」の値そのもの。T-24 の
@@ -98,15 +108,19 @@ class _NarrativeDocument(BaseModel):
         return parse_period(self.period)
 
 
-class WeeklyNarrativeDocument(_NarrativeDocument):
-    """週刊メルマガの生成テキスト（仕様書 §9.2-2・§9.2-4）。
+class WeeklyIndustryNarrative(BaseModel):
+    """**1業界ぶん**の週刊の生成テキスト（仕様書 §9.2-2・§9.2-4）。
+
+    週刊は業界ごとに1通出す（`weekly_..._{industry}_{period}.html`）ので、
+    今週のポイントも示唆も**業界版ごとに別の文章**になる（T-46 Step 4）。
 
     Attributes:
-        period: 対象週（`2026-Www`）
         point_of_week_sentences: 今週のポイント（当週の総括3〜4文）。
             空＝生成していない（採用記事が0件だった実行）
         insights: 記事URL → 示唆ボックスの1段落。**鍵は当週シート列22 の値**
     """
+
+    model_config = _STRICT
 
     point_of_week_sentences: list[_NonEmptyText] = Field(default_factory=list)
     insights: dict[_NonEmptyText, _NonEmptyText] = Field(default_factory=dict)
@@ -116,6 +130,33 @@ class WeeklyNarrativeDocument(_NarrativeDocument):
         """T-24 の `WeeklyNarrative.point_of_week` へそのまま渡せる形。"""
         joined = SENTENCE_JOINER.join(self.point_of_week_sentences).strip()
         return joined or None
+
+
+class WeeklyNarrativeDocument(_NarrativeDocument):
+    """週刊メルマガの生成テキスト（**業界ごと**。T-46 Step 4）。
+
+    ⚠️ **業界名を鍵にした辞書で持つ**（`config.tunable_thresholds.weekly.
+    target_industries` の値）。1つの週の中間xlsx から業界数ぶんの HTML が出るので、
+    生成テキストもその数だけ要る。**鍵が無い業界は「生成していない」**——空の
+    生成テキストで描くと `point_of_week_required=true` の週刊は T-24 が意図どおり
+    落ちる（ここで黙って埋めない）。
+
+    Attributes:
+        period: 対象週（`2026-Www`）
+        industries: 業界名 → その業界版の生成テキスト
+    """
+
+    industries: dict[_NonEmptyText, WeeklyIndustryNarrative] = Field(
+        default_factory=dict
+    )
+
+    def for_industry(self, industry: str) -> WeeklyIndustryNarrative:
+        """その業界版の生成テキスト（無ければ**空**）。
+
+        空を返して落とさないのは、判断（必須かどうか）を config を見る側
+        （T-24 の `point_of_week_required`）に一本化しておくため。
+        """
+        return self.industries.get(industry.strip()) or WeeklyIndustryNarrative()
 
 
 class MonthlyNarrativeDocument(_NarrativeDocument):
@@ -265,6 +306,7 @@ __all__ = [
     "WEEKLY_NARRATIVE_ADAPTER",
     "MonthlyNarrativeDocument",
     "NarrativeDocument",
+    "WeeklyIndustryNarrative",
     "WeeklyNarrativeDocument",
     "dump_narrative",
     "empty_narrative",

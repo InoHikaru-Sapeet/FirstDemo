@@ -51,6 +51,7 @@ from application.usecases.filter import RawArticlesNotFoundError
 from enterprise.entities.config import IntelligenceConfig
 from enterprise.entities.narrative import (
     MonthlyNarrativeDocument,
+    WeeklyIndustryNarrative,
     WeeklyNarrativeDocument,
     dump_narrative,
 )
@@ -61,6 +62,8 @@ INITIAL_CONFIG_PATH = (
 )
 
 WEEKLY_PERIOD = "2026-W31"
+# §5.2 の初期 config の対象業界（1件）。週刊は業界ごとに1通（T-46 Step 4）。
+TARGET_INDUSTRY = "不動産"
 MONTHLY_PERIOD = "2026-07"
 RUN_ID = "cli-20260816-090000"
 
@@ -202,6 +205,13 @@ class FakeRenderer:
         self.calls.append(kwargs)
         if self._error:
             raise self._error
+        # 週刊は業界ごとに1通（正規名に業界が入る＝T-46 Step 4）。本物と同じく
+        # 業界ごとに別のパスを返す。
+        industry = kwargs.get("industry")
+        if industry:
+            return FakeRenderedHtml(
+                path=self._path.with_name(f"{industry}_{self._path.name}")
+            )
         return FakeRenderedHtml(path=self._path)
 
 
@@ -402,8 +412,12 @@ async def test_the_narrative_file_is_handed_to_the_renderer(
         dump_narrative(
             WeeklyNarrativeDocument(
                 period=period.text,
-                point_of_week_sentences=["今週はエージェントの週だった。"],
-                insights={"https://example.com/1": "自社では検証から始める。"},
+                industries={
+                    TARGET_INDUSTRY: WeeklyIndustryNarrative(
+                        point_of_week_sentences=["今週はエージェントの週だった。"],
+                        insights={"https://example.com/1": "自社では検証から始める。"},
+                    )
+                },
             )
         ),
     )
@@ -413,6 +427,44 @@ async def test_the_narrative_file_is_handed_to_the_renderer(
     narrative = test.weekly.calls[0]["narrative"]
     assert narrative.point_of_week == "今週はエージェントの週だった。"
     assert narrative.insights == {"https://example.com/1": "自社では検証から始める。"}
+
+
+async def test_one_html_is_rendered_per_target_industry(
+    store: ArtifactStore, config: IntelligenceConfig
+) -> None:
+    """T-46 Step 4：業界の数だけ週刊 HTML が出て、生成物として列挙される。"""
+    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融"]
+    period = parse_period(WEEKLY_PERIOD)
+    test = harness(store, config)
+    store.write_text(
+        store.narrative_path(period.text),
+        dump_narrative(
+            WeeklyNarrativeDocument(
+                period=period.text,
+                industries={
+                    "不動産": WeeklyIndustryNarrative(
+                        point_of_week_sentences=["不動産版の総括。"]
+                    ),
+                    "金融": WeeklyIndustryNarrative(
+                        point_of_week_sentences=["金融版の総括。"]
+                    ),
+                },
+            )
+        ),
+    )
+
+    assert await run(test.pipeline, period, run_id=RUN_ID, out=test.out) == EXIT_OK
+
+    # 業界ごとに1回ずつ、その業界版の生成テキストを渡して呼ばれる。
+    assert [call["industry"] for call in test.weekly.calls] == ["不動産", "金融"]
+    assert [call["narrative"].point_of_week for call in test.weekly.calls] == [
+        "不動産版の総括。",
+        "金融版の総括。",
+    ]
+    # 生成物の列挙も業界の数だけ増える（1通しか出ていないように見せない）。
+    printed = "\n".join(test.lines)
+    assert "不動産_weekly.html" in printed
+    assert "金融_weekly.html" in printed
 
 
 async def test_the_generated_paths_are_listed_at_the_end(
@@ -429,7 +481,8 @@ async def test_the_generated_paths_are_listed_at_the_end(
         store.weekly_report_path(),
         store.validation_path(WEEKLY_PERIOD),
         store.narrative_path(WEEKLY_PERIOD),
-        store.root / "weekly.html",
+        # 週刊 HTML は業界ごと（正規名に業界が入る＝T-46 Step 4）。
+        store.root / f"{TARGET_INDUSTRY}_weekly.html",
     ):
         assert str(path) in test.output
 

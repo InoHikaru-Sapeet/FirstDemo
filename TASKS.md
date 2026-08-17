@@ -901,7 +901,7 @@ flowchart TD
   - ⚠️ **設計書 §2（`narrative_*.json` のスキーマ）・§6.1（filter の出力）・§7.3/§7.4（「（生成テキスト）」の作り手）・§13.3 の出力一覧に差分が出る。→ T-38 の改訂対象**。
   - テスト50件（narrative スキーマ 18 / 生成 21 / filter への追加 11）。`make test` 全体 1731件。
 
-#### - [ ] T-46: 週刊の業界対応と採点キャリブレーション（初運用 2026-W33 / 2026-07 のフィードバック）
+#### - [x] T-46: 週刊の業界対応と採点キャリブレーション（初運用 2026-W33 / 2026-07 のフィードバック）
 - **対応**: 仕様書 §13.2（PROMPT-1）・§5.2（`tunable_thresholds.weekly`）・§9.2-1/3（業界版・業界関連トピック）・§13.3（診断）／設計書 §7.3・§8.2
 - **依存**: T-16, T-21, T-24, T-44, T-45
 - **成果物**: `backend/src/application/usecases/crawl.py`, `backend/src/application/usecases/filter.py`, `backend/src/application/usecases/monthly_cases.py`, `backend/src/application/usecases/narrative.py`, `backend/src/enterprise/entities/config.py`, `backend/src/enterprise/entities/config_validation.py`, `backend/src/enterprise/entities/narrative.py`, `backend/src/adapter/html/weekly_renderer.py`, `backend/src/adapter/cli/run_pipeline.py`, `backend/src/adapter/cli/migrate_config.py`, `backend/src/application/usecases/update_config.py`, `backend/schemas/config.schema.json`, 各テスト
@@ -935,6 +935,12 @@ flowchart TD
   - **レンダラは「どの業界版か」を引数で受け取る**（`resolve_industry()`）。⚠️ **config に無い業界を指定したら `WeeklyRenderError`**（誰も選んでいない業界版を出さない）。**指定が無いときは先頭を描くが、対象業界が2件以上なら WARNING を出す**（黙って残りの業界版を落とさない）。業界数ぶん回すのは呼び出し側の責務で、**その配線は Step 4**。
   - 分類・採点のプロンプトは「対象業界（顧客関連度の判断基準。**いずれかに関係すれば**「関係する」）: 不動産 / 金融」の形にした（読み手が業界ごとに分かれるため）。生成テキストのプロンプトは Step 4 で業界ごとの生成に変える。
   - `schemas/config.schema.json` を再生成（`make config-schema`）。逐語データ（`tests/enterprise/data/config_initial.json`）・T-14 の生成初期値・T-05 の初期値表・T-13 の編集許可リストも更新。テスト +4（対象業界の索引つき違反 / 重複 / 複数業界 / 業界版ごとの描画ほか）。`make test` 全体 **1791件**。
+- **備考（Step 4 実績 2026-08-17）**: 週刊を**業界ごとに1通**出すところまで通した（生成テキスト → 描画 → 生成物の列挙）。⚠️ **月刊は業界別ではない**（1通のまま）。
+  - **`narrative_{period}.json`（週次）のスキーマが変わった**：`{period, point_of_week_sentences, insights}` → **`{period, industries: {業界名: {point_of_week_sentences, insights}}}`**（`WeeklyIndustryNarrative`）。今週のポイントも示唆も**読み手の業界が変われば別の文章**なので、業界の外に置く場所が無い。⚠️ **旧い形のファイルは `extra="forbid"` で落ちる**（`--from render` で前の実行の narrative を使い回すと落ちるので、その場合は `--from filter` からやり直す。**成果物なので移行はしない**）。⚠️ **設計書 §2 の `narrative_*.json` スキーマに対する差分 → T-38**。
+  - **生成は業界ごとに1往復**（`NarrativeBuilder.build_weekly()` が業界を回す）。⚠️ **対象業界を N 件にすると週次の生成テキストの往復も N 倍**（1回あたり数分＝T-15 備考）。**記事ごとの往復を作らない**という T-44 の方針は維持（1業界につき全記事ぶんの示唆を1回で書かせる）。プロンプトは読み手を**1業界に固定**する（`WEEKLY_NARRATIVE_PROMPT_VERSION` を 0.1.0 → **0.2.0**）。
+  - **鍵が無い業界は空を返す**（`for_industry()`）。埋めないのは、必須かどうかの判断を **config を見る側（T-24 の `point_of_week_required`）に一本化**しておくため——空のまま渡せば週刊は意図どおり落ちる。
+  - **render ループは `run_pipeline` に置いた**（レンダラは1回1業界のまま）。回すのは呼び出し側の責務で、**T-26 でも同じ形にすること**（`resolve_industry()` の ⚠️）。生成物の列挙も業界数ぶんに増える（`test_one_html_is_rendered_per_target_industry` が「1通しか出ていないように見せない」ことを固定）。
+  - テスト +6（narrative スキーマ 3 / 生成 1 / filter 1 / run_pipeline 1）。`make test` 全体 **1797件**。
 - **備考（判断）**:
   - **仕様書の確定値を変えるのは Step 3 の `target_industries` だけ**（PM 要件として 2026-08-17 に確認済み）。しきい値（`min_score_for_case` 等）の初期値は**動かさない**——実行時 config で調整できる項目を仕様側で動かすと、キャリブレーションの履歴が config の revision 履歴から消える
   - **xlsx 22列 / 8列は変更しない**（§8.1・§8.2 の確定値）。診断は**ログ**で行う
@@ -1281,6 +1287,8 @@ flowchart TD
     - 仕様書 §9.2-1「業界名は `config.weekly.target_industry` から」・§9.3「`業界` に `target_industry` を含む」→ **その号の業界**（週刊は業界ごとに1通出す）
     - 仕様書 §13.1 の YAML 例・§13.4.1 の `{{target_industry}}` → **業界ごとに1回展開する**書き方へ（出力は業界数ぶん）
     - 設計書 §2.1 の JSON Schema 抜粋（`weekly.required` / `target_industry`）と §2.1.1-3「`weekly.target_industry ∈ enums.industry`」→ **各要素の参照整合＋重複禁止**へ
+    - 設計書 §2 の `narrative_*.json`（週次）のスキーマ → **業界ごと**（`industries: {業界名: {point_of_week_sentences, insights}}`。T-46 Step 4）
+    - 設計書 §7.3・§8.2 の週刊の出力 → **対象業界の数だけ HTML が出る**（`weekly_..._{industry}_{period}.html` を業界ごとに1通）
     - 実装は `enterprise/entities/config.py`（`target_industries` / 読み出し口 `WeeklyThresholds.industries`）・`config_validation.py`（`check_target_industries_reference` と新コード `duplicate_industry_reference`）・`adapter/html/weekly_renderer.py`（`resolve_industry()`）
   - ⚠️ **仕様書 §5.2 の確定 JSON に `tunable_thresholds.dedup.monthly_lookback_months`（既定 3）を追記する**（2026-08-16 の決定2＝要確認事項 #11）。あわせて **§11.1 の「直近数ヶ月」をこの鍵の参照へ書き換え**、§7.2 の「重複判定パラメータ `dedup.*`」がこの鍵を含むことを確認する
   - ⚠️ **設計書 §3.3 の `PUT /config` リクエスト例を直す**（T-11 で判明）：例は `min_total_score_to_publish` を 62 にしているが、§5.2 の `share_only` が 60 なので **§2.1.1-2 の降順整合（`share_only ≥ min_total_score_to_publish`）に違反し、実装は 422 を返す**。値を下げるか、`adoption_class_score_map` も併せて上げる例に差し替える

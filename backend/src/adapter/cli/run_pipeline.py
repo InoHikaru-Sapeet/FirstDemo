@@ -15,7 +15,7 @@ crawl → filter（narrative 含む）→ render を手元で通しに実行し�
   → 中間xlsx `#sheet={period}` ／ 除外ログ append ／ `validation_{period}.json`
   ／ `narrative_{period}.json`（生成テキスト＝T-44）
 - **render**: 中間xlsx `#sheet={period}` ＋ `narrative_{period}.json`
-  → 週刊／月刊 HTML
+  → 週刊は**対象業界ごとに1通**（`target_industries` の数だけ）／月刊は1通
 
 ---
 
@@ -306,6 +306,7 @@ class WeeklyRender(Protocol):
         articles: Sequence[Mapping[str, Any]],
         config: IntelligenceConfig,
         narrative: WeeklyNarrative | None = None,
+        industry: str | None = None,
         revision: int,
         run_id: str,
     ) -> RenderOutcome: ...
@@ -494,6 +495,10 @@ def run_render(
 ) -> list[Path]:
     """render（T-24 / T-25）。**入力は中間xlsx と narrative ファイル**（§8.2）。
 
+    ⚠️ **週刊は対象業界ごとに1通**（T-46 Step 4。`weekly_..._{industry}_
+    {period}.html`）。config の `target_industries` を順に回し、生成テキストも
+    その業界ぶんを渡す。月刊は業界別ではない（1通）。
+
     Raises:
         PipelineError: `narrative_{period}.json` が無い場合
             （filter を通していない／別 period の成果物しか無い）
@@ -509,15 +514,23 @@ def run_render(
 
     if period.is_weekly and isinstance(document, WeeklyNarrativeDocument):
         articles = pipeline.reports.read_weekly(period.text)
-        out(f"    週次シートの記事 {len(articles)} 件")
-        rendered = pipeline.weekly_renderer.render(
-            period=period.text,
-            articles=articles,
-            config=pipeline.config,
-            narrative=to_weekly_narrative(document),
-            revision=pipeline.revision,
-            run_id=run_id,
-        )
+        industries = pipeline.config.tunable_thresholds.weekly.industries
+        out(f"    週次シートの記事 {len(articles)} 件 / 対象業界 {len(industries)} 件")
+        # ⚠️ **業界ごとに1通**（正規名に業界が入る＝T-46 Step 4）。1回の実行で
+        # 業界数ぶんの HTML が出るので、生成物の列挙もその数だけ増える。
+        # 入力（当週シート）は共通で、業界ごとに変わるのは**振り分けと生成テキスト**。
+        return [
+            pipeline.weekly_renderer.render(
+                period=period.text,
+                articles=articles,
+                config=pipeline.config,
+                narrative=to_weekly_narrative(document, industry),
+                industry=industry,
+                revision=pipeline.revision,
+                run_id=run_id,
+            ).path
+            for industry in industries
+        ]
     elif isinstance(document, MonthlyNarrativeDocument):
         cases = pipeline.reports.read_monthly(period.text)
         out(f"    月次シートの事例 {len(cases)} 件")

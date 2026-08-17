@@ -6,6 +6,7 @@
 - **空の narrative が書ける**（採用記事0件の実行。必須かどうかを決めるのは config）
 - **対象期間の食い違いを落とす**（先週の生成テキストで今週の HTML を作らせない）
 - **示唆の鍵は生の URL**（T-24 の `insight_for()` が引く形）
+- **週次は業界ごとに持つ**（週刊は業界ごとに1通。T-46 Step 4）
 """
 
 import pytest
@@ -13,6 +14,7 @@ import pytest
 from enterprise.entities.json_document import DocumentParseError
 from enterprise.entities.narrative import (
     MonthlyNarrativeDocument,
+    WeeklyIndustryNarrative,
     WeeklyNarrativeDocument,
     dump_narrative,
     empty_narrative,
@@ -28,17 +30,27 @@ WEEKLY_PERIOD = "2026-W31"
 MONTHLY_PERIOD = "2026-07"
 
 URL = "https://example.com/news/1"
+INDUSTRY = "不動産"
 
 
-def weekly(**overrides: object) -> WeeklyNarrativeDocument:
+def industry_narrative(**overrides: object) -> dict[str, object]:
+    """1業界ぶんの生成テキスト（T-46 Step 4）。"""
     payload: dict[str, object] = {
-        "period": WEEKLY_PERIOD,
         "point_of_week_sentences": [
             "今週はAIエージェントの実務投入が相次いだ。",
             "契約業務など定型度の高い領域から広がっている。",
             "不動産では現場の運用設計が論点になる。",
         ],
         "insights": {URL: "自社では契約書レビューの前段から試すのが現実的である。"},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def weekly(**overrides: object) -> WeeklyNarrativeDocument:
+    payload: dict[str, object] = {
+        "period": WEEKLY_PERIOD,
+        "industries": {INDUSTRY: industry_narrative()},
     }
     payload.update(overrides)
     return WeeklyNarrativeDocument.model_validate(payload)
@@ -65,11 +77,11 @@ def monthly(**overrides: object) -> MonthlyNarrativeDocument:
 
 def test_the_sentences_join_into_one_point_of_week() -> None:
     """§9.2-2 は「3〜4文」＝段落ではないので、文の間に区切りを挟まない。"""
-    document = weekly()
+    point_of_week = weekly().for_industry(INDUSTRY).point_of_week
 
-    assert document.point_of_week is not None
-    assert document.point_of_week.startswith("今週はAIエージェント")
-    assert PARAGRAPH_SEPARATOR not in document.point_of_week
+    assert point_of_week is not None
+    assert point_of_week.startswith("今週はAIエージェント")
+    assert PARAGRAPH_SEPARATOR not in point_of_week
 
 
 def test_the_paragraphs_join_with_the_shared_separator() -> None:
@@ -82,7 +94,10 @@ def test_the_paragraphs_join_with_the_shared_separator() -> None:
 
 def test_nothing_generated_reads_as_none_not_an_empty_string() -> None:
     """レンダラは「空なら出さない／落とす」を `None` と空文字の両方で見る。"""
-    assert weekly(point_of_week_sentences=[]).point_of_week is None
+    empty_week = weekly(
+        industries={INDUSTRY: industry_narrative(point_of_week_sentences=[])}
+    )
+    assert empty_week.for_industry(INDUSTRY).point_of_week is None
     empty = monthly(editorial_paragraphs=[], closing_paragraphs=[])
     assert empty.editorial is None
     assert empty.closing is None
@@ -98,8 +113,44 @@ def test_an_empty_narrative_can_be_written_for_either_period() -> None:
 
     assert isinstance(week, WeeklyNarrativeDocument)
     assert isinstance(month, MonthlyNarrativeDocument)
-    assert week.point_of_week is None
+    assert week.industries == {}
+    assert week.for_industry(INDUSTRY).point_of_week is None
     assert month.editorial is None
+
+
+# --- 業界ごとの生成テキスト（T-46 Step 4）------------------------------------
+
+
+def test_each_industry_keeps_its_own_text() -> None:
+    """週刊は業界ごとに1通なので、今週のポイントも示唆も業界版ごとに別。"""
+    document = weekly(
+        industries={
+            "不動産": industry_narrative(),
+            "金融": industry_narrative(
+                point_of_week_sentences=["金融では審査業務が焦点になった。"],
+                insights={URL: "自社では与信の一次判定から試す。"},
+            ),
+        }
+    )
+
+    assert document.for_industry("金融").insights[URL].startswith("自社では与信")
+    assert document.for_industry("不動産").insights[URL].startswith("自社では契約書")
+
+
+def test_an_industry_without_text_reads_as_empty() -> None:
+    """⚠️ 空を返して落とさない（必須かどうかを決めるのは config を見る T-24）。"""
+    document = weekly()
+
+    generated = document.for_industry("金融")
+
+    assert generated.point_of_week is None
+    assert generated.insights == {}
+
+
+def test_a_blank_industry_name_is_rejected() -> None:
+    """業界名は出力ファイル名に入る（空の鍵を通さない）。"""
+    with pytest.raises(ValueError):
+        weekly(industries={"  ": industry_narrative()})
 
 
 # --- 読み書き -----------------------------------------------------------------
@@ -157,9 +208,9 @@ def test_an_unusable_period_is_rejected(period: str) -> None:
 def test_blank_text_is_rejected() -> None:
     """空白だけの段落を通すと、描画したときに空の `<p>` になる。"""
     with pytest.raises(ValueError):
-        weekly(point_of_week_sentences=["   "])
+        WeeklyIndustryNarrative(point_of_week_sentences=["   "])
     with pytest.raises(ValueError):
-        weekly(insights={URL: "  "})
+        WeeklyIndustryNarrative(insights={URL: "  "})
 
 
 def test_an_unknown_field_is_rejected() -> None:

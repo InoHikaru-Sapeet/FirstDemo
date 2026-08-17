@@ -96,6 +96,9 @@ INITIAL_CONFIG_PATH = (
 WEEKLY_PERIOD = "2026-W31"
 MONTHLY_PERIOD = "2026-07"
 
+# §5.2 の初期 config の対象業界（1件）。生成テキストは業界ごと（T-46 Step 4）。
+TARGET_INDUSTRY = "不動産"
+
 
 @pytest.fixture(scope="session")
 def initial_raw() -> dict[str, Any]:
@@ -879,14 +882,15 @@ async def test_the_weekly_narrative_covers_the_adopted_articles(
     result = await worker(config, store, client).run(WEEKLY_PERIOD)
 
     assert isinstance(result.narrative, WeeklyNarrativeDocument)
-    assert list(result.narrative.insights) == ["https://example.com/kept"]
-    assert result.narrative.point_of_week is not None
+    generated = result.narrative.for_industry(TARGET_INDUSTRY)
+    assert list(generated.insights) == ["https://example.com/kept"]
+    assert generated.point_of_week is not None
 
 
 async def test_the_narrative_costs_one_round_trip_per_run(
     config: IntelligenceConfig, store: ArtifactStore
 ) -> None:
-    """⚠️ 記事ごとに往復しない（採用11件でも生成テキストの往復は1回）。"""
+    """⚠️ 記事ごとに往復しない（採用11件でも生成テキストの往復は業界ごとに1回）。"""
     write_articles(
         store,
         [
@@ -901,8 +905,23 @@ async def test_the_narrative_costs_one_round_trip_per_run(
     result = await worker(config, store, client).run(WEEKLY_PERIOD)
 
     assert client.classification_calls == 3
-    assert client.narrative_calls == 1
-    assert len(result.narrative.insights) == 3
+    assert client.narrative_calls == 1  # 対象業界が1件の config
+    assert len(result.narrative.for_industry(TARGET_INDUSTRY).insights) == 3
+
+
+async def test_the_weekly_narrative_is_generated_per_industry(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """T-46 Step 4：週刊は業界ごとに1通なので、生成テキストも業界ごとに作る。"""
+    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融"]
+    write_articles(store, [article()], WEEKLY_PERIOD)
+    client = ScriptedAIClient()
+
+    result = await worker(config, store, client).run(WEEKLY_PERIOD)
+
+    assert isinstance(result.narrative, WeeklyNarrativeDocument)
+    assert set(result.narrative.industries) == {"不動産", "金融"}
+    assert client.narrative_calls == 2  # 業界の数だけ往復が増える
 
 
 async def test_the_monthly_narrative_carries_editorial_intros_and_closing(
@@ -949,7 +968,7 @@ async def test_an_empty_run_still_writes_a_narrative(
     assert result.articles == []
     assert client.narrative_calls == 0
     assert store.exists(result.narrative_path)
-    assert result.narrative.point_of_week is None
+    assert result.narrative.for_industry(TARGET_INDUSTRY).point_of_week is None
 
 
 async def test_the_previous_narrative_is_archived_before_the_overwrite(
@@ -1011,7 +1030,8 @@ async def test_the_narrative_feeds_the_weekly_renderer(
         period=WEEKLY_PERIOD,
         articles=result.articles,
         config=config,
-        narrative=to_weekly_narrative(result.narrative),
+        narrative=to_weekly_narrative(result.narrative, TARGET_INDUSTRY),
+        industry=TARGET_INDUSTRY,
     )
 
     assert POINT_OF_WEEK_SENTENCES[0] in markup
