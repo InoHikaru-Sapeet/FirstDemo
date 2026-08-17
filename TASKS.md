@@ -1070,12 +1070,13 @@ flowchart TD
   - **`common.logger` を import している**（副作用の `logging.basicConfig` が目的）。ワーカーの `logger.info`（crawl started / filter finished 等）が手元の端末に出ないと、**1回数分の AI 呼び出しの間ずっと無言**になる。
   - **PERIOD 省略時は §13.1 と同じ規則**（週次＝実行日の当週 `{{ISO_WEEK}}` / 月次＝前月 `{{PREV_MONTH}}`、Asia/Tokyo）。⚠️ **`make run-weekly PERIOD=2026-07` は受け付けない**（週刊のつもりで月刊の成果物を上書きするため）。
   - **監査ログは書いていない**（T-26 の責務。起票時の判断のまま）。
+- **備考（2026-08-17 T-26 で置換）**: ⚠️ **このタスクの成果物は T-26 に吸収され、CLI は Orchestrator を呼ぶ薄い皮になった。** 以下の「実績」は置換前の記録として残してあるが、**現在の実装の説明としては T-26 の備考を見ること**。特に次の3点は変わっている：config は `load()` → **`get_pinned()`**／`run_id` は `cli-...` → **`job_id`**／`--from` に **`auto`** が増え、状態機械・二重起動防止・監査ログが効くようになった。
   - テスト37件（`make test` 全体 1768件）。**ミューテーションで確認済み**：`run_id` を filter へ渡さないと3件、`--from` を無視して常に全ステップ実行すると2件、除外0件でも週次ブックを上書きすると1件、種別と表記の一致検査を外すと2件、ステップの失敗を握り潰して次へ進むと11件、narrative の存在確認を外すと1件が落ちる。
 
-#### - [ ] T-26: Run Orchestrator と状態機械
+#### - [x] T-26: Run Orchestrator と状態機械
 - **対応**: §8.3・§8.4（→ 仕様書 §13.1・§14）
 - **依存**: T-16, T-21, T-24, T-25
-- **成果物**: `backend/src/application/usecases/run_orchestrator.py`, テスト
+- **成果物**: `backend/src/application/usecases/run_orchestrator.py`, `backend/src/enterprise/entities/run_job.py`, `backend/src/adapter/storage/job_store.py`, `backend/src/adapter/pipeline_factory.py`, `backend/src/adapter/cli/run_pipeline.py`（薄い皮へ置換）, テスト
 - **完了条件**:
   - 状態機械：`Queued → Crawling → Filtering → Rendering → Done`、各段から `Failed`、`Failed → Queued`（該当stepからリトライ）
   - `resume_from`（`crawl` / `filter` / `render`）で再開ポイントを指定でき、**前段成果物の存在確認で自動スキップ**も可能（`raw_articles_{period}.json` があれば crawl をスキップ）
@@ -1086,6 +1087,19 @@ flowchart TD
   - 月次 filter は対象月の各週次レポートを再利用可能（再クロール省略可・§13.1 notes）
   - 実行開始/終了/成果物生成を監査ログへ（T-10）
 - **備考**: 外部 cron から複数回叩かれても壊れないことが「外部cron方式」の前提条件。ロックのテストを必ず書く。
+- **備考（実績 2026-08-17）**: **T-45 の CLI を Orchestrator へ昇格・置換した**（T-45 備考の申し送りどおり。並存させない）。配線（`run_crawl` / `run_filter` / `run_render` と `Pipeline`）は `application/usecases/run_orchestrator.py` へ**そのまま**移し、`adapter/cli/run_pipeline.py` に残したのは**引数の解釈・進捗の表示・失敗の見せ方**の3つだけ。⚠️ **並べて残さなかったのは、配線が2つあると「`--from render` の前段確認」のような判断が片方にだけ入って食い違うため。** `build_pipeline()` は `adapter/pipeline_factory.py` へ出した（HTTP のルーターが `adapter.cli` を import しないため）。
+  - **T-45 との差分は3つ**：①config は `load()` → **`get_pinned(revision)`**（§8.3 の完了条件。⚠️ 固定できない場合は**黙って `load()` へ落とさず** `ConfigPinError` で実行前に落とす。落とすと「ファイルを直したのに反映されない実行」が静かに走る）／②`run_id` は `cli-YYYYmmdd-HHMMSS` → **`job_id`（`job_YYYYmmdd-HHMMSS-xxxxxx`）に一本化**（ID が2つあると `_history/{period}/{revision}_{run_id}/` と監査ログの job を突き合わせられない。CLI か API かは `RunJob.trigger` が持つ）／③`--from` に **`auto`** を追加。
+  - ⚠️ **`auto` が飛ばすのは crawl だけ**（`raw_articles_{period}.json` があれば省く）。§8.3 が自動スキップとして書いているのはこの1つで、**render まで自動で飛ばすと判断基準を変えて再実行しても filter が走らない**。render からの再開は明示指定でだけ行う（`test_auto_never_skips_the_filter` が固定）。
+  - **ジョブ記録とロックはファイル**（`artifacts/_runs/{job_id}.json` ／ `artifacts/_runs/locks/{type}_{period}.lock`）。DB にしなかった理由は3つ：**CLI と API の別プロセスから同じ二重起動防止に従わせたい**／**SQLite にアドバイザリロックが無い**（`pg_advisory_lock` 相当が無く、結局ファイルか行ロックの自作になる）／**ジョブ記録は監査ログではない**（監査の正は DB の `audit_logs`）。⚠️ **前提は1ホスト**。複数インスタンス化するときは DB 行ロックへ差し替える。
+  - ⚠️ **長時間ジョブ中のプロセス管理（明文化）**：**ジョブ全体のタイムアウトは無い**（効くのは AI 1呼び出しごとの `AI_TIMEOUT_SECONDS` / `AI_CRAWL_TIMEOUT_SECONDS` だけ）。**キャンセル API も無い**（止めるにはプロセスを落とす）。落とすとジョブ記録が非終端のまま残りロックも残るので、**ロックに持ち主の PID を書き、次に同じ period を要求したときに生存確認（`os.kill(pid, 0)`）で回収**し、記録を `Failed`（`AbandonedRunError`）にする。⚠️ **PID は再利用されうる**ので、生きていると誤判定して回収に失敗することがある（安全側の誤り。手で `_runs/locks/*.lock` を消す）。逆向き（走っているジョブのロックを奪う）は起きない。
+  - ⚠️ **DB セッションを実行中ずっと開かない。** config の固定と監査ログの書き込みで**そのつど開いて閉じる**（90分開けたままだと監査ログが1件も commit されず、SQLite では他の書き込みも待たされる）。
+  - **`prepare()` と `execute()` を分けた。** `POST /run`（T-27）は 202 を即返すが、**二重起動（409）と入力の不備（422）は応答を返す前に判定しなければならない**。ロックの取得までを `prepare()` で同期に済ませ、90分かかる `execute()` を背後に回す。⚠️ ロックは `execute()` の `finally` で外れるので、**`prepare()` したら必ず `execute()` すること**。
+  - **リトライ（§8.4 の `Failed → Queued`）は `prepare_retry(job_id)`。同じ `job_id` を使い回す**（§8.4 の矢印が同じジョブの遷移なので）。失敗した段から再開し、その先の「完了済み」は取り消す（取り消さないと `remaining_steps` がその段を飛ばす）。⚠️ **config は取り直す**（§6.3 は「実行開始時点」の revision で、リトライは新しい実行）。入口は CLI の `--retry`。**HTTP には出していない**（§3.3 に対応する要求が無い。必要になったら T-27 の `POST /run` へ足す）。
+  - **監査ログは `run_start` / `run_finish` / `artifact_created` の3種**（§4.4 の enum に既にある）。`diff` には job_id・種別・状態・trigger・開始段・試行回数を入れ、**config の中身は入れない**（実行系で判断基準そのものを残す理由が無い。固定した `revision` から `config_revisions` を引ける）。⚠️ **`run_start` が書けなければジョブを始めない**（`AuditService` の「握り潰さない」方針。誰が動かしたか分からない実行を作らない）。
+  - **月次 filter の週次レポート再利用（§13.1 notes）は T-21 の `FilterWorker` が既に持っている**（`history_reader=ReportStore`。`monthly_lookback_months` で遡る）。Orchestrator 側で足したものは無い。
+  - ⚠️ **`Queued → Failed` の1本は §8.4 の図に無い**（足した）。受付の後・1段目に入る前に落ちた場合（監査ログが書けない等）を「実行中でも完了でもない」まま残さないため。→ **§8.4 の図に1本足す必要がある（T-38）**。
+  - ⚠️ **`_runs/` は成果物ではないが `artifact_root` の下に置いた**（設計書 §2 に記述が無い置き場）。→ **T-38 の確認対象**。
+  - **実績**: `make lint` / `make type-check`（診断数は着手前と同じ7件＝新規ゼロ） / `make test` すべて通過。テストは **1894件**（T-26 で +83：状態機械 27 / ジョブ記録とロック 26 / Orchestrator 39 ＝ 新規 92 に対し、T-45 の CLI テスト 37件を 28件へ置換）。
 
 #### - [ ] T-27: `POST /run/{type}` / `GET /reports/{period}` / 生成物配信
 - **対応**: §3.2・§3.3
@@ -1308,6 +1322,12 @@ flowchart TD
     - 設計書 §7.3・§8.2 の週刊の出力 → **対象業界の数だけ HTML が出る**（`weekly_..._{industry}_{period}.html` を業界ごとに1通）
     - 実装は `enterprise/entities/config.py`（`target_industries` / 読み出し口 `WeeklyThresholds.industries`）・`config_validation.py`（`check_target_industries_reference` と新コード `duplicate_industry_reference`）・`adapter/html/weekly_renderer.py`（`resolve_industry()`）
   - ⚠️ **仕様書 §5.2 の確定 JSON に `tunable_thresholds.dedup.monthly_lookback_months`（既定 3）を追記する**（2026-08-16 の決定2＝要確認事項 #11）。あわせて **§11.1 の「直近数ヶ月」をこの鍵の参照へ書き換え**、§7.2 の「重複判定パラメータ `dedup.*`」がこの鍵を含むことを確認する
+  - ⚠️ **設計書 §8.3・§8.4 をジョブ実行の実装に合わせて改訂する**（2026-08-17 の T-26）：
+    - §8.4 の状態遷移図に **`Queued --> Failed`** を1本足す（受付の後・1段目に入る前に落ちた場合を「実行中でも完了でもない」まま残さないため）
+    - §8.3 に **`resume_from=auto`**（前段成果物の存在確認で crawl だけを省く）を追記し、**render まで自動で飛ばさない**ことを明記する
+    - §2（成果物の置き場）に **`_runs/{job_id}.json`（ジョブ記録）と `_runs/locks/{type}_{period}.lock`（二重起動防止）** を追記する。⚠️ 成果物ではないが `artifact_root` の下に置いている
+    - §8 に**長時間ジョブの割り切り**を明記する：ジョブ全体のタイムアウトは無い／キャンセル API は無い／落ちたプロセスのロックは PID の生存確認で回収する
+    - 実装は `enterprise/entities/run_job.py`（遷移表）・`adapter/storage/job_store.py`（記録とロック）・`application/usecases/run_orchestrator.py`
   - ⚠️ **設計書 §3.3 の `PUT /config` リクエスト例を直す**（T-11 で判明）：例は `min_total_score_to_publish` を 62 にしているが、§5.2 の `share_only` が 60 なので **§2.1.1-2 の降順整合（`share_only ≥ min_total_score_to_publish`）に違反し、実装は 422 を返す**。値を下げるか、`adoption_class_score_map` も併せて上げる例に差し替える
   - **認証まわりの運用手順**を README に明記：初回セットアップ（`make migrate-all` → `make create-admin` → ログイン）／ユーザーの昇格手順／サービストークンの設定
   - **`AuthenticationBackend` の差し替え口**（どのプロトコルを実装し、どこで DI を差し替えるか）を README と CLAUDE.md に明記。**「SSO は現時点でやらない。これは将来の余地であって対応済みではない」**ことも併記（§1.1 備考）
