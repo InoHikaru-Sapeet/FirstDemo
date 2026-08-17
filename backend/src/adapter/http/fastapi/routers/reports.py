@@ -41,7 +41,7 @@ from pydantic import BaseModel
 from adapter.http.fastapi.auth.dependencies import require_permission
 from adapter.http.fastapi.routers.files import file_url
 from adapter.storage.artifact_store import (
-    WEEKLY_HTML_RE,
+    WEEKLY_HTML_NAME,
     ArtifactStore,
     ArtifactStoreError,
 )
@@ -178,9 +178,13 @@ def _parse(period: str) -> Period:
 
 
 def _industry_of(filename: str) -> str | None:
-    """週刊 HTML の正規名から業界名を取り出す（一覧の表示用）。"""
-    matched = WEEKLY_HTML_RE.match(filename)
-    return matched.group("industry") if matched else None
+    """週刊 HTML の正規名から業界名を取り出す（一覧の表示用）。
+
+    ⚠️ 解析も生成も `WEEKLY_HTML_NAME`（T-02）の1つの書式から導かれる。
+    ここで正規表現を書き直さないこと。
+    """
+    fields = WEEKLY_HTML_NAME.parse(filename)
+    return fields["industry"] if fields else None
 
 
 __all__ = [

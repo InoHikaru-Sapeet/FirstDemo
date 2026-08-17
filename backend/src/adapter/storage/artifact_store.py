@@ -19,10 +19,11 @@ import os
 import re
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
+from string import Formatter
 
 from config import Settings, get_settings
 from enterprise.entities import period as period_entity
@@ -45,16 +46,127 @@ MONTHLY_CASES_FILENAME = "monthly_ai_leading_cases.xlsx"
 WEEKLY_PERIOD_RE = period_entity.WEEKLY_PERIOD_RE
 MONTHLY_PERIOD_RE = period_entity.MONTHLY_PERIOD_RE
 
-# 生成 HTML の正規名（週刊は業界ごとに1通＝T-46 Step 4）。⚠️ **`weekly_html_path()` /
-# `monthly_html_path()` と同じ形をここでも書いている。** 片方を変えたら
-# もう片方も変えること（`tests/adapter/test_artifact_store.py` が一致を固定）。
-WEEKLY_HTML_PREFIX = "weekly_ai_intelligence_newsletter_"
-MONTHLY_HTML_PREFIX = "monthly_belief_"
-WEEKLY_HTML_RE = re.compile(
-    rf"^{re.escape(WEEKLY_HTML_PREFIX)}(?P<industry>.+)_(?P<period>\d{{4}}-W\d{{2}})\.html$"
+
+def _unanchored(pattern: re.Pattern[str]) -> str:
+    """`^…$` を外した本体（より大きなパターンへ埋め込むための形）。
+
+    period の表記の定義は `enterprise.entities.period` が持つ（このモジュール
+    冒頭の⚠️）。ファイル名のパターンへ `\\d{4}-W\\d{2}` を書き写すと写しが増えるので、
+    アンカーだけ外して埋め込む。
+    """
+    return pattern.pattern.removeprefix("^").removesuffix("$")
+
+
+class ArtifactNameFormat:
+    """正規名の書式1つ。**生成・照合・探索をこの1つの書式から導く。**
+
+    ⚠️ **同じ形を2箇所に書かないための型**（T-27 で報告された二重定義の解消）。
+    以前は週刊 HTML の正規名を
+
+    - 生成: `weekly_html_path()` の f-string
+    - 照合: `WEEKLY_HTML_RE`（`is_servable()` の許可リスト）
+    - 探索: `weekly_html_paths()` の glob パターン
+
+    の3箇所に書いていた。片方だけ変えると「**自分が出したファイルを自分で
+    認識できない**」状態になる——生成した HTML が許可リストに載らず
+    `GET /files/{filename}` が 404 を返す、`GET /reports/{period}` の一覧から
+    消える、という形で表に出る。書式を1つにして3つの用途をすべて導けば、
+    片方だけ変えることが**構造的にできなくなる**。
+
+    Args:
+        template: `{field}` を含む書式（例
+            `weekly_ai_intelligence_newsletter_{industry}_{period}.html`）
+        field_patterns: 各フィールドが取りうる値の正規表現。**書式の
+            フィールドと過不足なく対応していること**（import 時に検査する）
+
+    Raises:
+        ArtifactStoreError: 書式とパターンが対応していない場合
+    """
+
+    def __init__(self, template: str, /, **field_patterns: str) -> None:
+        self.template = template
+        # (literal, field) の並び。`Formatter().parse()` は書式指定・変換も返すが、
+        # ファイル名に使う書式ではどちらも要らないので拒否する。
+        parts: list[tuple[str, str | None]] = []
+        for literal, field, spec, conversion in Formatter().parse(template):
+            if field is not None and (spec or conversion):
+                raise ArtifactStoreError(
+                    f"書式指定・変換は使えません: {template!r}（{field!r}）"
+                )
+            parts.append((literal, field or None))
+        self._parts = tuple(parts)
+
+        fields = [field for _, field in self._parts if field is not None]
+        if len(fields) != len(set(fields)):
+            raise ArtifactStoreError(f"同じフィールドが2度出てきます: {template!r}")
+        if set(fields) != set(field_patterns):
+            raise ArtifactStoreError(
+                f"書式のフィールド {sorted(fields)} と "
+                f"パターン {sorted(field_patterns)} が一致しません: {template!r}"
+            )
+        self.fields: tuple[str, ...] = tuple(fields)
+        self._field_patterns: Mapping[str, str] = dict(field_patterns)
+        self.pattern: re.Pattern[str] = re.compile(
+            "^"
+            + "".join(
+                re.escape(literal)
+                + (
+                    ""
+                    if field is None
+                    else f"(?P<{field}>{self._field_patterns[field]})"
+                )
+                for literal, field in self._parts
+            )
+            + "$"
+        )
+
+    def format(self, **values: str) -> str:
+        """正規名を組み立てる（**全フィールドを渡すこと**）。
+
+        Raises:
+            ArtifactStoreError: フィールドが過不足する場合
+        """
+        if set(values) != set(self.fields):
+            raise ArtifactStoreError(
+                f"{self.template!r} に渡す値が合いません: "
+                f"必要 {sorted(self.fields)} / 受領 {sorted(values)}"
+            )
+        return self.template.format(**values)
+
+    def glob(self, **values: str) -> str:
+        """未指定のフィールドを `*` にした glob パターン（`Path.glob()` 用）。
+
+        ⚠️ **値そのものは glob のメタ文字として解釈される。** 呼び出し側は
+        検証済みの値（`validate_period()` を通した period 等）だけを渡すこと。
+        """
+        unknown = sorted(set(values) - set(self.fields))
+        if unknown:
+            raise ArtifactStoreError(f"{self.template!r} に無いフィールド: {unknown}")
+        return "".join(
+            literal + ("" if field is None else values.get(field, "*"))
+            for literal, field in self._parts
+        )
+
+    def parse(self, filename: str) -> dict[str, str] | None:
+        """正規名ならフィールドの値、そうでなければ `None`。"""
+        matched = self.pattern.match(filename)
+        return matched.groupdict() if matched else None
+
+    def matches(self, filename: str) -> bool:
+        return self.pattern.match(filename) is not None
+
+
+# 生成 HTML の正規名（週刊は業界ごとに1通＝T-46 Step 4）。
+WEEKLY_HTML_NAME = ArtifactNameFormat(
+    "weekly_ai_intelligence_newsletter_{industry}_{period}.html",
+    # 業界名は config の値（日本語）。パス区切りが混じらないことは
+    # `_validate_segment()` が見るので、ここは「1文字以上」でよい。
+    industry=r".+",
+    period=_unanchored(WEEKLY_PERIOD_RE),
 )
-MONTHLY_HTML_RE = re.compile(
-    rf"^{re.escape(MONTHLY_HTML_PREFIX)}(?P<period>\d{{4}}-\d{{2}})\.html$"
+MONTHLY_HTML_NAME = ArtifactNameFormat(
+    "monthly_belief_{period}.html",
+    period=_unanchored(MONTHLY_PERIOD_RE),
 )
 
 # 期間に紐づかない配信対象（固定名の中間xlsx）。⚠️ `config.json` は入れない。
@@ -183,10 +295,10 @@ class ArtifactStore:
     def weekly_html_path(self, industry: str, period: str) -> Path:
         _validate_segment(industry, label="industry")
         validate_period(period)
-        return self.root / f"{WEEKLY_HTML_PREFIX}{industry}_{period}.html"
+        return self.root / WEEKLY_HTML_NAME.format(industry=industry, period=period)
 
     def monthly_html_path(self, period: str) -> Path:
-        return self.root / f"{MONTHLY_HTML_PREFIX}{validate_period(period)}.html"
+        return self.root / MONTHLY_HTML_NAME.format(period=validate_period(period))
 
     def weekly_html_paths(self, period: str) -> list[Path]:
         """その週に**実際に出力された**週刊 HTML（業界ごとに1通。T-46 Step 4）。
@@ -201,7 +313,7 @@ class ArtifactStore:
            （設定を変えた後でも、出していない業界のリンクを並べない）。
         """
         validate_period(period)
-        return sorted(self.root.glob(f"{WEEKLY_HTML_PREFIX}*_{period}.html"))
+        return sorted(self.root.glob(WEEKLY_HTML_NAME.glob(period=period)))
 
     # --- 配信できる成果物（T-27。生成物配信の許可リスト）------------------
 
@@ -226,7 +338,7 @@ class ArtifactStore:
             return False
         if filename in SERVABLE_FIXED_FILENAMES:
             return True
-        return bool(WEEKLY_HTML_RE.match(filename) or MONTHLY_HTML_RE.match(filename))
+        return WEEKLY_HTML_NAME.matches(filename) or MONTHLY_HTML_NAME.matches(filename)
 
     def servable_path(self, filename: str) -> Path | None:
         """配信してよい実在のファイル。**それ以外は `None`**。

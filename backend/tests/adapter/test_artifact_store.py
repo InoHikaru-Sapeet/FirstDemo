@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from adapter.storage.artifact_store import (
+    MONTHLY_HTML_NAME,
+    WEEKLY_HTML_NAME,
+    ArtifactNameFormat,
     ArtifactStore,
     ArtifactStoreError,
     validate_period,
@@ -81,6 +84,107 @@ def test_path_traversal_via_industry_is_rejected(
 def test_path_traversal_via_dry_run_id_is_rejected(store: ArtifactStore) -> None:
     with pytest.raises(ArtifactStoreError):
         store.dry_run_dir("../../escape")
+
+
+# --- 正規名の書式（生成・照合・探索が1つの定義から導かれること）--------------
+#
+# ⚠️ T-27 で「`WEEKLY_HTML_RE` と `weekly_html_path()` が同じ形を2箇所に持って
+# いる」と報告された件の固定。**書式を変えるとこの節の複数のテストが同時に
+# 落ちる**（＝片方だけ変えることが構造的にできない）ことを確かめる。
+
+
+@pytest.mark.parametrize(
+    ("industry", "period"),
+    [("不動産", "2026-W31"), ("製造", "2026-W01"), ("a b", "2025-W52")],
+)
+def test_generated_weekly_html_names_are_recognised_by_the_same_format(
+    store: ArtifactStore, industry: str, period: str
+) -> None:
+    """出した名前を自分で認識できること（配信の許可リストが 404 を出さない）。"""
+    name = store.weekly_html_path(industry, period).name
+
+    assert store.is_servable(name)
+    assert WEEKLY_HTML_NAME.parse(name) == {"industry": industry, "period": period}
+
+
+def test_generated_monthly_html_names_are_recognised_by_the_same_format(
+    store: ArtifactStore,
+) -> None:
+    name = store.monthly_html_path("2026-07").name
+
+    assert store.is_servable(name)
+    assert MONTHLY_HTML_NAME.parse(name) == {"period": "2026-07"}
+
+
+def test_the_weekly_glob_finds_exactly_the_names_the_format_generates(
+    store: ArtifactStore,
+) -> None:
+    """探索（glob）も同じ書式から導かれること。
+
+    ⚠️ ここが生成とずれると、`GET /reports/{period}` の一覧から HTML が消える
+    （ファイルは在るのに見つからない）。
+    """
+    for industry in ("不動産", "製造"):
+        store.write_text(store.weekly_html_path(industry, "2026-W31"), "<html></html>")
+    # 別の週・別の種類は拾わないこと
+    store.write_text(store.weekly_html_path("不動産", "2026-W30"), "<html></html>")
+    store.write_text(store.monthly_html_path("2026-07"), "<html></html>")
+
+    found = store.weekly_html_paths("2026-W31")
+
+    assert [path.name for path in found] == [
+        store.weekly_html_path("不動産", "2026-W31").name,
+        store.weekly_html_path("製造", "2026-W31").name,
+    ]
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        # 週次の period 表記でない（月次の表記・桁不足・接頭辞違い）
+        "weekly_ai_intelligence_newsletter_不動産_2026-07.html",
+        "weekly_ai_intelligence_newsletter_不動産_2026-W3.html",
+        "weekly_ai_intelligence_newsletter_2026-W31.html",  # industry が無い
+        "monthly_belief_2026-W31.html",
+        "monthly_belief_2026-7.html",
+        "weekly_ai_intelligence_newsletter_不動産_2026-W31.htm",
+    ],
+)
+def test_names_outside_the_format_are_not_servable(
+    store: ArtifactStore, filename: str
+) -> None:
+    assert not store.is_servable(filename)
+
+
+def test_the_period_pattern_comes_from_the_period_entity() -> None:
+    """ファイル名のパターンに period の表記を書き写していないこと。
+
+    `enterprise.entities.period` が表記の定義を持つ（モジュール冒頭の⚠️）。
+    ここに写しがあると、表記を変えたときに片方だけ古いまま残る。
+    """
+    assert WEEKLY_HTML_NAME.parse("weekly_ai_intelligence_newsletter_x_2026-W31.html")
+    assert (
+        WEEKLY_HTML_NAME.parse("weekly_ai_intelligence_newsletter_x_2026-31.html")
+        is None
+    )
+
+
+def test_a_format_rejects_fields_without_a_pattern() -> None:
+    """書式とパターンの対応漏れを import 時に落とす。"""
+    with pytest.raises(ArtifactStoreError):
+        ArtifactNameFormat("{a}_{b}.html", a=r".+")
+    with pytest.raises(ArtifactStoreError):
+        ArtifactNameFormat("{a}.html", a=r".+", b=r".+")
+    with pytest.raises(ArtifactStoreError):
+        ArtifactNameFormat("{a}_{a}.html", a=r".+")
+
+
+def test_a_format_rejects_incomplete_values() -> None:
+    """フィールドを渡し忘れた生成を通さない（`_2026-W31.html` を作らせない）。"""
+    with pytest.raises(ArtifactStoreError):
+        WEEKLY_HTML_NAME.format(period="2026-W31")
+    with pytest.raises(ArtifactStoreError):
+        WEEKLY_HTML_NAME.glob(industry="不動産", nope="x")
 
 
 # --- 原子的書き込み -------------------------------------------------------

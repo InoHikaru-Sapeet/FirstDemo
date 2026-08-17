@@ -1126,6 +1126,7 @@ flowchart TD
   - **`get_session_factory()` を `auth/dependencies.py` へ追加した。** `get_db_session` はリクエスト1回ぶんのセッションだが、ジョブは応答後 90分走るので閉じたセッションを掴めない。テストはここを差し替える（差し替え忘れると**本物の開発 DB** を掴む）。
   - **T-09 の申し送りを消化**：`/reports`・`/run` の HTTP 網羅テストを `test_rbac.py` の `REQUESTS` へ追加（`/run/{job_id}`・`/files/{filename}` も）。⚠️ **残る未実装行は `POST /config/dry-run`（T-29）だけ**。
   - **`ReportStore.read_exclusions()` に `period` を足した**（既存の `_exclusions_by_period()` を使う後方互換の追加）。除外ログは週次ブックに全期間ぶん積まれる（§8.1）ので、`summary.excluded` はそこから期間で切り出す。
+  - ⚠️ **正規名の二重定義を残した**（週刊 HTML の形を、生成する `weekly_html_path()`・照合する `WEEKLY_HTML_RE`・探索する `weekly_html_paths()` の glob の**3箇所**に書いていた。コメントで「片方を変えたらもう片方も」と注意していただけ）。→ **2026-08-17 の T-29 Step 0 で解消**（`ArtifactNameFormat` の書式1つから3用途を導く形へ）。
   - **実績**: `make lint` / `make type-check`（診断数は着手前と同じ7件） / `make test` すべて通過。テストは **1985件**（T-27 で +91：run ルーター 22 / reports・files ルーター 39 / RBAC 30）。
 
 #### - [x] T-28: ローカル実行ターゲットと本番cron TODO
