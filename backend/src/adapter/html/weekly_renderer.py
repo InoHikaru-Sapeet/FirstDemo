@@ -65,6 +65,22 @@
 ⚠️ **3 は `narrative` を絞らない。** 生成テキスト（`narrative_{period}.json`）は
 filter が作ったまま全件持っており、**この層が描画時に間引いているだけ**（Web の
 閲覧ページ＝T-36 は全件をトグルで開ける）。
+
+---
+
+**⚠️ 見出しとリンクの分離（2026-08-18 の T-50）**
+
+圧縮したカードで見出しが埋もれる、という PM 要件で**見出しを大きくし、リンクを
+出典行へ移した**。§9.2-4 に対する差分は2つで、いずれも**表示だけの変更**。
+→ **T-38 の改訂対象**。
+
+1. **見出しは `<a>` ではなくプレーンな段落**（`CARD_TITLE_FONT_SIZE`＝17px）。
+   §9.2-4 は「タイトル（`<a>` リンク・黒文字）」
+2. **記事へのリンクは出典行**（`出典：〈ソース〉（記事を読む）`）。§9.2-4 の
+   出典行は「出典：媒体 ／ 記事を読む」
+
+⚠️ **URL 列は今までどおり全カードで使う**（リンクの置き場が変わっただけ）。
+リンクにできない URL では括弧ごと出さない（`_source_line()`）。
 """
 
 import logging
@@ -120,8 +136,10 @@ PERIOD_LABEL_FORMAT = "対象週：{period}"
 POINT_OF_WEEK_HEADING = "今週のポイント"
 INDUSTRY_SECTION_FORMAT = "{industry}関連トピック"
 COMMON_SECTION_HEADING = "業界共通トピック"
-SOURCE_LINE_FORMAT = "出典：{source} ／ "
+SOURCE_LINE_FORMAT = "出典：{source}"
 READ_MORE_LABEL = "記事を読む"
+SOURCE_LINK_WRAPPER = "（{link}）"
+"""出典行に続く記事リンクの囲み（T-50）。**リンクにできない URL では出さない。**"""
 DOCUMENT_TITLE_FORMAT = "{brand}｜{badge}（{period}）"
 
 # --- 圧縮の確定値（T-48 Step 1）-----------------------------------------------
@@ -134,6 +152,11 @@ ELLIPSIS = "…"
 
 INSIGHTS_PER_SECTION = 1
 """示唆ボックスをフル表示するカード数（**各セクションの先頭から**）。"""
+
+# --- 見出しの体裁（T-50）------------------------------------------------------
+
+CARD_TITLE_FONT_SIZE = "17px"
+"""カード見出しの字の大きさ（T-48 Step 1 の 15px から一回り大きく）。"""
 
 # §9.2-5 フッタ注記（「編集部整理であり投資・法務助言でない旨」）。
 FOOTER_NOTE = (
@@ -536,16 +559,29 @@ def _insight_box(text: str) -> str:
 
 
 def _source_line(record: Mapping[str, Any]) -> str:
-    """§9.2-4 出典行「出典：〈ソース〉 ／ 記事を読む」。"""
+    """出典行「出典：〈ソース〉（記事を読む）」（T-50）。
+
+    ⚠️ **記事へのリンクはこの行が持つ**（見出しはリンクにしない）。§9.2-4 の
+    確定文言は「出典：媒体 ／ 記事を読む」だが、見出しから下線が消えた以上、
+    リンクだと分かる形は括弧で括ったこの1箇所だけになる。→ **T-38 の改訂対象**。
+
+    ⚠️ **リンクにできない URL では括弧ごと出さない。** `m.link()` は使えない URL を
+    `<span>` にして返す（記事は落とさない）が、それを括弧に入れると「（記事を読む）」
+    と書いてあるのに飛べない行になる。出典だけの行にする。
+    """
     source = str(record.get(COLUMN_SOURCE) or "").strip()
+    text = m.escape(SOURCE_LINE_FORMAT.format(source=source))
+    if m.safe_url(record.get(COLUMN_URL)) is not None:
+        text += SOURCE_LINK_WRAPPER.format(
+            link=m.link(
+                READ_MORE_LABEL,
+                record.get(COLUMN_URL),
+                style=m.styles(f"color:{ACCENT}", "text-decoration:none"),
+            )
+        )
     return m.element(
         "p",
-        m.escape(SOURCE_LINE_FORMAT.format(source=source))
-        + m.link(
-            READ_MORE_LABEL,
-            record.get(COLUMN_URL),
-            style=m.styles(f"color:{ACCENT}", "text-decoration:none"),
-        ),
+        text,
         style=m.styles("margin:14px 0 0 0", "font-size:11px", f"color:{MUTED_TEXT}"),
     )
 
@@ -587,9 +623,11 @@ def _card(
 ) -> str:
     """記事1件のコンパクトカード（T-48 Step 1）。
 
-    構成は **カテゴリ色バッジ → 見出し（リンク）→ 1行要約 → ［示唆ボックス］→
-    出典行**。示唆ボックスは `show_insight=True` のカードだけに出す
+    構成は **カテゴリ色バッジ → 見出し（プレーン）→ 1行要約 → ［示唆ボックス］→
+    出典行（リンク）**。示唆ボックスは `show_insight=True` のカードだけに出す
     （各セクション先頭の `INSIGHTS_PER_SECTION` 件。モジュール docstring）。
+
+    ⚠️ **見出しは `<a>` にしない**（T-50）。リンクは出典行だけが持つ。
     """
     category_id = record.get(COLUMN_CATEGORY)
     key = str(category_id) if category_id else ""
@@ -597,14 +635,10 @@ def _card(
         _category_badge(labels.get(key, key), color=color_of(key)),
         m.element(
             "p",
-            m.link(
-                record.get(COLUMN_TITLE),
-                record.get(COLUMN_URL),
-                style=m.styles(f"color:{TEXT}", "text-decoration:none"),
-            ),
+            m.escape(str(record.get(COLUMN_TITLE) or "").strip()),
             style=m.styles(
                 "margin:8px 0 0 0",
-                "font-size:15px",
+                f"font-size:{CARD_TITLE_FONT_SIZE}",
                 "font-weight:bold",
                 "line-height:1.5",
                 f"color:{TEXT}",
@@ -911,6 +945,7 @@ class WeeklyRenderer:
 __all__ = [
     "BADGE_TEXT",
     "BRAND_TITLE",
+    "CARD_TITLE_FONT_SIZE",
     "COMMON_SECTION_HEADING",
     "ELLIPSIS",
     "FOOTER_NOTE",
@@ -918,7 +953,10 @@ __all__ = [
     "INSIGHTS_PER_SECTION",
     "NOT_ADOPTED",
     "POINT_OF_WEEK_HEADING",
+    "READ_MORE_LABEL",
     "REFERENCED_COLUMNS",
+    "SOURCE_LINE_FORMAT",
+    "SOURCE_LINK_WRAPPER",
     "SUMMARY_MAX_FULLWIDTH_CHARS",
     "RenderedHtml",
     "WeeklyNarrative",

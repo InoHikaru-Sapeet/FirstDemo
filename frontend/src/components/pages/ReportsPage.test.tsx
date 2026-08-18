@@ -10,7 +10,11 @@
 
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ReportsPage, VIEWER_NOTICE } from "@/components/pages/ReportsPage";
+import {
+	READ_MORE_LABEL,
+	ReportsPage,
+	VIEWER_NOTICE
+} from "@/components/pages/ReportsPage";
 import { errorResponse, jsonResponse, stubFetch } from "@/test/http";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
@@ -325,6 +329,70 @@ describe("ReportsPage 週刊の記事トグル", () => {
 		expect(await screen.findByText("リンク無しの記事")).toBeVisible();
 		expect(
 			screen.queryByRole("link", { name: "リンク無しの記事" })
+		).not.toBeInTheDocument();
+	});
+
+	// --- 見出しとリンクの分離（T-50。メール版 `weekly_renderer` と対）-------
+
+	it("⚠️ 記事タイトルはプレーン見出しでリンクにしない", async () => {
+		stubWeekly({
+			sections: [
+				{
+					heading: "不動産関連トピック",
+					articles: [card(0, { title: "見出し" })]
+				}
+			]
+		});
+
+		renderWithProviders(<ReportsPage />);
+
+		expect(
+			await screen.findByRole("heading", { name: "見出し" })
+		).toBeVisible();
+		expect(
+			screen.queryByRole("link", { name: "見出し" })
+		).not.toBeInTheDocument();
+	});
+
+	it("記事へのリンクは出典行に置く（出典：〈ソース〉（記事を読む））", async () => {
+		stubWeekly({
+			sections: [
+				{
+					heading: "不動産関連トピック",
+					articles: [
+						card(0, {
+							source: "日経クロステック",
+							url: "https://example.com/42"
+						})
+					]
+				}
+			]
+		});
+
+		renderWithProviders(<ReportsPage />);
+
+		const link = await screen.findByRole("link", { name: READ_MORE_LABEL });
+		expect(link).toHaveAttribute("href", "https://example.com/42");
+		expect(link.closest("p")?.textContent).toBe(
+			`出典：日経クロステック（${READ_MORE_LABEL}）`
+		);
+	});
+
+	it("URL が使えない記事では出典行の括弧ごと出さない", async () => {
+		stubWeekly({
+			sections: [
+				{
+					heading: "不動産関連トピック",
+					articles: [card(0, { url: null, source: "個人ブログ" })]
+				}
+			]
+		});
+
+		renderWithProviders(<ReportsPage />);
+
+		expect(await screen.findByText("出典：個人ブログ")).toBeVisible();
+		expect(
+			screen.queryByRole("link", { name: READ_MORE_LABEL })
 		).not.toBeInTheDocument();
 	});
 });

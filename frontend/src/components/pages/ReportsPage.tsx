@@ -268,6 +268,11 @@ function WeeklyArticles({ period }: { period: string }) {
 	);
 }
 
+/** 出典行の文言（メール版 `weekly_renderer.SOURCE_LINE_FORMAT` と対）。 */
+const SOURCE_PREFIX = "出典：";
+/** 出典行に続く記事リンクの文言（メール版 `READ_MORE_LABEL` と対）。 */
+export const READ_MORE_LABEL = "記事を読む";
+
 /**
  * 記事1件のトグル行。
  *
@@ -275,6 +280,10 @@ function WeeklyArticles({ period }: { period: string }) {
  * （切っていない全文）と示唆**が出る。⚠️ `<details>` ではなく `aria-expanded` を
  * 持つボタンにしてあるのは、開閉の状態をテストとスクリーンリーダーの両方から
  * 同じ形で読めるようにするため。
+ *
+ * ⚠️ **見出しはリンクにしない**（T-50）。記事へのリンクは出典行が持つ
+ * （`出典：〈ソース〉（記事を読む）`）。メール版（`weekly_renderer._card()` /
+ * `_source_line()`）と同じ形にしてあるので、片方だけ直さないこと。
  */
 function ArticleRow({ article }: { article: ArticleCardData }) {
 	const [open, setOpen] = useState(false);
@@ -291,27 +300,33 @@ function ArticleRow({ article }: { article: ArticleCardData }) {
 				>
 					{article.category_label}
 				</span>
-				<span className="text-xs text-muted-foreground">
-					出典：{article.source}
-				</span>
 			</div>
 
-			<h4 className="mt-2 text-sm font-semibold">
-				{article.url === null ? (
-					// ⚠️ `http`/`https` でない URL はサーバーが `null` にして返す
-					// （メール版 `link()` と同じ判定）。リンクにしない。
-					article.title
-				) : (
-					<a
-						className="underline"
-						href={article.url}
-						target="_blank"
-						rel="noreferrer"
-					>
-						{article.title}
-					</a>
-				)}
+			{/* ⚠️ プレーン見出し（下線なし・一回り大きく）。T-50。 */}
+			<h4 className="mt-2 text-base font-semibold leading-snug">
+				{article.title}
 			</h4>
+
+			<p className="mt-1 text-xs text-muted-foreground">
+				{SOURCE_PREFIX}
+				{article.source}
+				{/* ⚠️ `http`/`https` でない URL はサーバーが `null` にして返す
+				    （メール版 `safe_url()` と同じ判定）。括弧ごと出さない。 */}
+				{article.url !== null && (
+					<>
+						（
+						<a
+							className="underline"
+							href={article.url}
+							target="_blank"
+							rel="noreferrer"
+						>
+							{READ_MORE_LABEL}
+						</a>
+						）
+					</>
+				)}
+			</p>
 
 			{hasDetail && (
 				<>

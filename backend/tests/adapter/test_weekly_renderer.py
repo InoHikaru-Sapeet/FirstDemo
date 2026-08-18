@@ -25,6 +25,7 @@ from adapter.html.category_colors import CATEGORY_COLORS
 from adapter.html.weekly_renderer import (
     BADGE_TEXT,
     BRAND_TITLE,
+    CARD_TITLE_FONT_SIZE,
     COMMON_SECTION_HEADING,
     ELLIPSIS,
     FOOTER_NOTE,
@@ -32,7 +33,9 @@ from adapter.html.weekly_renderer import (
     INSIGHTS_PER_SECTION,
     NOT_ADOPTED,
     POINT_OF_WEEK_HEADING,
+    READ_MORE_LABEL,
     REFERENCED_COLUMNS,
+    SOURCE_LINE_FORMAT,
     SUMMARY_MAX_FULLWIDTH_CHARS,
     WeeklyNarrative,
     WeeklyRenderer,
@@ -409,7 +412,10 @@ def test_the_category_badge_is_a_filled_chip_not_colored_text(
     assert f"color:{BADGE_TEXT}" in markup
 
 
-def test_a_card_links_the_title_to_the_url_column(config: IntelligenceConfig) -> None:
+def test_a_card_uses_the_url_column_for_the_article_link(
+    config: IntelligenceConfig,
+) -> None:
+    """URL 列は今までどおり使う（**リンクの置き場が出典行へ移った**だけ。T-50）。"""
     markup = render([article(url="https://example.com/news/42")], config)
 
     assert 'href="https://example.com/news/42"' in markup
@@ -419,6 +425,66 @@ def test_a_card_shows_the_one_line_summary(config: IntelligenceConfig) -> None:
     markup = render([article(summary="要約テキスト。")], config)
 
     assert "要約テキスト。" in markup
+
+
+# --- 見出しとリンクの分離（T-50）---------------------------------------------
+
+
+def test_the_card_title_is_a_plain_heading_not_a_link(
+    config: IntelligenceConfig,
+) -> None:
+    """見出しは `<a>` にしない（下線なしのプレーン見出し）。
+
+    ⚠️ 「リンクが1つある」だけでは足りない（出典行のリンクが1つある）。
+    **見出しの文字列がアンカーの中に無い**ことまで見る。
+    """
+    markup = render([article(title="見出しの記事")], config)
+
+    assert "見出しの記事" in markup
+    assert ">見出しの記事</a>" not in markup
+    assert markup.count("<a ") == 1  # 出典行の「記事を読む」だけ
+
+
+def test_the_card_title_is_one_size_larger_than_the_summary(
+    config: IntelligenceConfig,
+) -> None:
+    """一回り大きく（T-48 Step 1 の 15px から `CARD_TITLE_FONT_SIZE` へ）。"""
+    markup = render([article()], config)
+
+    assert f"font-size:{CARD_TITLE_FONT_SIZE}" in markup
+    assert int(CARD_TITLE_FONT_SIZE.removesuffix("px")) > 15
+
+
+def test_the_article_link_lives_in_the_source_line(
+    config: IntelligenceConfig,
+) -> None:
+    """「出典：〈ソース〉（記事を読む）」の形（T-50）。"""
+    markup = render(
+        [article(source="日経クロステック", url="https://example.com/news/42")], config
+    )
+
+    expected = SOURCE_LINE_FORMAT.format(source="日経クロステック")
+    assert expected in markup
+    assert f'{expected}（<a href="https://example.com/news/42"' in markup
+    assert f">{READ_MORE_LABEL}</a>）" in markup
+
+
+def test_a_card_without_a_usable_url_shows_the_source_only(
+    config: IntelligenceConfig,
+) -> None:
+    """リンクにできない URL では括弧ごと出さない（飛べない「記事を読む」を作らない）。
+
+    ⚠️ **記事自体は落とさない**（T-23 `link()` の方針と同じ）。
+    """
+    markup = render(
+        [article(title="飛べない記事", source="個人ブログ", url="javascript:alert(1)")],
+        config,
+    )
+
+    assert "飛べない記事" in markup
+    assert SOURCE_LINE_FORMAT.format(source="個人ブログ") in markup
+    assert READ_MORE_LABEL not in markup
+    assert "<a " not in markup
 
 
 # --- 圧縮（T-48 Step 1）------------------------------------------------------
@@ -468,8 +534,8 @@ def test_a_long_summary_is_cut_in_the_card(config: IntelligenceConfig) -> None:
 def test_a_card_ends_with_the_source_line(config: IntelligenceConfig) -> None:
     markup = render([article(source="日経クロステック")], config)
 
-    assert "出典：日経クロステック ／ " in markup
-    assert "記事を読む" in markup
+    assert "出典：日経クロステック（" in markup
+    assert READ_MORE_LABEL in markup
 
 
 def test_an_unknown_category_still_renders_a_card(config: IntelligenceConfig) -> None:
