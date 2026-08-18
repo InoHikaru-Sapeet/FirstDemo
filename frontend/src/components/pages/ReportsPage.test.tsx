@@ -12,6 +12,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	ALL_INDUSTRIES_LABEL,
 	DIAGRAM_LABEL,
 	INITIAL_ARTICLE_COUNT,
 	POINT_OF_WEEK_HEADING,
@@ -112,6 +113,45 @@ const ARTICLES = {
 	// ⚠️ **点数順の1列**（T-52 Step 1。業界関連／業界共通の2セクションは廃止）。
 	articles: [card(0), card(1), card(2)]
 };
+
+/** 月刊の事例1件（`GET /reports/{period}/cases` の形。T-52 Step 2）。 */
+function monthlyCase(no: number, overrides: Record<string, unknown> = {}) {
+	return {
+		no,
+		chapter: "第1章 業務自動化",
+		organizations: ["A社"],
+		title: `事例${no}`,
+		url: `https://example.com/case/${no}`,
+		source: "ITmedia（2026-07-27）",
+		paragraphs: ["事実の段落。", "詳細の段落。", "示唆の段落。"],
+		// ⚠️ 業界タグは月次8列に無い値（サーバーが narrative から解決したもの）。
+		industries: ["不動産"],
+		diagram: null,
+		...overrides
+	};
+}
+
+const CASES = {
+	period: MONTHLY,
+	editorial_subtitle: "問われ始めた月",
+	editorial: "俯瞰の段落。",
+	closing: "来月への視点。",
+	industries: ["不動産", "金融"],
+	cases: [monthlyCase(1), monthlyCase(2, { industries: ["金融"] })]
+};
+
+/** 月刊を開ける状態の一式（事例まで揃った形）。 */
+function stubMonthly(overrides: Record<string, unknown> = {}) {
+	return stubFetch({
+		"/api/auth/me": () => jsonResponse(ADMIN),
+		"/api/reports": () => jsonResponse(LIST),
+		[`/api/reports/${WEEKLY}`]: () => jsonResponse(WEEKLY_REPORT),
+		[`/api/reports/${MONTHLY}`]: () => jsonResponse(MONTHLY_REPORT),
+		[`/api/reports/${WEEKLY}/articles`]: () => jsonResponse(ARTICLES),
+		[`/api/reports/${MONTHLY}/cases`]: () =>
+			jsonResponse({ ...CASES, ...overrides })
+	});
+}
 
 /** 週刊が既定で開く状態の一式（記事まで揃った形）。 */
 function stubWeekly(overrides: Record<string, unknown> = {}) {
@@ -571,37 +611,96 @@ describe("ReportsPage 週刊の記事トグル", () => {
 });
 
 describe("ReportsPage 生成物へのリンク", () => {
-	it("メール版 HTML と中間xlsx へのリンクを `/api` 付きで出す", async () => {
+	it("⚠️ 「メール版 HTML を開く」リンクは出さない（T-52 Step 2）", async () => {
 		stubWeekly();
 
 		renderWithProviders(<ReportsPage />);
 
-		const html = await screen.findByRole("link", {
-			name: "メール版 HTML を開く"
-		});
-		expect(html).toHaveAttribute(
-			"href",
-			`/api${WEEKLY_REPORT.html_urls[0].url}`
-		);
-		expect(
-			screen.getByRole("link", { name: "中間xlsx をダウンロード" })
-		).toHaveAttribute("href", `/api${WEEKLY_REPORT.xlsx_url}`);
+		await screen.findByText("記事0");
+		// 生成 HTML は `GET /files` から従来どおり取れる（**廃止したのは導線だけ**）。
+		expect(screen.queryByText(/メール版/)).not.toBeInTheDocument();
 	});
 
-	it("月刊はメール版 HTML をそのまま埋め込む（記事トグルは出さない）", async () => {
+	it("中間xlsx へのリンクは `/api` 付きで残す", async () => {
 		stubWeekly();
+
+		renderWithProviders(<ReportsPage />);
+
+		expect(
+			await screen.findByRole("link", { name: "中間xlsx をダウンロード" })
+		).toHaveAttribute("href", `/api${WEEKLY_REPORT.xlsx_url}`);
+	});
+});
+
+describe("ReportsPage 月刊の事例（T-52 Step 2）", () => {
+	it("事例カードに業界タグを出す", async () => {
+		stubMonthly();
 
 		renderWithProviders(<ReportsPage />);
 
 		fireEvent.click(await screen.findByRole("button", { name: /2026-07/ }));
 
-		const frame = await screen.findByTitle("月刊ビリーフ（メール版 HTML）");
-		expect(frame).toHaveAttribute(
-			"src",
-			`/api${MONTHLY_REPORT.html_urls[0].url}`
-		);
+		expect(await screen.findByText("事例1")).toBeVisible();
+		expect(screen.getByText("CASE 01")).toBeVisible();
+		// 業界タグ（月次8列には無い値。narrative から来る）。
+		expect(screen.getAllByText("不動産").length).toBeGreaterThan(0);
+	});
+
+	it("業界チップで絞り込む（表示だけ・順序は変えない）", async () => {
+		stubMonthly();
+
+		renderWithProviders(<ReportsPage />);
+
+		fireEvent.click(await screen.findByRole("button", { name: /2026-07/ }));
+		await screen.findByText("事例1");
+
+		fireEvent.click(screen.getByRole("button", { name: "金融" }));
+
+		expect(await screen.findByText("事例2")).toBeVisible();
+		expect(screen.queryByText("事例1")).not.toBeInTheDocument();
+
+		// 「すべての業界」で絞り込みを外せる。
+		fireEvent.click(screen.getByRole("button", { name: ALL_INDUSTRIES_LABEL }));
+		expect(await screen.findByText("事例1")).toBeVisible();
+	});
+
+	it("⚠️ 候補が無い号ではチップを出さない", async () => {
+		stubMonthly({
+			industries: [],
+			cases: [monthlyCase(1, { industries: [] })]
+		});
+
+		renderWithProviders(<ReportsPage />);
+
+		fireEvent.click(await screen.findByRole("button", { name: /2026-07/ }));
+
+		expect(await screen.findByText("事例1")).toBeVisible();
 		expect(
-			screen.queryByRole("button", { name: "要約と示唆を開く" })
+			screen.queryByRole("button", { name: ALL_INDUSTRIES_LABEL })
+		).not.toBeInTheDocument();
+	});
+
+	it("巻頭言とむすびを出す", async () => {
+		stubMonthly();
+
+		renderWithProviders(<ReportsPage />);
+
+		fireEvent.click(await screen.findByRole("button", { name: /2026-07/ }));
+
+		expect(await screen.findByText("俯瞰の段落。")).toBeVisible();
+		expect(screen.getByText("来月への視点。")).toBeVisible();
+	});
+
+	it("⚠️ メール版 HTML の iframe は出さない（Web 版が唯一の閲覧形式）", async () => {
+		stubMonthly();
+
+		renderWithProviders(<ReportsPage />);
+
+		fireEvent.click(await screen.findByRole("button", { name: /2026-07/ }));
+
+		await screen.findByText("事例1");
+		expect(
+			screen.queryByTitle("月刊ビリーフ（メール版 HTML）")
 		).not.toBeInTheDocument();
 	});
 });

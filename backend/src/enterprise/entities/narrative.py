@@ -89,6 +89,30 @@ Python**（レンダラ）で、render に AI は足していない（§1.1）�
 （`case_diagram_key()`）。
 
 ⚠️ **図解は 0〜1個で、無くてよい**（鍵が無い＝図解なし）。
+
+---
+
+**⚠️ 月次の業界タグもここに置く**（2026-08-18 の T-52 Step 2）
+
+月刊の閲覧ページは**事例カードに業界タグを出し、業界チップで絞り込む**。ところが
+**月次8列（§8.2 の確定値）に「業界」の列は無い**——業界は週次22列の列19 のタグで、
+月次実行は採点済みの22列を1行も書かない（T-46 の実測）。
+
+置き場の候補は3つあり、**`case_industries`（この文書）を採った**:
+
+| 候補 | 採否 |
+|---|---|
+| 月次8列へ列を足す | ✗ §8.2 の確定値を動かさないのが T-52 の前提 |
+| 閲覧の口が22列から引く | ✗ 月次実行は22列を書かない（引く先が無い） |
+| **`narrative_{period}.json`** | ○ filter は昇格元の行を持っている |
+
+⚠️ **これは AI の申告ではない。** 業界タグは T-19 が config の候補から選んで
+週次22列の列19 へ入れた**確定した値**で、filter が事例へ昇格させた行から
+**そのまま写す**だけ（`diagrams` と同じファイルに住むが、出どころが違う）。
+narrative を「filter が書き render／閲覧が読む受け渡しファイル」と見れば置き場として
+自然で、AI に業界を聞き直す＝config と無関係な2つ目の定義を作ることを避けられる。
+
+⚠️ **鍵は図解と同じ `No` の文字列**（`case_diagram_key()`）。
 """
 
 from collections.abc import Iterable, Sequence
@@ -239,6 +263,9 @@ class MonthlyNarrativeDocument(_NarrativeDocument):
         closing_paragraphs: むすび（2段落：今月の総括 ＋ 来月の視点）
         case_diagrams: 事例の `No`（文字列）→ 図解（T-49）。事例ごとに 0〜1個で、
             鍵が無い事例には図解が無い（それが正常）
+        case_industries: 事例の `No`（文字列）→ **業界タグ**（T-52 Step 2）。
+            ⚠️ **AI の申告ではない**——昇格元の週次22列 列19 の値をそのまま写した
+            もの（モジュール docstring）。鍵が無い事例はタグ無しで描く
     """
 
     editorial_subtitle: str | None = None
@@ -246,6 +273,17 @@ class MonthlyNarrativeDocument(_NarrativeDocument):
     chapter_intros: dict[_NonEmptyText, _NonEmptyText] = Field(default_factory=dict)
     closing_paragraphs: list[_NonEmptyText] = Field(default_factory=list)
     case_diagrams: dict[_CaseNumberKey, Diagram] = Field(default_factory=dict)
+    case_industries: dict[_CaseNumberKey, list[_NonEmptyText]] = Field(
+        default_factory=dict
+    )
+
+    def industries_for(self, no: object) -> list[str]:
+        """その事例の業界タグ（無ければ空。T-52 Step 2）。"""
+        try:
+            key = case_diagram_key(no)
+        except (TypeError, ValueError):
+            return []
+        return list(self.case_industries.get(key, ()))
 
     @property
     def editorial(self) -> str | None:

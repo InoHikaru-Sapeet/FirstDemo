@@ -137,12 +137,47 @@ export async function fetchReport(period: string): Promise<Report> {
 	return apiJson(`/reports/${encodeURIComponent(period)}`, reportSchema);
 }
 
+/**
+ * `CaseCard`（月刊の事例。T-52 Step 2）。
+ *
+ * ⚠️ **業界タグはサーバーが `narrative_{period}.json` から解決した値**
+ * （月次8列に「業界」の列は無い）。フロントで推測して補わないこと。
+ */
+export const caseCardSchema = z.object({
+	no: z.number().int(),
+	chapter: z.string(),
+	organizations: z.array(z.string()),
+	title: z.string(),
+	url: z.string().nullable(),
+	source: z.string(),
+	paragraphs: z.array(z.string()),
+	industries: z.array(z.string()),
+	diagram: diagramSchema.nullable()
+});
+export type CaseCard = z.infer<typeof caseCardSchema>;
+
+export const casesSchema = z.object({
+	period: z.string(),
+	editorial_subtitle: z.string().nullable(),
+	editorial: z.string().nullable(),
+	closing: z.string().nullable(),
+	/** 業界チップの候補（**その号の事例に付いているタグだけ**）。 */
+	industries: z.array(z.string()),
+	cases: z.array(caseCardSchema)
+});
+export type Cases = z.infer<typeof casesSchema>;
+
 /** `GET /reports/{period}/articles`。**週刊のみ**（月刊は 404）。 */
 export async function fetchArticles(period: string): Promise<Articles> {
 	return apiJson(
 		`/reports/${encodeURIComponent(period)}/articles`,
 		articlesSchema
 	);
+}
+
+/** `GET /reports/{period}/cases`。**月刊のみ**（週刊は 404）。 */
+export async function fetchCases(period: string): Promise<Cases> {
+	return apiJson(`/reports/${encodeURIComponent(period)}/cases`, casesSchema);
 }
 
 /**

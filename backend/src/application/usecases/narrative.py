@@ -269,13 +269,20 @@ class NarrativeBuilder:
         )
 
     async def build_monthly(
-        self, cases: Sequence[MonthlyCase], *, period: Period
+        self,
+        cases: Sequence[MonthlyCase],
+        *,
+        period: Period,
+        industries: Mapping[int, Sequence[str]] | None = None,
     ) -> MonthlyNarrativeDocument:
         """巻頭言・章導入文・むすびを作る（**1往復**）。
 
         Args:
             cases: 当月の事例（`No` 昇順＝章グルーピング順。T-21 の出力）
             period: 対象月
+            industries: 事例の `No` → **業界タグ**（T-52 Step 2）。⚠️ **AI には
+                聞かない**——昇格元の週次22列 列19 の値をそのまま持ち込む
+                （`enterprise.entities.narrative` のモジュール docstring）
 
         Returns:
             `narrative_{period}.json` に書ける形
@@ -283,6 +290,7 @@ class NarrativeBuilder:
         Raises:
             AIClientError: AI 呼び出しの失敗（握り潰さない）
         """
+        case_industries = _case_industries(industries)
         chapters = _unique(case.chapter for case in cases)
         if not chapters:
             logger.warning(
@@ -290,6 +298,7 @@ class NarrativeBuilder:
                 "（period=%s・空の narrative を書きます）",
                 period.text,
             )
+            # ⚠️ 業界タグは事例が0件なら当然空（生成テキストと違い AI を待たない）。
             return MonthlyNarrativeDocument(period=period.text)
 
         result = await self._client.complete(
@@ -333,6 +342,7 @@ class NarrativeBuilder:
                 draft.closing_outlook.strip(),
             ],
             case_diagrams=diagrams,
+            case_industries=case_industries,
         )
 
 
@@ -367,7 +377,12 @@ def to_weekly_narrative(document: WeeklyNarrativeDocument) -> WeeklyNarrative:
 
 
 def to_monthly_narrative(document: MonthlyNarrativeDocument) -> MonthlyNarrative:
-    """`narrative_{period}.json` を T-25 の入力へ写す（週次と同じ理由・同じ形）。"""
+    """`narrative_{period}.json` を T-25 の入力へ写す（週次と同じ理由・同じ形）。
+
+    ⚠️ **業界タグ（`case_industries`）は渡さない。** 月刊 HTML の体裁に業界タグを
+    足すのは T-52 のスコープ外で、使うのは閲覧ページ（`GET /reports/{period}/cases`）
+    だけ。レンダラが受け取らなければ、描き忘れも描きすぎも起きない。
+    """
     return MonthlyNarrative(
         editorial_subtitle=document.editorial_subtitle,
         editorial=document.editorial,
@@ -699,6 +714,24 @@ def _monthly_case_lines(cases: Sequence[MonthlyCase]) -> list[str]:
 
 
 # --- 内部ヘルパ ---------------------------------------------------------------
+
+
+def _case_industries(
+    industries: Mapping[int, Sequence[str]] | None,
+) -> dict[str, list[str]]:
+    """事例の `No` → 業界タグ（鍵は図解と同じ文字列。T-52 Step 2）。
+
+    ⚠️ **空のタグは鍵ごと落とす**（「業界タグなし」と「空の配列」を分けない）。
+    鍵の作り方は `case_diagram_key()` の1箇所だけを通す。
+    """
+    if not industries:
+        return {}
+    cleaned: dict[str, list[str]] = {}
+    for no, tags in industries.items():
+        values = _unique(tags)
+        if values:
+            cleaned[case_diagram_key(no)] = values
+    return cleaned
 
 
 def _unique(values: Any) -> list[str]:

@@ -49,6 +49,7 @@ from application.usecases.filter import (
     category_distribution,
     format_category_distribution,
     format_score_distribution,
+    industry_tags,
 )
 from application.usecases.monthly_cases import CHAPTER_LABEL_FORMAT
 from application.usecases.narrative import (
@@ -66,6 +67,7 @@ from enterprise.entities.raw_article import RawArticle, dump_raw_articles
 from enterprise.entities.report_columns import (
     EXCLUSION_LOG_COLUMNS,
     MONTHLY_CASE_COLUMNS,
+    MULTI_VALUE_SEPARATOR,
     PARAGRAPH_SEPARATOR,
     WEEKLY_ARTICLE_COLUMNS,
     format_cell,
@@ -955,6 +957,61 @@ async def test_the_monthly_narrative_carries_editorial_intros_and_closing(
     assert len(narrative.editorial_paragraphs) == 3
     assert len(narrative.closing_paragraphs) == 2
     assert list(narrative.chapter_intros) == [result.cases[0]["トピック(章)"]]
+
+
+async def test_the_monthly_narrative_carries_the_industry_tags_of_each_case(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """T-52 Step 2：業界タグは**昇格元の週次22列 列19**から写す。
+
+    ⚠️ 月次8列に「業界」の列は無く（§8.2 の確定値）、月次実行は22列を1行も
+    書かない。ここで写さないと閲覧ページの業界チップの材料がどこにも残らない。
+    ⚠️ **AI には聞かない**（列19 は T-19 が config の候補から選んだ確定値）。
+    """
+    write_articles(store, [article()], MONTHLY_PERIOD)
+    client = ScriptedAIClient(
+        default_classification=classification(tags={"industry": ["不動産", "IT"]})
+    )
+
+    result = await worker(config, store, client).run(MONTHLY_PERIOD)
+
+    narrative = result.narrative
+    assert isinstance(narrative, MonthlyNarrativeDocument)
+    assert result.cases[0]["No"] == 1
+    assert narrative.case_industries == {"1": ["不動産", "IT"]}
+    assert narrative.industries_for(1) == ["不動産", "IT"]
+
+
+async def test_the_industry_tags_are_not_asked_of_the_ai(
+    config: IntelligenceConfig, store: ArtifactStore
+) -> None:
+    """⚠️ 生成テキストのプロンプト・出力スキーマに業界タグの欄を作らない。
+
+    聞くと config（列19 の候補＝T-19）と無関係な2つ目の定義が生まれる。
+    """
+    write_articles(store, [article()], MONTHLY_PERIOD)
+    client = ScriptedAIClient()
+
+    await worker(config, store, client).run(MONTHLY_PERIOD)
+
+    monthly_prompt = next(
+        call.prompt for call in client.calls if "巻頭言" in call.prompt
+    )
+    assert "業界" not in monthly_prompt
+
+
+def test_the_industry_column_is_read_whether_it_is_a_list_or_a_joined_string() -> None:
+    """列19「業界」は multi（リーダは `list`、生の xlsx なら `;` 区切り）。
+
+    ⚠️ **値が無い行では空**（`case_industries` はそこで鍵ごと落ちる＝
+    「タグなし」と「空の配列」を分けない）。
+    """
+    joined = MULTI_VALUE_SEPARATOR.join(["不動産", "業界横断"])
+
+    assert industry_tags({"業界": ["不動産", "業界横断"]}) == ["不動産", "業界横断"]
+    assert industry_tags({"業界": joined}) == ["不動産", "業界横断"]
+    assert industry_tags({"業界": " "}) == []
+    assert industry_tags({}) == []
 
 
 async def test_a_weekly_run_makes_no_monthly_narrative(

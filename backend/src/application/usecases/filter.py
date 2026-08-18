@@ -115,6 +115,7 @@ from enterprise.entities.period import Period, PeriodError, parse_period
 from enterprise.entities.raw_article import RawArticle, parse_raw_articles
 from enterprise.entities.report_columns import (
     EXCLUSION_LOG_COLUMNS,
+    MULTI_VALUE_SEPARATOR,
     WEEKLY_ARTICLE_COLUMNS,
     format_row,
 )
@@ -159,6 +160,8 @@ RELIABILITY_AXIS_ID = "reliability"
 # 参照する週次22列（列名の正は T-07。ここは「どの列を見るか」だけを持つ）。
 COLUMN_CATEGORY = "情報カテゴリ"
 COLUMN_TOTAL_SCORE = "合計スコア"
+COLUMN_INDUSTRY = "業界"
+COLUMN_URL = "URL"
 
 # 診断ログの区切り（T-46 Step 2）。
 DIAGNOSTIC_SEPARATOR = " / "
@@ -404,11 +407,18 @@ class FilterWorker:
 
         cases = await self._build_cases(records, classified_articles, parsed)
         metas.extend(self._case_builder.ai_calls)
+        # ⚠️ **業界タグは事例へ昇格した行から写す**（T-52 Step 2）。月次8列に
+        # 「業界」の列は無く（§8.2 の確定値）、月次実行は22列を1行も書かないので、
+        # ここで拾わないと閲覧ページの業界チップの材料がどこにも残らない。
+        # **AI には聞かない**（列19 は T-19 が config の候補から選んだ確定値）。
+        case_industries = self._case_industries(records, cases)
 
         # ⚠️ **生成テキストは採用が確定した後**（決定3・T-44）。採否・重複・
         # フォーマット不備で外れた記事の示唆を書かせない（無駄な出力であるうえ、
         # 載らない記事の文章がファイルに残ると混乱する）。
-        narrative = await self._build_narrative(records, cases, parsed)
+        narrative = await self._build_narrative(
+            records, cases, parsed, industries=case_industries
+        )
         metas.extend(self._narrator.ai_calls)
 
         validation_path = self._write_validation(check.report, parsed)
@@ -545,11 +555,37 @@ class FilterWorker:
             )
         return await self._case_builder.build(candidates, period=period.text)
 
+    def _case_industries(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        cases: Sequence[MonthlyCase],
+    ) -> dict[int, list[str]]:
+        """事例の `No` → 業界タグ（週次22列 列19 の値。T-52 Step 2）。
+
+        ⚠️ **引き当ては URL**。事例の行（月次8列）は22列の行から作られており、
+        列22「URL」は §12.1 の非空必須項目で記事を一意に指せる唯一の列
+        （示唆の鍵と同じ理由＝T-44）。`No` は事例側の通し番号なので22列からは引けない。
+
+        ⚠️ **見つからない事例は鍵ごと置かない**（空の配列を持たせない）。
+        """
+        by_url: dict[str, list[str]] = {}
+        for record in records:
+            url = str(record.get(COLUMN_URL) or "").strip()
+            if url:
+                by_url.setdefault(url, industry_tags(record))
+        return {
+            case.no: tags
+            for case in cases
+            if (tags := by_url.get(case.url.strip(), []))
+        }
+
     async def _build_narrative(
         self,
         records: Sequence[Mapping[str, Any]],
         cases: Sequence[MonthlyCase],
         period: Period,
+        *,
+        industries: Mapping[int, Sequence[str]] | None = None,
     ) -> NarrativeDocument:
         """生成テキストを作る（決定3・T-44。**period ごとに AI 1往復**）。
 
@@ -559,7 +595,9 @@ class FilterWorker:
         """
         if period.is_weekly:
             return await self._narrator.build_weekly(records, period=period)
-        return await self._narrator.build_monthly(cases, period=period)
+        return await self._narrator.build_monthly(
+            cases, period=period, industries=industries
+        )
 
     def _write_validation(self, report: ValidationReport, period: Period) -> Path:
         """`validation_{period}.json` を書く（T-20 申し送り③）。"""
@@ -799,6 +837,24 @@ def _number(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
 
 
+def industry_tags(record: Mapping[str, Any]) -> list[str]:
+    """週次22列 列19「業界」（multi）を読む（T-52 Step 2）。
+
+    リーダは `list[str]` を返すが、xlsx から直に読んだ場合は `;` 区切りの文字列に
+    なりうるので両方を受ける（区切りは T-07 の定義だけを使う）。
+    """
+    value = record.get(COLUMN_INDUSTRY)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts: list[str] = value.split(MULTI_VALUE_SEPARATOR)
+    elif isinstance(value, (list, tuple)):
+        parts = [str(part) for part in value]
+    else:
+        parts = [str(value)]
+    return [part.strip() for part in parts if part.strip()]
+
+
 def low_score_log_entry(article: RawArticle, reason: str) -> dict[str, Any]:
     """採否で外した記事の除外ログ1行（§13.3-5 `除外区分=低スコア/信頼性不足`）。"""
     return {
@@ -814,7 +870,9 @@ def low_score_log_entry(article: RawArticle, reason: str) -> dict[str, Any]:
 __all__ = [
     "CATEGORY_LOW_SCORE",
     "COLUMN_CATEGORY",
+    "COLUMN_INDUSTRY",
     "COLUMN_TOTAL_SCORE",
+    "COLUMN_URL",
     "FilterError",
     "FilterResult",
     "FilterWorker",
@@ -823,6 +881,7 @@ __all__ = [
     "category_distribution",
     "format_category_distribution",
     "format_score_distribution",
+    "industry_tags",
     "low_score_log_entry",
     "score_distribution",
     "rejection_reason",

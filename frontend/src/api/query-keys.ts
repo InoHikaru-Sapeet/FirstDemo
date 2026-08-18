@@ -24,7 +24,9 @@ export const reportKeys = {
 	 * ⚠️ **業界はキーに含めない**（T-52 Step 1 で業界版を廃止した。週刊は
 	 * 業界を問わない1本なので、号を決めるのは period だけ）。
 	 */
-	articles: (period: string) => ["reports", period, "articles"] as const
+	articles: (period: string) => ["reports", period, "articles"] as const,
+	/** `GET /reports/{period}/cases`（月刊の事例。T-52 Step 2）。 */
+	cases: (period: string) => ["reports", period, "cases"] as const
 };
 
 /** 判断基準（T-33・T-34・T-35）。 */

@@ -100,6 +100,8 @@ class Operation(StrEnum):
     # 一覧と、記事ごとの表示（メール版 HTML と同じ内容を JSON で返す口）。
     GET_REPORTS_INDEX = "GET /reports"
     GET_REPORT_ARTICLES = "GET /reports/{period}/articles"
+    # T-52 Step 2 の追加分（月刊の閲覧ページ。`…/articles` と同じ扱い）。
+    GET_REPORT_CASES = "GET /reports/{period}/cases"
     POST_RUN = "POST /run/{type}"
     # §6.2 に列挙が無い設計時追加分（T-27）。理由は下の PERMISSION_MATRIX を参照。
     GET_RUN_JOB = "GET /run/{job_id}"
@@ -173,6 +175,14 @@ PERMISSION_MATRIX: Final[Mapping[Operation, Mapping[Role, Decision]]] = (
                 admin=_ALLOW, editor=_ALLOW, viewer=_ALLOW, system=_ALLOW
             ),
             Operation.GET_REPORT_ARTICLES: _row(
+                admin=_ALLOW, editor=_ALLOW, viewer=_ALLOW, system=_ALLOW
+            ),
+            # === T-52 Step 2 の追加行（`…/articles` の月刊版）=================
+            # ⚠️ **返すのは生成 HTML に出ている項目 ＋ 業界タグだけ**。業界タグは
+            # 週次22列 列19 の値（記事の属性）で、config のしきい値・配点は返さない。
+            # 業界チップの候補も**その号の事例に付いているタグから作る**ので、
+            # `tunable_thresholds.target_industries`（admin 限定）は露出しない。
+            Operation.GET_REPORT_CASES: _row(
                 admin=_ALLOW, editor=_ALLOW, viewer=_ALLOW, system=_ALLOW
             ),
             # | POST /run/{weekly|monthly} | ○ | ○ | 403 | ○ |
@@ -297,6 +307,7 @@ ROUTE_OPERATIONS: Final[Mapping[tuple[str, str], Operation]] = MappingProxyType(
         # なので、テンプレートは**末尾スラッシュ無しの `/reports`**。
         ("GET", "/reports"): Operation.GET_REPORTS_INDEX,
         ("GET", "/reports/{period}/articles"): Operation.GET_REPORT_ARTICLES,
+        ("GET", "/reports/{period}/cases"): Operation.GET_REPORT_CASES,
         ("GET", "/files/{filename}"): Operation.GET_FILES,
         # T-29。⚠️ 明細のダウンロードは**パスの末尾がファイル名リテラル**
         # （`result.xlsx`）。ルートのテンプレートをそのまま書くこと。

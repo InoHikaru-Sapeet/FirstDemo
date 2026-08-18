@@ -186,6 +186,49 @@ def write_weekly_html(harness: Harness) -> Path:
     return path
 
 
+def monthly_case(no: int, **overrides: Any) -> dict[str, Any]:
+    """月次8列の1行（T-22 のライタへ渡す形）。"""
+    return {
+        "No": no,
+        "トピック(章)": "第1章 業務自動化",
+        "企業・組織": ["A社"],
+        "タイトル": f"事例{no}",
+        "URL": f"https://example.com/case/{no}",
+        "出典": "ITmedia（2026-07-27）",
+        "掲載月": MONTHLY_PERIOD,
+        "解説": ["事実。", "詳細。", "示唆。"],
+    } | overrides
+
+
+def write_monthly_sheet(harness: Harness, cases: list[dict[str, Any]]) -> None:
+    harness.reports.write_monthly(
+        period=MONTHLY_PERIOD, cases=cases, revision=1, run_id="job_test"
+    )
+
+
+def write_monthly_narrative(
+    harness: Harness,
+    *,
+    industries: dict[str, list[str]] | None = None,
+    diagrams: dict[str, dict[str, Any]] | None = None,
+) -> None:
+    """月次の `narrative_{period}.json`（業界タグは `case_industries`＝T-52）。"""
+    harness.store.write_text(
+        harness.store.narrative_path(MONTHLY_PERIOD),
+        json.dumps(
+            {
+                "period": MONTHLY_PERIOD,
+                "editorial_subtitle": "問われ始めた月",
+                "editorial_paragraphs": ["俯瞰。", "変化。", "視点。"],
+                "closing_paragraphs": ["総括。", "来月。"],
+                "case_industries": industries or {},
+                "case_diagrams": diagrams or {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
 def write_monthly_html(harness: Harness) -> Path:
     path = harness.store.monthly_html_path(MONTHLY_PERIOD)
     harness.store.write_text(path, "<html>月刊</html>")
@@ -308,23 +351,7 @@ def test_another_period_html_is_not_listed(harness: Harness) -> None:
 
 def test_a_monthly_report_has_one_html_without_an_industry(harness: Harness) -> None:
     """月刊ビリーフは業界別ではない（1通）。形は週刊と同じ配列で返す。"""
-    harness.reports.write_monthly(
-        period=MONTHLY_PERIOD,
-        cases=[
-            {
-                "No": 1,
-                "トピック(章)": "第1章 業務自動化",
-                "企業・組織": ["A社"],
-                "タイトル": "事例1",
-                "URL": "https://example.com/case/1",
-                "出典": "ITmedia（2026-07-27）",
-                "掲載月": MONTHLY_PERIOD,
-                "解説": ["事実。", "詳細。", "示唆。"],
-            }
-        ],
-        revision=1,
-        run_id="job_test",
-    )
+    write_monthly_sheet(harness, [monthly_case(1)])
     write_monthly_html(harness)
 
     body = harness.client.get(f"/reports/{MONTHLY_PERIOD}").json()
@@ -703,6 +730,161 @@ def test_the_articles_use_the_same_selection_as_the_mail_html(
 
     titles = [card["title"] for card in response.json()["articles"]]
     assert titles == ["記事0"]
+
+
+# =============================================================================
+# GET /reports/{period}/cases（月刊の閲覧ページ用。T-52 Step 2）
+# =============================================================================
+
+
+def test_the_cases_carry_what_the_html_shows_plus_the_industry_tags(
+    harness: Harness,
+) -> None:
+    """⚠️ 返すのは**生成 HTML に出ている項目 ＋ 業界タグ**だけ。"""
+    write_monthly_sheet(harness, [monthly_case(1)])
+    write_monthly_html(harness)
+    write_monthly_narrative(harness, industries={"1": ["不動産", "業界横断"]})
+
+    response = harness.client.get(f"/reports/{MONTHLY_PERIOD}/cases")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["period"] == MONTHLY_PERIOD
+    assert body["editorial_subtitle"] == "問われ始めた月"
+    assert body["editorial"] == "俯瞰。\n\n変化。\n\n視点。"
+    assert body["closing"] == "総括。\n\n来月。"
+    assert body["cases"] == [
+        {
+            "no": 1,
+            "chapter": "第1章 業務自動化",
+            "organizations": ["A社"],
+            "title": "事例1",
+            "url": "https://example.com/case/1",
+            "source": "ITmedia（2026-07-27）",
+            "paragraphs": ["事実。", "詳細。", "示唆。"],
+            "industries": ["不動産", "業界横断"],
+            "diagram": None,
+        }
+    ]
+
+
+def test_the_industry_chips_come_from_the_cases_not_the_config(
+    harness: Harness,
+) -> None:
+    """⚠️ **チップの候補は号の事例に付いているタグだけ**（config を読まない）。
+
+    config の `target_industries` を候補にすると、全ロールが叩ける口から
+    admin 限定の設定値が読めてしまう（§6.1）。押しても0件になるチップを並べない、
+    という意味でもこちらが正しい。
+    """
+    seed_config(harness, industries=["医薬品"])  # config にしかない業界
+    write_monthly_sheet(harness, [monthly_case(1), monthly_case(2)])
+    write_monthly_html(harness)
+    write_monthly_narrative(
+        harness, industries={"1": ["不動産", "業界横断"], "2": ["金融", "不動産"]}
+    )
+
+    body = harness.client.get(f"/reports/{MONTHLY_PERIOD}/cases").json()
+
+    # 出現順・重複なし。
+    assert body["industries"] == ["不動産", "業界横断", "金融"]
+    assert "医薬品" not in json.dumps(body, ensure_ascii=False)
+
+
+def test_a_case_without_industry_tags_is_still_returned(harness: Harness) -> None:
+    """⚠️ タグが無い事例も**カードは出す**（タグを出さないだけ）。"""
+    write_monthly_sheet(harness, [monthly_case(1)])
+    write_monthly_html(harness)
+    write_monthly_narrative(harness)
+
+    body = harness.client.get(f"/reports/{MONTHLY_PERIOD}/cases").json()
+
+    assert body["cases"][0]["industries"] == []
+    assert body["industries"] == []
+
+
+def test_a_declared_case_diagram_is_returned(harness: Harness) -> None:
+    """図解（T-49）も同じ口から返す（描画済み HTML ではなく構造化データ）。"""
+    write_monthly_sheet(harness, [monthly_case(1)])
+    write_monthly_html(harness)
+    write_monthly_narrative(
+        harness,
+        diagrams={
+            "1": {
+                "type": "flow",
+                "title": "契約業務の流れ",
+                "steps": ["受領", "AIが下書き", "確認"],
+            }
+        },
+    )
+
+    response = harness.client.get(f"/reports/{MONTHLY_PERIOD}/cases")
+
+    assert response.json()["cases"][0]["diagram"]["type"] == "flow"
+    assert "<table" not in response.text
+
+
+def test_a_month_without_a_narrative_still_lists_its_cases(harness: Harness) -> None:
+    """⚠️ 生成テキストが無くても事例は読める（render は落とすが閲覧は落とさない）。"""
+    write_monthly_sheet(harness, [monthly_case(1)])
+    write_monthly_html(harness)
+
+    body = harness.client.get(f"/reports/{MONTHLY_PERIOD}/cases").json()
+
+    assert body["editorial"] is None
+    assert body["cases"][0]["title"] == "事例1"
+
+
+def test_the_cases_keep_the_sheet_order(harness: Harness) -> None:
+    """§8.2「`No` 昇順＝章グルーピング順」。並べ替えない。"""
+    write_monthly_sheet(harness, [monthly_case(1), monthly_case(2), monthly_case(3)])
+    write_monthly_html(harness)
+    write_monthly_narrative(harness)
+
+    body = harness.client.get(f"/reports/{MONTHLY_PERIOD}/cases").json()
+
+    assert [case["no"] for case in body["cases"]] == [1, 2, 3]
+
+
+def test_cases_are_not_available_for_a_weekly_period(harness: Harness) -> None:
+    """週刊は記事ごとの表示（`…/articles`）が担当。"""
+    write_weekly_html(harness)
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/cases")
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "cases_not_available"
+
+
+def test_cases_for_a_month_with_no_html_are_404(harness: Harness) -> None:
+    write_monthly_sheet(harness, [monthly_case(1)])
+
+    response = harness.client.get(f"/reports/{MONTHLY_PERIOD}/cases")
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"] == "report_not_found"
+
+
+def test_the_cases_do_not_read_the_config(harness: Harness) -> None:
+    """⚠️ 月次8列の行がそのまま号の内容なので、選別のための config が要らない。
+
+    config.json が無い状態でも 200 になることで、参照していないことを示す
+    （週刊の `…/articles` は選別に config が要るので 404 になる＝対の挙動）。
+    """
+    assert not harness.store.exists(harness.store.config_path())
+    write_monthly_sheet(harness, [monthly_case(1)])
+    write_monthly_html(harness)
+
+    response = harness.client.get(f"/reports/{MONTHLY_PERIOD}/cases")
+
+    assert response.status_code == 200
+
+
+def test_an_invalid_period_for_cases_is_422(harness: Harness) -> None:
+    response = harness.client.get("/reports/2026-13/cases")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "invalid_period"
 
 
 # =============================================================================

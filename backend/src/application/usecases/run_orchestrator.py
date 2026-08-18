@@ -234,7 +234,6 @@ class WeeklyRender(Protocol):
         articles: Sequence[Mapping[str, Any]],
         config: IntelligenceConfig,
         narrative: WeeklyNarrative | None = None,
-        industry: str | None = None,
         revision: int,
         run_id: str,
     ) -> RenderOutcome: ...

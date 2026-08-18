@@ -2,7 +2,8 @@
 
 - `GET /reports` → `{reports: [{period, type}]}`（一覧。T-36）
 - `GET /reports/{period}` → `{period, type, html_urls, xlsx_url, summary}`
-- `GET /reports/{period}/articles` → 閲覧ページ用の記事データ（T-36）
+- `GET /reports/{period}/articles` → 閲覧ページ用の記事データ（週刊。T-36）
+- `GET /reports/{period}/cases` → 閲覧ページ用の事例データ（月刊。T-52 Step 2）
 
 **全ロール可**（§6.2）。実体の配信は `GET /files/{filename}`（`routers/files.py`）。
 
@@ -30,6 +31,23 @@ Web の閲覧ページは記事ごとのトグル開閉で要約・示唆を出�
 （1通の縦を伸ばすと T-48 Step 1 の圧縮が無意味になる）、図解が読めるのは
 この口を通した Web の閲覧ページだけ。**描画は決定的**——サーバーが返すのは
 `Diagram`（3タイプ固定の構造化データ）で、HTML の断片ではない。
+
+---
+
+⚠️ **`GET /reports/{period}/cases` は月刊の閲覧ページ用**（T-52 Step 2）。
+
+閲覧ページは**事例カードに業界タグを出し、業界チップで絞り込む**。絞り込みは
+JS が要るので生成 HTML ではできず、同じ内容を構造化して返す口を置いた
+（週刊の `…/articles` と同じ考え方）。
+
+⚠️ **業界タグは月次8列に無い**（§8.2 の確定値に「業界」の列は無く、月次実行は
+採点済みの22列を1行も書かない）。そこで **filter が `narrative_{period}.json` の
+`case_industries` へ写している**（`enterprise.entities.narrative` の docstring）。
+**AI の申告ではなく、昇格元の週次22列 列19 の値そのまま**。
+
+⚠️ **業界チップの候補はその号の事例に付いているタグから作る**（config の
+`target_industries` は読まない）。全ロールが叩ける口なので、admin 限定の設定値を
+候補として返す経路を作らない（§6.1）。
 
 ---
 
@@ -67,7 +85,7 @@ T-46 Step 4 で週刊が業界ごとに1通になり `html_url`（単数）→ `
 """
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, status
@@ -76,7 +94,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from adapter.config_repository import ConfigNotFoundError, ConfigRepository
 from adapter.html.category_colors import color_of
-from adapter.html.mail_html import safe_url
+from adapter.html.mail_html import safe_url, split_paragraphs
+from adapter.html.monthly_renderer import (
+    COLUMN_CHAPTER as MONTHLY_COLUMN_CHAPTER,
+)
+from adapter.html.monthly_renderer import (
+    COLUMN_COMMENTARY as MONTHLY_COLUMN_COMMENTARY,
+)
+from adapter.html.monthly_renderer import (
+    COLUMN_NO as MONTHLY_COLUMN_NO,
+)
+from adapter.html.monthly_renderer import (
+    COLUMN_ORGANIZATIONS as MONTHLY_COLUMN_ORGANIZATIONS,
+)
+from adapter.html.monthly_renderer import (
+    COLUMN_SOURCE as MONTHLY_COLUMN_SOURCE,
+)
+from adapter.html.monthly_renderer import (
+    COLUMN_TITLE as MONTHLY_COLUMN_TITLE,
+)
+from adapter.html.monthly_renderer import (
+    COLUMN_URL as MONTHLY_COLUMN_URL,
+)
 from adapter.html.weekly_renderer import (
     COLUMN_CATEGORY,
     COLUMN_SOURCE,
@@ -95,9 +134,14 @@ from application.usecases.narrative import to_weekly_narrative
 from config import Settings, get_settings
 from enterprise.entities.config import IntelligenceConfig
 from enterprise.entities.diagram import Diagram
-from enterprise.entities.narrative import WeeklyNarrativeDocument, parse_narrative
+from enterprise.entities.narrative import (
+    MonthlyNarrativeDocument,
+    WeeklyNarrativeDocument,
+    parse_narrative,
+)
 from enterprise.entities.period import Period, PeriodError, parse_period
 from enterprise.entities.principal import Principal
+from enterprise.entities.report_columns import ORGANIZATION_SEPARATOR
 from enterprise.entities.run_job import RunType, run_type_of
 
 logger = logging.getLogger(__name__)
@@ -229,6 +273,57 @@ class ArticlesResponse(BaseModel):
     point_of_week: str | None
     point_of_week_points: list[PointOfWeekPoint]
     articles: list[ArticleCard]
+
+
+class CaseCard(BaseModel):
+    """閲覧ページの事例1件（月刊。T-52 Step 2）。
+
+    ⚠️ **生成 HTML に出ている項目 ＋ 業界タグだけ**。点数・しきい値は月次8列に
+    そもそも無い（事例の選別に使った合計スコアは返さない）。
+
+    Attributes:
+        no: 列1「No」（`No` 昇順＝章グルーピング順）
+        chapter: 列2「トピック(章)」（`第N章 …`）
+        organizations: 列3「企業・組織」
+        title: 列4「タイトル」
+        url: 列5「URL」。`http`/`https` でなければ `None`（リンクにしない）
+        source: 列6「出典」
+        paragraphs: 列8「解説」の段落（`\n\n` 区切りを分割したもの）
+        industries: **業界タグ**（`narrative_{period}.json` の `case_industries`）。
+            ⚠️ 無い事例は空（タグを出さないだけで、カードは出す）
+        diagram: 図解（T-49）。無ければ `None`
+    """
+
+    no: int
+    chapter: str
+    organizations: list[str]
+    title: str
+    url: str | None
+    source: str
+    paragraphs: list[str]
+    industries: list[str]
+    diagram: Diagram | None
+
+
+class CasesResponse(BaseModel):
+    """`GET /reports/{period}/cases` → 200（**月刊のみ**）。
+
+    Attributes:
+        period: 対象月
+        editorial_subtitle: 巻頭言のサブ見出し（§10.2-2）。無ければ `None`
+        editorial: 巻頭言（`\n\n` 区切り）。無ければ `None`
+        closing: むすび（同上）
+        industries: **業界チップの候補**。⚠️ **その号の事例に付いているタグだけ**
+            （config の対象業界は読まない＝admin 限定の値を露出しない）
+        cases: 事例（`No` 昇順）
+    """
+
+    period: str
+    editorial_subtitle: str | None
+    editorial: str | None
+    closing: str | None
+    industries: list[str]
+    cases: list[CaseCard]
 
 
 def _not_found(period: str) -> HTTPException:
@@ -396,6 +491,119 @@ def _card(
     )
 
 
+@router.get("/{period}/cases")
+async def get_report_cases(
+    period: Annotated[str, Path(description="2026-07（月次のみ）")],
+    _caller: Annotated[Principal, Depends(require_permission)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> CasesResponse:
+    """閲覧ページ用に、その号の事例を構造化して返す（**全ロール可**。T-52 Step 2）。
+
+    ⚠️ **月刊だけ**（週刊は `GET /reports/{period}/articles`）。
+
+    - **200** `{period, editorial_subtitle, editorial, closing, industries, cases}`
+    - **404** その月の HTML がまだ無い
+    - **422** period が月次表記でない・実在しない月
+
+    ⚠️ **config を読まない。** 月次8列の行がそのまま号の内容（採否は filter が
+    決め終わっている）なので、週刊の `…/articles` と違って選別が要らない。
+    業界チップの候補も**その号の事例に付いているタグ**から作る（モジュール docstring）。
+
+    ⚠️ **`No` の昇順は直さない**（月次8列は §8.2 で昇順＝章グルーピング順。
+    レンダラと同じく、読んだ順のまま返す）。
+    """
+    parsed = _parse(period)
+    if parsed.is_weekly:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "cases_not_available",
+                "message": (
+                    "事例ごとの表示は月刊だけです。週刊は記事ごとの表示をご覧ください。"
+                ),
+            },
+        )
+
+    store = ArtifactStore.from_settings(settings)
+    if not store.monthly_html_path(parsed.text).is_file():
+        raise _not_found(parsed.text)
+
+    narrative = _monthly_narrative(store, parsed)
+    cases = [
+        _case(row, narrative=narrative)
+        for row in ReportStore(store).read_monthly(parsed.text)
+    ]
+
+    logger.info("report cases served (period=%s, cases=%d)", parsed.text, len(cases))
+    return CasesResponse(
+        period=parsed.text,
+        editorial_subtitle=narrative.editorial_subtitle,
+        editorial=narrative.editorial,
+        closing=narrative.closing,
+        industries=_industry_chips(cases),
+        cases=cases,
+    )
+
+
+def _monthly_narrative(
+    store: ArtifactStore, period: Period
+) -> MonthlyNarrativeDocument:
+    """`narrative_{period}.json`（月次）。**無ければ空**（閲覧は落とさない）。"""
+    path = store.narrative_path(period.text)
+    if not store.exists(path):
+        logger.warning("生成テキストがありません（本文なしで返します）: %s", path)
+        return MonthlyNarrativeDocument(period=period.text)
+    document = parse_narrative(store.read_text(path), period=period)
+    if not isinstance(document, MonthlyNarrativeDocument):  # pragma: no cover
+        return MonthlyNarrativeDocument(period=period.text)
+    return document
+
+
+def _case(row: Mapping[str, Any], *, narrative: MonthlyNarrativeDocument) -> CaseCard:
+    """月次シートの1行を閲覧ページの事例カードへ。"""
+    no = row.get(MONTHLY_COLUMN_NO)
+    return CaseCard(
+        no=int(str(no)),
+        chapter=str(row.get(MONTHLY_COLUMN_CHAPTER) or "").strip(),
+        organizations=_multi(row.get(MONTHLY_COLUMN_ORGANIZATIONS)),
+        title=str(row.get(MONTHLY_COLUMN_TITLE) or "").strip(),
+        # ⚠️ メール版 `link()` と同じ判定（`javascript:` を href へ置かない）。
+        url=safe_url(row.get(MONTHLY_COLUMN_URL)),
+        source=str(row.get(MONTHLY_COLUMN_SOURCE) or "").strip(),
+        paragraphs=split_paragraphs(row.get(MONTHLY_COLUMN_COMMENTARY)),
+        # ⚠️ **業界タグは narrative から**（月次8列に列が無い＝T-52 Step 2）。
+        industries=narrative.industries_for(no),
+        diagram=narrative.case_diagrams.get(str(no).strip()),
+    )
+
+
+def _multi(value: object) -> list[str]:
+    """multi 値（リーダは `list`、生の xlsx なら区切り文字列）を読む。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts: list[str] = value.split(ORGANIZATION_SEPARATOR)
+    elif isinstance(value, (list, tuple)):
+        parts = [str(part) for part in value]
+    else:
+        parts = [str(value)]
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _industry_chips(cases: Sequence[CaseCard]) -> list[str]:
+    """業界チップの候補（**その号の事例に付いているタグだけ**・出現順）。
+
+    ⚠️ **config の `target_industries` は読まない**（全ロールが叩ける口なので
+    admin 限定の設定値を露出しない。§6.1）。⚠️ **件数0のチップを出さない**ことにも
+    なる（押しても0件になる選択肢を並べない）。
+    """
+    chips: dict[str, None] = {}
+    for case in cases:
+        for industry in case.industries:
+            chips.setdefault(industry, None)
+    return list(chips)
+
+
 @router.get("/{period}")
 async def get_report(
     period: Annotated[str, Path(description="2026-W31（週次）/ 2026-07（月次）")],
@@ -472,6 +680,8 @@ def _parse(period: str) -> Period:
 __all__ = [
     "ArticleCard",
     "ArticlesResponse",
+    "CaseCard",
+    "CasesResponse",
     "PointOfWeekPoint",
     "ReportHtml",
     "ReportListEntry",

@@ -28,14 +28,17 @@ import { reportKeys } from "@/api/query-keys";
 import {
 	type ArticleCard as ArticleCardData,
 	artifactUrl,
+	type CaseCard as CaseCardData,
 	type Diagram,
 	fetchArticles,
+	fetchCases,
 	fetchReport,
 	fetchReports,
 	type PointOfWeekPoint as PointOfWeekPointData,
 	type ReportListEntry
 } from "@/api/reports";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 
 const TYPE_LABELS = {
@@ -161,21 +164,11 @@ function ReportDetail({ period }: { period: string }) {
 				採用 {data.summary.adopted} 件 ／ 除外 {data.summary.excluded} 件
 			</p>
 
+			{/* ⚠️ **「メール版 HTML を開く」リンクは外した**（T-52 Step 2）。
+			    Web 版が唯一の閲覧形式で、生成 HTML は `GET /files` から従来どおり
+			    取得できる（**廃止したのは導線だけ**）。中間xlsx は運用の確認に
+			    使うので残す。 */}
 			<ul className="mt-3 space-y-1 text-sm">
-				{data.html_urls.map((html) => (
-					<li key={html.url}>
-						<a
-							className="underline"
-							href={artifactUrl(html.url)}
-							target="_blank"
-							rel="noreferrer"
-						>
-							{html.industry === null
-								? "メール版 HTML を開く"
-								: `メール版 HTML を開く（${html.industry} 版）`}
-						</a>
-					</li>
-				))}
 				<li>
 					<a
 						className="underline"
@@ -191,10 +184,7 @@ function ReportDetail({ period }: { period: string }) {
 			{data.type === "weekly" ? (
 				<WeeklyArticles period={period} />
 			) : (
-				<MailPreview
-					title="月刊ビリーフ（メール版 HTML）"
-					url={data.html_urls[0]?.url ?? null}
-				/>
+				<MonthlyCases period={period} />
 			)}
 		</section>
 	);
@@ -527,24 +517,186 @@ function DiagramBody({ diagram }: { diagram: Diagram }) {
 	}
 }
 
-/** メール版 HTML の埋め込み（配信される形をそのまま見る）。 */
-function MailPreview({ title, url }: { title: string; url: string | null }) {
-	if (url === null) {
+/** 「すべての業界」チップの文言（絞り込みを外す選択肢）。 */
+export const ALL_INDUSTRIES_LABEL = "すべての業界";
+
+/**
+ * 月刊ビリーフの事例一覧（T-52 Step 2）。
+ *
+ * ⚠️ **iframe で生成 HTML を見せるのをやめた。** Web 版が唯一の閲覧形式になり
+ * （T-52）、**業界チップでの絞り込み**には構造化データが要る（iframe の中は
+ * 絞れない）。生成 HTML は `GET /files` から従来どおり取得できる。
+ *
+ * ⚠️ **絞り込みは表示だけ。** サーバーが返した事例の順（`No` 昇順＝章グルーピング
+ * 順。§8.2）を保ち、選んだ業界タグを持つ事例だけを出す。
+ */
+function MonthlyCases({ period }: { period: string }) {
+	const [industry, setIndustry] = useState<string | null>(null);
+
+	const cases = useQuery({
+		queryKey: reportKeys.cases(period),
+		queryFn: () => fetchCases(period)
+	});
+
+	if (cases.isPending) {
+		return <p className="mt-6 text-sm">事例を読み込み中…</p>;
+	}
+	if (cases.isError) {
 		return (
-			<p className="mt-6 text-sm text-muted-foreground">
-				この号の HTML はまだありません。
-			</p>
+			<Alert variant="destructive" className="mt-6">
+				<AlertDescription>{toDisplayMessage(cases.error)}</AlertDescription>
+			</Alert>
 		);
 	}
 
+	const data = cases.data;
+	const shown =
+		industry === null
+			? data.cases
+			: data.cases.filter((item) => item.industries.includes(industry));
+
 	return (
 		<div className="mt-6">
-			<h3 className="text-base font-semibold">{title}</h3>
-			<iframe
-				title={title}
-				src={artifactUrl(url)}
-				className="mt-2 h-[70vh] w-full rounded border"
-			/>
+			{data.editorial !== null && (
+				<div className="rounded border p-4">
+					<h3 className="text-sm font-semibold">巻頭言 ― 今月の総論</h3>
+					{data.editorial_subtitle !== null && (
+						<p className="mt-1 text-sm font-semibold">
+							{data.editorial_subtitle}
+						</p>
+					)}
+					<p className="mt-2 text-sm leading-relaxed whitespace-pre-line">
+						{data.editorial}
+					</p>
+				</div>
+			)}
+
+			{/* ⚠️ 候補が無い号ではチップの列ごと出さない（押せない行を残さない）。 */}
+			{data.industries.length > 0 && (
+				<fieldset className="mt-6 flex flex-wrap gap-2">
+					<legend className="sr-only">業界で絞り込む</legend>
+					<Button
+						type="button"
+						size="sm"
+						variant={industry === null ? "default" : "outline"}
+						aria-pressed={industry === null}
+						onClick={() => setIndustry(null)}
+					>
+						{ALL_INDUSTRIES_LABEL}
+					</Button>
+					{data.industries.map((name) => (
+						<Button
+							key={name}
+							type="button"
+							size="sm"
+							variant={name === industry ? "default" : "outline"}
+							aria-pressed={name === industry}
+							onClick={() => setIndustry(name)}
+						>
+							{name}
+						</Button>
+					))}
+				</fieldset>
+			)}
+
+			<ul className="mt-4 space-y-3">
+				{shown.map((item) => (
+					<li key={item.no}>
+						<CaseRow item={item} />
+					</li>
+				))}
+			</ul>
+
+			{shown.length === 0 && (
+				<p className="mt-4 text-sm text-muted-foreground">
+					この業界の事例はこの号にありません。
+				</p>
+			)}
+
+			{data.closing !== null && (
+				<div className="mt-6 rounded border p-4">
+					<h3 className="text-sm font-semibold">むすび ― 来月への視点</h3>
+					<p className="mt-2 text-sm leading-relaxed whitespace-pre-line">
+						{data.closing}
+					</p>
+				</div>
+			)}
+		</div>
+	);
+}
+
+/** 事例カードの番号ラベル（メール版 `monthly_renderer.CASE_NUMBER_FORMAT` と対）。 */
+const caseNumberLabel = (no: number) => `CASE ${String(no).padStart(2, "0")}`;
+
+/**
+ * 事例1件のカード。
+ *
+ * ⚠️ **業界タグを出すのはこの画面だけ**（月刊 HTML の体裁は変えていない＝
+ * T-52 のスコープ外）。タグが無い事例はタグの行ごと出さない。
+ */
+function CaseRow({ item }: { item: CaseCardData }) {
+	return (
+		<div className="rounded border p-3">
+			<div className="flex flex-wrap items-center gap-2">
+				<span className="rounded bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-sky-900">
+					{caseNumberLabel(item.no)}
+				</span>
+				<span className="text-xs text-muted-foreground">
+					{item.organizations.join("・")}
+				</span>
+			</div>
+
+			<h4 className="mt-2 text-base font-semibold leading-snug">
+				{item.title}
+			</h4>
+			<p className="mt-1 text-xs text-muted-foreground">{item.chapter}</p>
+
+			{item.industries.length > 0 && (
+				<ul className="mt-2 flex flex-wrap gap-1">
+					{item.industries.map((name) => (
+						<li
+							key={name}
+							className="rounded border px-2 py-0.5 text-[10px] text-muted-foreground"
+						>
+							{name}
+						</li>
+					))}
+				</ul>
+			)}
+
+			<div className="mt-2 space-y-2">
+				{item.paragraphs.map((paragraph) => (
+					<p key={paragraph} className="text-sm leading-relaxed">
+						{paragraph}
+					</p>
+				))}
+			</div>
+
+			{item.diagram !== null && (
+				<div className="mt-2">
+					<DiagramView diagram={item.diagram} />
+				</div>
+			)}
+
+			<p className="mt-2 text-xs text-muted-foreground">
+				{SOURCE_PREFIX}
+				{item.source}
+				{/* ⚠️ 使えない URL はサーバーが `null` で返す（週刊と同じ判定）。 */}
+				{item.url !== null && (
+					<>
+						（
+						<a
+							className="underline"
+							href={item.url}
+							target="_blank"
+							rel="noreferrer"
+						>
+							{READ_MORE_LABEL}
+						</a>
+						）
+					</>
+				)}
+			</p>
 		</div>
 	);
 }

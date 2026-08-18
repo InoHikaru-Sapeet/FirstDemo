@@ -141,6 +141,9 @@ TASKS_T36_REPORT_ROWS: dict[
 ] = {
     Operation.GET_REPORTS_INDEX: (ALLOW, ALLOW, ALLOW, ALLOW),
     Operation.GET_REPORT_ARTICLES: (ALLOW, ALLOW, ALLOW, ALLOW),
+    # T-52 Step 2 の追加分（月刊の閲覧ページ。⚠️ **業界タグは記事の属性**で、
+    # config のしきい値・対象業界は返さない）。
+    Operation.GET_REPORT_CASES: (ALLOW, ALLOW, ALLOW, ALLOW),
 }
 
 # TASKS.md T-09「認証系エンドポイントをマトリクスへ追加」（2026-08-13 の方針変更分）。
@@ -628,6 +631,8 @@ REQUESTS = [
     # 成果物が無いので、一覧は 200（空）／記事ごとの表示は 404 になる。
     Call(Operation.GET_REPORTS_INDEX, "GET", "/reports"),
     Call(Operation.GET_REPORT_ARTICLES, "GET", "/reports/2026-W31/articles"),
+    # --- T-52 Step 2 ----------------------------------------------------------
+    Call(Operation.GET_REPORT_CASES, "GET", "/reports/2026-07/cases"),
     # --- T-29 -----------------------------------------------------------------
     # ⚠️ この tmp な artifact_root には config も成果物も無いので、admin は 404 に
     # なる。**認可の配線だけを見ている**（中身は `test_config_router.py` の担当）。
