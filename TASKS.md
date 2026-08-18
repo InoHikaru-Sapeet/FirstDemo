@@ -1088,7 +1088,7 @@ flowchart TD
     - **ゴールデンファイルを更新した**。引用ボックスがゴールデンを実際に通るよう、テストデータの1件目の解説に数値を1つ入れてある
     - テストは月刊レンダラ 47 → 65件（+18）／`mail_html` 50 → 57件（+7）／週刊 53件（変更なし・切り詰めの委譲後も同じ挙動）。`make test` 全体 **2134件**（+32）。`make lint` / `make format` 通過
 
-#### - [ ] T-49: 図解（filter が構造化データを申告 → 決定的 Python が描画）
+#### - [x] T-49: 図解（filter が構造化データを申告 → 決定的 Python が描画）
 - **対応**: §7.3・§7.4（→ 仕様書 §9.2・§10.2。**§10.2-4 への追加は規定が無い＝完全な追加**）
 - **依存**: T-44（narrative）, T-25（月刊レンダラ）, T-36（閲覧 Web ページ）
 - **成果物**: `backend/src/enterprise/entities/diagram.py`, `backend/src/enterprise/entities/narrative.py`, `backend/src/application/usecases/narrative.py`, `backend/src/adapter/html/monthly_renderer.py`, `backend/src/adapter/http/fastapi/routers/reports.py`, `frontend/src/components/pages/ReportsPage.tsx`, `prompts/PROMPT-2-NARRATIVE-*.md`, テスト
@@ -1109,6 +1109,28 @@ flowchart TD
   - 画像（PNG/SVG ファイル）の生成・保管・配信。⚠️ T-48 の申し送りどおり一式が要るので、必要になったら別タスクで起票し直すこと
   - 週刊メール版への図解。1通あたりの縦を伸ばすと T-48 Step 1 の圧縮が無意味になる
 - **備考**: 2026-08-18 の PM 要件で起票。
+  - **実績（Step 1：図解スキーマ・2026-08-18）**: `enterprise/entities/diagram.py`（`FlowDiagram` / `CompareDiagram` / `MetricsDiagram` と判別子つき union `Diagram`）＋ `narrative.py` への格納（週次 `WeeklyIndustryNarrative.diagrams` ／ 月次 `MonthlyNarrativeDocument.case_diagrams`）。
+    - ⚠️ **自由描画は構造的に出せない**：`extra="forbid"` ＋ `type` の判別子つき union なので、`svg` / `html` / `layout` / `style` のような鍵を足しても**読み込みで落ちる**（レンダラまで届かない）。`test_free_form_drawing_instructions_are_rejected` が固定
+    - ⚠️ **文字数・件数の上限はスキーマ側で課した**（`STEP_MAX_CHARS`＝18 など）。メールHTML の table は幅が固定（外枠 680px・カード左右余白 30px ＝ 図解に使えるのは約 620px で、`flow` 5マスなら1マス約 110px）で、**レンダラで切り詰めると AI が書いたものが黙って消える**
+    - ⚠️ **数える単位は「文字数」**（`truncate_fullwidth()` の全角換算ではない）。Pydantic の `max_length` は文字数しか見られず、ここでやりたいのは「短く書かせる」ことなので半角混じりのぶれは許す。**見た目の幅で切るのは描画側の責務**
+    - ⚠️ **月次の鍵に URL を使わなかった**（週次は示唆と同じ記事URL）。月次8列の列5「URL」は非空が保証されておらず、同じ一次発表を指す事例が並べば重なりうる。`No` は §8.2 の通し番号で T-22・T-25 の両方が昇順を強制している。JSON の鍵は文字列しか持てないので `"3"` の形（`case_diagram_key()` の1箇所だけが作る）
+    - ⚠️ **`DIAGRAM_TYPES` と実装の union が一致していることを import 時に検査**（片方だけ増やすと、プロンプトが案内する種類と受け取れる種類がずれる）
+    - テストは図解 17件・narrative +7件
+  - **実績（Step 2：図解の申告・2026-08-18）**: `application/usecases/narrative.py` の出力スキーマとプロンプトへ図解を追加。
+    - ⚠️ **往復は1つも増えていない**。週刊は示唆と同じ要素（`ArticleInsight.diagram`）へ相乗り、月刊は同じ1往復の出力へ `case_diagrams` を足した（CLI は1往復に数分＝T-15 備考）
+    - ⚠️ **月刊は「事例ごとに1要素・図解が無ければ `diagram` を `null`」**にした。要素ごと省かせると**「書き忘れ」と「該当なし」の区別が付かない**
+    - ⚠️ **足りない図解は警告しない**（`_warn_about_missing()` を通さない）。示唆・章導入文と違って**欠けているのが正常**。代わりに申告された件数を `logger.info` に出す（`weekly diagrams declared` / `monthly diagrams declared`）
+    - **`prompt_version` を上げた**：週刊 0.2.0 → **0.3.0** ／ 月刊 0.1.0 → **0.2.0**。`make prompts` で `prompts/PROMPT-2-NARRATIVE-*.md` を生成し直した。⚠️ 3タイプの案内文（`DIAGRAM_PROMPT_LINES`）は**週次・月次で同じ本文**（写しを作らない）
+    - テストは narrative +8件。filter のスクリプト化クライアントを「全事例が図解なし」の形へ更新（正常経路がテストの既定になる）
+  - **実績（Step 3：決定的レンダラ・2026-08-18）**: `monthly_renderer._diagram()`（3タイプの描き分け）／`reports.py` の `ArticleCard.diagram`／フロントの `DiagramView`。
+    - **月刊（メール HTML）**：`flow` は横並びセル＋**矢印の「文字」**（`FLOW_ARROW`＝`→`。画像を作らない）、`compare` は2列表（左右とも `width="48%"` で**同じ幅**＝対比が偏って見えないため）、`metrics` は大きめのボックスの横並び。3タイプとも `forbidden_constructs()` が空であることをテストで固定
+    - ⚠️ **新しい色を作っていない**（`PANEL_BACKGROUND` / `PANEL_BORDER` / `NAVY` / `ACCENT` / `ACCENT_LIGHT` / `SURFACE` / `MUTED_TEXT` の確定パレットだけ）
+    - ⚠️ **置き場所は解説の後・出典の前**。本文より前に置くと、§10.3 の3段落（①事実 から始まる）を読む前に**解釈された図**が目に入る。引用ボックス（T-48 Step 2）が本文の前で「何の話か」を、図解が本文の後で「どういう構造だったか」を示す並び
+    - ⚠️ **週刊のメール版は図解を描かない**（`WeeklyNarrative.diagram_for()` はレンダラからは呼ばれない）。1通の縦を伸ばすと T-48 Step 1 の圧縮が無意味になる。**間引きではなく非表示**で、`narrative_{period}.json` には全件残る（示唆の間引きと同じ扱い）
+    - ⚠️ **API が返すのは `Diagram`（構造化データ）で、描画済み HTML ではない**。`test_a_declared_diagram_is_returned_for_the_web_page` が「`<table` がレスポンスに現れない」ことまで見ている。描き方を決めるのは表示側で、Web 版は table 制約が無いので通常の CSS を使う（**同じデータの別の描き方**）
+    - ⚠️ **図解の語も crawl 由来の文字列**なのでエスケープを通す（`test_the_diagram_text_is_escaped`）
+    - **ゴールデンファイルを更新した**。図解のある事例2件（`flow` / `compare`）と**無い事例1件**が通るようにしてある
+    - テストは月刊レンダラ 65 → 79件（+14）／週刊 57 → 59件（+2）／reports API +2件／フロント 100 → 106件（+6）。`make test` 全体 **2234件**。`make lint` / `make format` / `biome check` / `tsc -b` 通過
 
 #### - [x] T-50: 週刊カードの見出しとリンクの分離
 - **対応**: §7.3（→ 仕様書 §9.2-4）
@@ -1528,7 +1550,16 @@ flowchart TD
     - §10.2-4 の事例カード「`CASE NN ／ 企業名`」→ **`CASE NN` を水色地バッジ、企業名をその隣**へ。⚠️ **区切りの `／` は描かない**（バッジの境界が担う）。確定文言の正は `CASE_LABEL_FORMAT` のままで、分解が確定文言と一致することは実装が import 時に検査している
     - §10.2-4 に**キーとなる数値の引用ボックス**を追記する（**規定が無い＝完全な追加**）。解説から時間削減・金額・割合を含む最初の1文を**抜き書き**して本文の前に置く。⚠️ **本文は全段そのまま出るので引用は重複して現れる**／⚠️ **数値が無い事例にはボックスを出さない**／⚠️ 抜き出す単位（`KEY_FIGURE_UNITS`）に **`件`・`名`・`人` を含めない**（数え上げが載るとキーとなる数値が埋もれる）
     - 実装は `adapter/html/monthly_renderer.py`（`_chapter_number_badge` / `CHAPTER_BAND_BACKGROUND` / `_case_number_badge` / `key_figure_quote` / `_key_figure_box`）・`adapter/html/mail_html.py`（`truncate_fullwidth`）
-    - ⚠️ **画像・図解の自動生成は入れていない**（T-48 のスコープ外）。載せるなら生成・保管・配信の許可リスト（T-27）・代替テキスト・クライアント側の画像ブロックへの対処まで一式が要るので、別タスクとして起票すること
+    - ~~⚠️ **画像・図解の自動生成は入れていない**（T-48 のスコープ外）。載せるなら生成・保管・配信の許可リスト（T-27）・代替テキスト・クライアント側の画像ブロックへの対処まで一式が要るので、別タスクとして起票すること~~ → **2026-08-18 に T-49 で図解のみ実施**（下の項目）。**画像（PNG/SVG ファイル）は引き続きやらない**
+  - ⚠️ **仕様書 §9.2・§10.2 に図解を追記する**（2026-08-18 の T-49。**§10.2-4 は規定が無い＝完全な追加**）：
+    - **方針を先に書く**：図解の**内容**は filter 段の AI が構造化データとして申告し、**描画**は決定的 Python が行う。**§1.1「render = 決定的 Python テンプレート」は不変**で、レンダラは AI を呼ばない
+    - §10.2-4 の事例カードに **図解（0〜1個）** を追記する。位置は**解説の後・出典行の前**。表現は3タイプ固定（`flow`＝3〜5ステップの流れ／`compare`＝2項目の対比／`metrics`＝数値ハイライト2〜4個）。⚠️ **画像は作らない**——`flow` の矢印も `→` の文字で、table＋inline style だけ（§7.1 を満たす）
+    - §9.2 の「メール版は要旨のみ・Web 版が全文」の2面性に、**図解はメール版に出ない**ことを足す（週刊のメール版は描かず、Web の閲覧ページのトグル展開内にだけ出る。T-48 Step 1 の圧縮を保つため）
+    - 設計書 §2 の `narrative_*.json` スキーマに **`diagrams`（週次・鍵は記事URL）と `case_diagrams`（月次・鍵は列1「No」の文字列）** を追記する。⚠️ **中間xlsx の22列・8列は動かしていない**（図解は narrative 側の持ち物＝2026-08-16 の決定3 と同じ扱い）
+    - 設計書 §3.3 の `GET /reports/{period}/articles` のレスポンスに **`diagram`** を追記する。⚠️ **返すのは構造化データで、描画済み HTML ではない**（描き方を決めるのは表示側）。図解が無い記事は `null`
+    - 設計書 §9.1 のプロンプト表に、**`PROMPT-2/weekly_narrative` 0.3.0 ／ `PROMPT-2/monthly_narrative` 0.2.0** で図解の申告を足したことを反映する
+    - 実装は `enterprise/entities/diagram.py`・`enterprise/entities/narrative.py`・`application/usecases/narrative.py`・`adapter/html/monthly_renderer.py`（`_diagram` / `_flow_body` / `_compare_body` / `_metrics_body`）・`adapter/http/fastapi/routers/reports.py`・`frontend/src/components/pages/ReportsPage.tsx`（`DiagramView`）
+    - ⚠️ **画像（PNG/SVG ファイル）の生成・保管・配信は引き続きやらない**（許可リスト＝T-27・代替テキスト・クライアント側の画像ブロックへの対処まで一式が要る）
   - ⚠️ **設計書 §3.2・§3.3・§3.4 と仕様書 §7.3-5 をドライランの実装に合わせて改訂する**（2026-08-17 の T-29）：
     - §3.2 のエンドポイント表に **`GET /config/dry-run/{dry_run_id}/result.xlsx`**（○ / 403 / 403 / ×。`POST /config/dry-run` と同じ行）を追加する。明細ファイルの中身は「未保存の config を適用した結果」＝ config の値とその適用挙動そのもの（§3.4 の根拠2）なので、dry-run 自体より広くはできない
     - §3.3 の `POST /config/dry-run` の Response `scratch_url` の値を **`/config/dry-run/{id}/result.xlsx`** へ改訂する（例は `/scratch/dry-run/dry_.../result.xlsx` という生パス）。**`GET /files/{filename}` は全ロールが叩ける口で、許可リストが scratch を通さない**ため、そのパスからは配れない。ファイルの実体は設計判断Cどおり `scratch/dry-run/{id}/` に置いたまま、口だけ config ファミリの下に置いた
