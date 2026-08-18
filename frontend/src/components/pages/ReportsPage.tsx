@@ -32,6 +32,7 @@ import {
 	fetchArticles,
 	fetchReport,
 	fetchReports,
+	type PointOfWeekPoint as PointOfWeekPointData,
 	type ReportListEntry
 } from "@/api/reports";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -199,7 +200,20 @@ function ReportDetail({ period }: { period: string }) {
 	);
 }
 
+/**
+ * 最初から見せる記事の件数（T-52 Step 2）。
+ *
+ * ⚠️ **選別は変えない**（サーバーが返した順・集合のまま）。残りは「続きを見る」で
+ * 開くだけで、**号の内容は同じ**（`api/reports.ts` の警告と対）。
+ */
+export const INITIAL_ARTICLE_COUNT = 5;
+
+/** 「続きを見る」の文言（残りの件数を添える）。 */
+export const showMoreLabel = (rest: number) => `続きを見る（残り${rest}件）`;
+
 function WeeklyArticles({ period }: { period: string }) {
+	const [expanded, setExpanded] = useState(false);
+
 	const articles = useQuery({
 		queryKey: reportKeys.articles(period),
 		queryFn: () => fetchArticles(period)
@@ -217,16 +231,17 @@ function WeeklyArticles({ period }: { period: string }) {
 	}
 
 	const data = articles.data;
+	const shown = expanded
+		? data.articles
+		: data.articles.slice(0, INITIAL_ARTICLE_COUNT);
+	const rest = data.articles.length - shown.length;
+
 	return (
 		<div className="mt-6">
-			{data.point_of_week !== null && (
-				<div className="rounded border p-4">
-					<h3 className="text-sm font-semibold">今週のポイント</h3>
-					<p className="mt-2 text-sm leading-relaxed whitespace-pre-line">
-						{data.point_of_week}
-					</p>
-				</div>
-			)}
+			<PointOfWeek
+				points={data.point_of_week_points}
+				fallback={data.point_of_week}
+			/>
 
 			{/* ⚠️ **セクションは1つ**（T-52 Step 1。業界振り分けの廃止）。 */}
 			<div className="mt-6">
@@ -234,14 +249,97 @@ function WeeklyArticles({ period }: { period: string }) {
 				<ul className="mt-2 space-y-2">
 					{/* 鍵は URL（示唆を引く鍵でもあり、号の中で一意。§12.1 の
 					    非空必須項目）。使えない URL の記事は見出しで代用する。 */}
-					{data.articles.map((article) => (
+					{shown.map((article) => (
 						<li key={article.url ?? article.title}>
 							<ArticleRow article={article} />
 						</li>
 					))}
 				</ul>
+				{rest > 0 && (
+					<button
+						type="button"
+						onClick={() => setExpanded(true)}
+						className="mt-3 w-full rounded border p-2 text-sm"
+					>
+						{showMoreLabel(rest)}
+					</button>
+				)}
 			</div>
 		</div>
+	);
+}
+
+/** 今週のポイントの見出し（メール版 `weekly_renderer.POINT_OF_WEEK_HEADING` と対）。 */
+export const POINT_OF_WEEK_HEADING = "今週のポイント";
+
+/**
+ * 今週のポイント（T-52 Step 2）。
+ *
+ * **各項目を箇条書きの1行**にし、詳細を持つ項目は**クリックで展開**する。
+ * ⚠️ **詳細が無い項目は開く口を出さない**（開けるのに空、を作らない）。生成側は
+ * 詳細を必須にしているが（T-52 Step 1）、古い号の narrative には無い。
+ *
+ * ⚠️ **`fallback`（連結した文章）は項目が無いときだけ使う**。両方出すと同じ文が
+ * 2度並ぶ（連結は見出しの文をつないだものなので中身が重複する）。
+ */
+function PointOfWeek({
+	points,
+	fallback
+}: {
+	points: PointOfWeekPointData[];
+	fallback: string | null;
+}) {
+	if (points.length === 0) {
+		if (fallback === null) {
+			return null;
+		}
+		return (
+			<div className="rounded border p-4">
+				<h3 className="text-sm font-semibold">{POINT_OF_WEEK_HEADING}</h3>
+				<p className="mt-2 text-sm leading-relaxed whitespace-pre-line">
+					{fallback}
+				</p>
+			</div>
+		);
+	}
+
+	return (
+		<div className="rounded border p-4">
+			<h3 className="text-sm font-semibold">{POINT_OF_WEEK_HEADING}</h3>
+			<ul className="mt-2 space-y-1">
+				{points.map((point) => (
+					<li key={point.heading}>
+						<PointOfWeekItem point={point} />
+					</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+function PointOfWeekItem({ point }: { point: PointOfWeekPointData }) {
+	const [open, setOpen] = useState(false);
+
+	if (point.detail === null) {
+		return <p className="text-sm leading-relaxed">・{point.heading}</p>;
+	}
+
+	return (
+		<>
+			<button
+				type="button"
+				onClick={() => setOpen((value) => !value)}
+				aria-expanded={open}
+				className="text-left text-sm leading-relaxed underline"
+			>
+				・{point.heading}
+			</button>
+			{open && (
+				<p className="mt-1 ml-4 text-sm leading-relaxed text-muted-foreground">
+					{point.detail}
+				</p>
+			)}
+		</>
 	);
 }
 

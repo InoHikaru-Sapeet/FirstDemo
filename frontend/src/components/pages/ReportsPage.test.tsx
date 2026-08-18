@@ -13,8 +13,11 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	DIAGRAM_LABEL,
+	INITIAL_ARTICLE_COUNT,
+	POINT_OF_WEEK_HEADING,
 	READ_MORE_LABEL,
 	ReportsPage,
+	showMoreLabel,
 	VIEWER_NOTICE
 } from "@/components/pages/ReportsPage";
 import { errorResponse, jsonResponse, stubFetch } from "@/test/http";
@@ -290,13 +293,94 @@ describe("ReportsPage 週刊の記事トグル", () => {
 
 		renderWithProviders(<ReportsPage />);
 
-		expect(await screen.findByText("今週の総括。")).toBeVisible();
+		expect(
+			await screen.findByRole("heading", { name: POINT_OF_WEEK_HEADING })
+		).toBeVisible();
 		// ⚠️ **セクションは1つ**（T-52 Step 1。業界関連／業界共通の廃止）。
 		expect(
 			screen.getByRole("heading", { name: "今週のトピック" })
 		).toBeVisible();
 		expect(screen.queryByText(/関連トピック/)).not.toBeInTheDocument();
 		expect(screen.queryByText(/業界共通/)).not.toBeInTheDocument();
+	});
+
+	it("今週のポイントは箇条書きで、詳細は畳んでおく（T-52 Step 2）", async () => {
+		stubWeekly();
+
+		renderWithProviders(<ReportsPage />);
+
+		const point = await screen.findByRole("button", {
+			name: "・実務投入が相次いだ。"
+		});
+		expect(point).toHaveAttribute("aria-expanded", "false");
+		expect(screen.queryByText("詳細の段落。")).not.toBeInTheDocument();
+		// 連結した文章（メール版が描くもの）は箇条書きと二重に出さない。
+		expect(screen.queryByText("今週の総括。")).not.toBeInTheDocument();
+	});
+
+	it("今週のポイントの項目をクリックすると詳細が開く", async () => {
+		stubWeekly();
+
+		renderWithProviders(<ReportsPage />);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: "・実務投入が相次いだ。" })
+		);
+
+		expect(await screen.findByText("詳細の段落。")).toBeVisible();
+	});
+
+	it("⚠️ 詳細が無い項目は開く口を出さない（開けるのに空を作らない）", async () => {
+		stubWeekly();
+
+		renderWithProviders(<ReportsPage />);
+
+		expect(
+			await screen.findByText("・定型業務から広がっている。")
+		).toBeVisible();
+		expect(
+			screen.queryByRole("button", { name: "・定型業務から広がっている。" })
+		).not.toBeInTheDocument();
+	});
+
+	it("項目が無い号では連結した今週のポイントをそのまま出す", async () => {
+		stubWeekly({ point_of_week_points: [] });
+
+		renderWithProviders(<ReportsPage />);
+
+		expect(await screen.findByText("今週の総括。")).toBeVisible();
+	});
+
+	it("記事は上位5件だけ出し、残りは「続きを見る」で開く（T-52 Step 2）", async () => {
+		stubWeekly({
+			articles: Array.from({ length: 8 }, (_, index) => card(index))
+		});
+
+		renderWithProviders(<ReportsPage />);
+
+		expect(await screen.findByText("記事4")).toBeVisible();
+		expect(screen.queryByText("記事5")).not.toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: showMoreLabel(3) }));
+
+		expect(await screen.findByText("記事7")).toBeVisible();
+		// 開いたら「続きを見る」は消える（押しても増えないボタンを残さない）。
+		expect(
+			screen.queryByRole("button", { name: /続きを見る/ })
+		).not.toBeInTheDocument();
+	});
+
+	it("5件以下の号には「続きを見る」を出さない", async () => {
+		stubWeekly({
+			articles: Array.from({ length: INITIAL_ARTICLE_COUNT }, (_, i) => card(i))
+		});
+
+		renderWithProviders(<ReportsPage />);
+
+		await screen.findByText("記事0");
+		expect(
+			screen.queryByRole("button", { name: /続きを見る/ })
+		).not.toBeInTheDocument();
 	});
 
 	it("⚠️ 合計スコアやしきい値を画面に出さない", async () => {
