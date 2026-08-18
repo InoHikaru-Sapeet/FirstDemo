@@ -54,6 +54,35 @@ export const reportSchema = z.object({
 export type Report = z.infer<typeof reportSchema>;
 
 /**
+ * 図解（T-49。バックエンド `enterprise/entities/diagram.py` と 1:1）。
+ *
+ * ⚠️ **タイプは3種だけ**（`flow` / `compare` / `metrics`）。サーバーが返すのは
+ * **構造化データ**で、描画済みの HTML ではない——描き方を決めるのは表示側
+ * （メール版は `monthly_renderer`、Web 版は `ReportsPage` の `DiagramView`）。
+ *
+ * ⚠️ **週刊のメール版に図解は出ない**ので、週刊の図解が読めるのは Web だけ。
+ */
+export const diagramSchema = z.discriminatedUnion("type", [
+	z.object({
+		type: z.literal("flow"),
+		title: z.string(),
+		steps: z.array(z.string())
+	}),
+	z.object({
+		type: z.literal("compare"),
+		title: z.string(),
+		left: z.object({ label: z.string(), points: z.array(z.string()) }),
+		right: z.object({ label: z.string(), points: z.array(z.string()) })
+	}),
+	z.object({
+		type: z.literal("metrics"),
+		title: z.string(),
+		items: z.array(z.object({ value: z.string(), label: z.string() }))
+	})
+]);
+export type Diagram = z.infer<typeof diagramSchema>;
+
+/**
  * `ArticleCard`。
  *
  * ⚠️ **合計スコアとしきい値は入っていない**（バックエンドが返さない。メール版
@@ -68,6 +97,8 @@ export const articleCardSchema = z.object({
 	url: z.string().nullable(),
 	summary: z.string(),
 	insight: z.string().nullable(),
+	// ⚠️ 図解の無い記事は `null`（それが正常。無理に作らせていない）。
+	diagram: diagramSchema.nullable(),
 	source: z.string()
 });
 export type ArticleCard = z.infer<typeof articleCardSchema>;

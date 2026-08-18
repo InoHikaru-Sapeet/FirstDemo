@@ -64,7 +64,27 @@
 常道で、要約したり書き換えたりはしない（§1.1「render は AI を呼ばない」ので
 そもそもできない）。数値が見つからない事例にはボックスを出さない。
 
-⚠️ **画像・図解の自動生成はやらない**（T-48 のスコープ外。TASKS.md に明記）。
+---
+
+**⚠️ 図解（2026-08-18 の T-49）**
+
+事例カードに**図解**を描けるようにした。§10.2-4 に規定が無い＝**完全な追加**
+（→ T-38 の改訂対象）。
+
+- **内容は filter 段の AI が構造化データとして申告**したもの（`Diagram`＝3タイプ
+  固定。`enterprise.entities.diagram`）。この層は**受け取った型に応じて決まった
+  形で描くだけ**で、**AI は呼ばない**（§1.1 は不変）
+- 描くのは `table` ＋ inline style だけ（§7.1）。**画像は作らない**——`flow` の
+  矢印も `→` の文字で、`assert_mail_safe()` をそのまま通る
+- **図解が無い事例には何も出さない**（0〜1個で、無いのが正常）
+
+⚠️ **置き場所は「解説の後・出典の前」。** 本文より前に置くと、①事実 を読む前に
+解釈された図が目に入る（§10.3 の3段落構成は事実から始まる）。引用ボックス
+（T-48 Step 2）が本文の前で「何の話か」を示し、図解が本文の後で「結局どういう
+構造だったか」を示す並びにしてある。
+
+⚠️ **画像（PNG/SVG ファイル）の生成はやらない**（T-48 の申し送りどおり、生成・
+保管・配信の許可リスト・代替テキスト・画像ブロック対策が一式要るため）。
 """
 
 import logging
@@ -79,6 +99,13 @@ from adapter.html import mail_html as m
 from adapter.storage.artifact_store import ArtifactStore
 from application.usecases.monthly_cases import CHAPTER_LABEL_FORMAT
 from enterprise.entities.config import IntelligenceConfig
+from enterprise.entities.diagram import (
+    CompareDiagram,
+    Diagram,
+    FlowDiagram,
+    MetricsDiagram,
+)
+from enterprise.entities.narrative import case_diagram_key
 from enterprise.entities.period import Period, PeriodError, parse_period
 from enterprise.entities.report_columns import (
     MONTHLY_CASE_COLUMNS_BY_NAME,
@@ -200,6 +227,12 @@ CONTENTS_HEADING = "目次"
 CONTENTS_SUMMARY_FORMAT = "全{cases}事例・{chapters}章"
 CHAPTER_COUNT_FORMAT = "{count}件"
 CASE_LABEL_FORMAT = "CASE {no:02d} ／ {organizations}"
+DIAGRAM_EYEBROW = "図解"
+"""図解パネルの見出し（T-49。**仕様書に規定が無いのでこちらの判断**）。"""
+
+FLOW_ARROW = "→"
+"""`flow` のステップを繋ぐ矢印。**画像ではなく文字**（§7.1 ／ メール互換）。"""
+
 CLOSING_EYEBROW = "CLOSING"
 CLOSING_HEADING = "むすび ― 来月への視点"
 FOOTER_BRAND_FORMAT = "{brand} ／ {issue}"
@@ -334,17 +367,29 @@ class MonthlyNarrative:
         editorial: 巻頭言の総論（`\\n\\n` 区切りで3段落程度）
         chapter_intros: 章ラベル（`第N章 …`＝列2の値）→ 章導入文（§10.2-4）
         closing: むすび（`\\n\\n` 区切りで2段落。今月総括＋来月視点。§10.2-5）
+        case_diagrams: 事例の `No`（文字列）→ 図解（T-49）。**鍵の作り方は
+            `case_diagram_key()` の1箇所だけ**
     """
 
     editorial_subtitle: str | None = None
     editorial: str | None = None
     chapter_intros: Mapping[str, str] = field(default_factory=dict)
     closing: str | None = None
+    case_diagrams: Mapping[str, Diagram] = field(default_factory=dict)
 
     def intro_for(self, chapter: str) -> str | None:
         """その章の導入文。無ければ `None`（導入文だけ出さない）。"""
         text = self.chapter_intros.get(chapter)
         return text.strip() if text and text.strip() else None
+
+    def diagram_for(self, no: object) -> Diagram | None:
+        """その事例の図解。無ければ `None`（**図解ごと出さない**。T-49）。"""
+        try:
+            key = case_diagram_key(no)
+        except (TypeError, ValueError):
+            logger.warning("図解の鍵にできない No です: %r", no)
+            return None
+        return self.case_diagrams.get(key)
 
 
 # --- 章のグルーピング（§10.3「`No` 昇順＝章グルーピング順」）-----------------
@@ -826,11 +871,217 @@ def _key_figure_box(quote: str) -> str:
     )
 
 
-def _case_card(case: Mapping[str, Any]) -> str:
+def _diagram(diagram: Diagram) -> str:
+    """図解1件（T-49）。**table ＋ inline style だけで描く**（§7.1）。
+
+    タイプごとに描き方が決まっており、AI から受け取るのは中身の語だけ
+    （レイアウトの指定は構造的に受け取れない＝`enterprise.entities.diagram`）。
+    """
+    if isinstance(diagram, FlowDiagram):
+        body = _flow_body(diagram)
+    elif isinstance(diagram, CompareDiagram):
+        body = _compare_body(diagram)
+    else:
+        body = _metrics_body(diagram)
+
+    return m.block(
+        "".join(
+            [
+                _eyebrow(DIAGRAM_EYEBROW, color=ACCENT),
+                m.element(
+                    "p",
+                    m.escape(diagram.title),
+                    style=m.styles(
+                        "margin:6px 0 0 0",
+                        "font-size:13px",
+                        "font-weight:bold",
+                        f"color:{NAVY}",
+                        "line-height:1.6",
+                    ),
+                ),
+                body,
+            ]
+        ),
+        style=m.styles(
+            f"background-color:{PANEL_BACKGROUND}",
+            f"border:1px solid {PANEL_BORDER}",
+            "border-radius:6px",
+            "margin:16px 0 0 0",
+        ),
+        cell_style="padding:16px 18px",
+    )
+
+
+def _flow_body(diagram: FlowDiagram) -> str:
+    """流れ図：横並びのマス＋矢印（**矢印は画像ではなく文字**）。"""
+    cells: list[str] = []
+    for index, step in enumerate(diagram.steps):
+        if index:
+            cells.append(
+                m.cell(
+                    m.escape(FLOW_ARROW),
+                    style=m.styles(
+                        "width:1%",
+                        "padding:0 5px",
+                        f"color:{ACCENT}",
+                        "font-size:14px",
+                        "font-weight:bold",
+                    ),
+                    attrs={"valign": "middle", "align": "center"},
+                )
+            )
+        cells.append(m.cell(_flow_step(step), attrs={"valign": "middle"}))
+    return m.table([m.row(cells)], style="margin:12px 0 0 0")
+
+
+def _flow_step(step: str) -> str:
+    return m.block(
+        m.element(
+            "p",
+            m.escape(step),
+            style=m.styles(
+                "margin:0",
+                "font-size:11px",
+                "line-height:1.5",
+                f"color:{NAVY}",
+                "text-align:center",
+            ),
+        ),
+        style=m.styles(
+            f"background-color:{SURFACE}",
+            f"border:1px solid {ACCENT_LIGHT}",
+            "border-radius:4px",
+        ),
+        cell_style="padding:8px 6px",
+    )
+
+
+def _compare_body(diagram: CompareDiagram) -> str:
+    """対比図：2列表（見出しの行＋要点の行）。"""
+    header_style = m.styles(
+        f"background-color:{NAVY}",
+        f"color:{INVERSE_TEXT}",
+        "font-size:11px",
+        "font-weight:bold",
+        "padding:7px 10px",
+        "border-radius:3px 3px 0 0",
+    )
+    body_style = m.styles(
+        f"background-color:{SURFACE}",
+        f"border:1px solid {PANEL_BORDER}",
+        "padding:10px",
+    )
+    panes = (diagram.left, diagram.right)
+    return m.table(
+        [
+            m.row(
+                _two_columns(
+                    [m.escape(pane.label) for pane in panes], style=header_style
+                )
+            ),
+            m.row(
+                _two_columns(
+                    [_compare_points(pane.points) for pane in panes],
+                    style=body_style,
+                    valign="top",
+                )
+            ),
+        ],
+        style="margin:12px 0 0 0",
+    )
+
+
+def _two_columns(
+    contents: Sequence[str], *, style: str, valign: str = "middle"
+) -> list[str]:
+    """左右2セル（間に余白セル）。**幅は左右で同じ**（対比が偏って見えないため）。"""
+    left, right = contents
+    return [
+        m.cell(left, style=style, attrs={"width": "48%", "valign": valign}),
+        m.spacer_cell("4%"),
+        m.cell(right, style=style, attrs={"width": "48%", "valign": valign}),
+    ]
+
+
+def _compare_points(points: Sequence[str]) -> str:
+    return "".join(
+        m.element(
+            "p",
+            m.escape(point),
+            style=m.styles(
+                "margin:6px 0 0 0" if index else "margin:0",
+                "font-size:11px",
+                "line-height:1.7",
+                f"color:{BODY_TEXT}",
+            ),
+        )
+        for index, point in enumerate(points)
+    )
+
+
+def _metrics_body(diagram: MetricsDiagram) -> str:
+    """数値ハイライト：大きめのボックスの横並び。"""
+    width = f"{100 // len(diagram.items)}%"
+    cells: list[str] = []
+    for index, item in enumerate(diagram.items):
+        if index:
+            cells.append(m.spacer_cell("8px"))
+        cells.append(
+            m.cell(
+                _metric_box(item.value, item.label),
+                attrs={"width": width, "valign": "top"},
+            )
+        )
+    return m.table([m.row(cells)], style="margin:12px 0 0 0")
+
+
+def _metric_box(value: str, label: str) -> str:
+    return m.block(
+        "".join(
+            [
+                m.element(
+                    "p",
+                    m.escape(value),
+                    style=m.styles(
+                        "margin:0",
+                        "font-size:20px",
+                        "font-weight:bold",
+                        f"color:{NAVY}",
+                        "line-height:1.3",
+                        "text-align:center",
+                    ),
+                ),
+                m.element(
+                    "p",
+                    m.escape(label),
+                    style=m.styles(
+                        "margin:6px 0 0 0",
+                        "font-size:11px",
+                        "line-height:1.5",
+                        f"color:{MUTED_TEXT}",
+                        "text-align:center",
+                    ),
+                ),
+            ]
+        ),
+        style=m.styles(
+            f"background-color:{SURFACE}",
+            f"border:1px solid {ACCENT_LIGHT}",
+            "border-radius:4px",
+        ),
+        cell_style="padding:12px 8px",
+    )
+
+
+def _case_card(case: Mapping[str, Any], diagram: Diagram | None = None) -> str:
     """§10.2-4 事例カード（`CASE NN` バッジ＋企業名／タイトル／本文／出典行）。
 
     T-48 Step 2 で `CASE NN` をバッジへ出し、解説にキーとなる数値があれば
     引用ボックスを本文の前に置く。**本文（`解説` の段落）は全段そのまま。**
+
+    Args:
+        case: 当月シートの1行
+        diagram: その事例の図解（T-49）。`None` なら図解を出さない
     """
     # ⚠️ `NN` は列1「No」そのもの（レンダラ側で数え直さない）。`No` が章の
     # グルーピング順を表す通し番号なので、表と HTML で番号が食い違わない。
@@ -912,6 +1163,9 @@ def _case_card(case: Mapping[str, Any]) -> str:
             ),
         )
     )
+    # ⚠️ **図解は解説の後・出典の前**（モジュール docstring）。無ければ出さない。
+    if diagram is not None:
+        parts.append(_diagram(diagram))
     parts.append(source)
 
     return m.row([m.cell("".join(parts), style="padding:22px 30px 0 30px")])
@@ -1076,6 +1330,7 @@ def _render(
         rows.append(_editorial(narrative))
     rows.append(_contents(chapters, case_count=len(cases)))
     quoted = 0
+    diagrammed = 0
     for chapter in chapters:
         # 章色帯（T-48 Step 2）が前の事例カードへ張り付かないよう間を空ける。
         # `padding-top` ではなく余白行なのは、帯の地色を上に伸ばさないため。
@@ -1084,7 +1339,10 @@ def _render(
         for case in chapter.cases:
             if key_figure_quote(case.get(COLUMN_COMMENTARY)):
                 quoted += 1
-            rows.append(_case_card(case))
+            diagram = narrative.diagram_for(case.get(COLUMN_NO))
+            if diagram is not None:
+                diagrammed += 1
+            rows.append(_case_card(case, diagram))
     if (narrative.closing or "").strip():
         rows.append(_closing(narrative))
     rows.append(m.spacer_row("34px"))
@@ -1136,13 +1394,17 @@ def _render(
     )
 
     logger.info(
-        "monthly html rendered (period=%s, cases=%d, chapters=%d, key_figures=%d)",
+        "monthly html rendered (period=%s, cases=%d, chapters=%d, key_figures=%d,"
+        " diagrams=%d)",
         parsed.text,
         len(cases),
         len(chapters),
         # 引用ボックスが出た事例数（T-48 Step 2）。0 が続くなら解説に数値が
         # 入っていない＝抜き出す単位（`KEY_FIGURE_UNITS`）の見直しの手がかり。
         quoted,
+        # 図解が出た事例数（T-49）。**0 でも異常ではない**（該当タイプが無ければ
+        # 作らないのが正しい）が、ずっと 0 なら申告のさせ方を見直す手がかり。
+        diagrammed,
     )
     return _mail_safe(markup, period=parsed.text), chapters
 
@@ -1300,7 +1562,9 @@ __all__ = [
     "CHAPTER_BADGE_FORMAT",
     "CLOSING_HEADING",
     "CONTENTS_SUMMARY_FORMAT",
+    "DIAGRAM_EYEBROW",
     "EDITORIAL_HEADING",
+    "FLOW_ARROW",
     "FOOTER_CASE_BADGE_FORMAT",
     "FOOTER_CHAPTER_BADGE_FORMAT",
     "HEADER_EYEBROW",

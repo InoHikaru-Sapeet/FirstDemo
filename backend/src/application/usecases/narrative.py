@@ -374,7 +374,9 @@ def to_weekly_narrative(
     """
     weekly = document.for_industry(industry)
     return WeeklyNarrative(
-        point_of_week=weekly.point_of_week, insights=dict(weekly.insights)
+        point_of_week=weekly.point_of_week,
+        insights=dict(weekly.insights),
+        diagrams=dict(weekly.diagrams),
     )
 
 
@@ -385,6 +387,7 @@ def to_monthly_narrative(document: MonthlyNarrativeDocument) -> MonthlyNarrative
         editorial=document.editorial,
         chapter_intros=dict(document.chapter_intros),
         closing=document.closing,
+        case_diagrams=dict(document.case_diagrams),
     )
 
 

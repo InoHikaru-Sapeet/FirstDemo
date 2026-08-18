@@ -209,6 +209,7 @@ def write_narrative(
     harness: Harness,
     *,
     insights: dict[str, str] | None = None,
+    diagrams: dict[str, dict[str, Any]] | None = None,
     industries: tuple[str, ...] = ("不動産",),
 ) -> None:
     """`narrative_{period}.json`（T-44 の形）を置く。"""
@@ -218,6 +219,7 @@ def write_narrative(
             industry: {
                 "point_of_week_sentences": ["今週の総括。"],
                 "insights": dict(insights or {}),
+                "diagrams": dict(diagrams or {}),
             }
             for industry in industries
         },
@@ -478,8 +480,52 @@ def test_the_articles_carry_what_the_mail_html_shows(harness: Harness) -> None:
         "url": "https://example.com/news/0",
         "summary": "AIエージェントを導入した。契約業務が自動化された。",
         "insight": "自社では試せる。",
+        # ⚠️ 図解を申告していない記事は `None`（T-49。それが正常）。
+        "diagram": None,
         "source": "ITmedia",
     }
+
+
+def test_a_declared_diagram_is_returned_for_the_web_page(harness: Harness) -> None:
+    """⚠️ **図解は Web だけに出る**（週刊のメール版は描かない＝T-49）。
+
+    返すのは `Diagram`（3タイプ固定の構造化データ）で、HTML の断片ではない。
+    """
+    seed_config(harness)
+    write_weekly_sheet(harness, rows=1)
+    write_weekly_html(harness, "不動産")
+    write_narrative(
+        harness,
+        diagrams={
+            "https://example.com/news/0": {
+                "type": "flow",
+                "title": "契約業務の流れ",
+                "steps": ["受領", "AIが下書き", "確認"],
+            }
+        },
+    )
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    diagram = response.json()["sections"][0]["articles"][0]["diagram"]
+    assert diagram == {
+        "type": "flow",
+        "title": "契約業務の流れ",
+        "steps": ["受領", "AIが下書き", "確認"],
+    }
+    assert "<table" not in response.text  # 描画済み HTML は返さない
+
+
+def test_an_article_without_a_diagram_returns_null(harness: Harness) -> None:
+    """⚠️ **図解なしが正常**（無い記事は `null`）。"""
+    seed_config(harness)
+    write_weekly_sheet(harness, rows=1)
+    write_weekly_html(harness, "不動産")
+    write_narrative(harness)
+
+    response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
+
+    assert response.json()["sections"][0]["articles"][0]["diagram"] is None
 
 
 def test_the_articles_never_expose_scores_or_thresholds(harness: Harness) -> None:
@@ -504,6 +550,7 @@ def test_the_articles_never_expose_scores_or_thresholds(harness: Harness) -> Non
         "url",
         "summary",
         "insight",
+        "diagram",
         "source",
     }
     assert "83" not in response.text  # 合計スコアの値そのもの

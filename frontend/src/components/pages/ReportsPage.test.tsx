@@ -4,6 +4,7 @@
  * - **一覧 → 号の選択 → 詳細**（新しい号が既定で開く）
  * - **週刊は記事ごとのトグル開閉**で要約・示唆が出る（Web なので JS 可）
  * - ⚠️ **メール版が絞った示唆も Web では全件開ける**（T-48 Step 1 との対）
+ * - ⚠️ **図解は Web だけに出る**（週刊のメール版は描かない＝T-49）
  * - ⚠️ **合計スコア・しきい値を画面に出さない**（サーバーも返さない）
  * - viewer に「閲覧のみ」の案内が出る（T-36 完了条件）
  */
@@ -11,6 +12,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	DIAGRAM_LABEL,
 	READ_MORE_LABEL,
 	ReportsPage,
 	VIEWER_NOTICE
@@ -67,10 +69,34 @@ function card(index: number, overrides: Record<string, unknown> = {}) {
 		url: `https://example.com/news/${index}`,
 		summary: `要約${index}。`,
 		insight: `示唆${index}。`,
+		// ⚠️ 図解の無い記事が既定（T-49。無いのが正常な経路）。
+		diagram: null,
 		source: "ITmedia",
 		...overrides
 	};
 }
+
+const FLOW_DIAGRAM = {
+	type: "flow",
+	title: "契約業務の流れ",
+	steps: ["契約書を受領", "AIが下書き", "担当者が確認"]
+};
+
+const COMPARE_DIAGRAM = {
+	type: "compare",
+	title: "導入前後の運用",
+	left: { label: "従来", points: ["担当者が全文を読む"] },
+	right: { label: "導入後", points: ["要点だけ確認する"] }
+};
+
+const METRICS_DIAGRAM = {
+	type: "metrics",
+	title: "導入の効果",
+	items: [
+		{ value: "月120時間", label: "削減した工数" },
+		{ value: "-42%", label: "一次回答までの時間" }
+	]
+};
 
 const ARTICLES = {
 	period: WEEKLY,
@@ -376,6 +402,124 @@ describe("ReportsPage 週刊の記事トグル", () => {
 		expect(link.closest("p")?.textContent).toBe(
 			`出典：日経クロステック（${READ_MORE_LABEL}）`
 		);
+	});
+
+	// --- 図解（T-49。**メール版に出ないので Web だけの表示**）--------------
+
+	it("図解はトグルを開いたときだけ出る", async () => {
+		stubWeekly({
+			sections: [
+				{
+					heading: "不動産関連トピック",
+					articles: [card(0, { diagram: FLOW_DIAGRAM })]
+				}
+			]
+		});
+
+		renderWithProviders(<ReportsPage />);
+
+		expect(await screen.findByText("記事0")).toBeVisible();
+		expect(screen.queryByText(FLOW_DIAGRAM.title)).not.toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "要約と示唆を開く" }));
+
+		expect(await screen.findByText(FLOW_DIAGRAM.title)).toBeVisible();
+		expect(screen.getByText(DIAGRAM_LABEL)).toBeVisible();
+	});
+
+	it("flow は3〜5ステップを順に出す", async () => {
+		stubWeekly({
+			sections: [
+				{
+					heading: "不動産関連トピック",
+					articles: [card(0, { diagram: FLOW_DIAGRAM })]
+				}
+			]
+		});
+
+		renderWithProviders(<ReportsPage />);
+		fireEvent.click(
+			await screen.findByRole("button", { name: "要約と示唆を開く" })
+		);
+
+		const steps =
+			await screen.findAllByText(/契約書を受領|AIが下書き|担当者が確認/);
+		expect(steps.map((node) => node.textContent)).toEqual(FLOW_DIAGRAM.steps);
+	});
+
+	it("compare は左右の見出しと要点を出す", async () => {
+		stubWeekly({
+			sections: [
+				{
+					heading: "不動産関連トピック",
+					articles: [card(0, { diagram: COMPARE_DIAGRAM })]
+				}
+			]
+		});
+
+		renderWithProviders(<ReportsPage />);
+		fireEvent.click(
+			await screen.findByRole("button", { name: "要約と示唆を開く" })
+		);
+
+		expect(await screen.findByText("従来")).toBeVisible();
+		expect(screen.getByText("導入後")).toBeVisible();
+		expect(screen.getByText("担当者が全文を読む")).toBeVisible();
+		expect(screen.getByText("要点だけ確認する")).toBeVisible();
+	});
+
+	it("metrics は値とラベルを対で出す", async () => {
+		stubWeekly({
+			sections: [
+				{
+					heading: "不動産関連トピック",
+					articles: [card(0, { diagram: METRICS_DIAGRAM })]
+				}
+			]
+		});
+
+		renderWithProviders(<ReportsPage />);
+		fireEvent.click(
+			await screen.findByRole("button", { name: "要約と示唆を開く" })
+		);
+
+		for (const item of METRICS_DIAGRAM.items) {
+			expect(await screen.findByText(item.value)).toBeVisible();
+			expect(screen.getByText(item.label)).toBeVisible();
+		}
+	});
+
+	it("⚠️ 図解が無い記事には図解の枠を出さない", async () => {
+		stubWeekly();
+
+		renderWithProviders(<ReportsPage />);
+		const toggles = await screen.findAllByRole("button", {
+			name: "要約と示唆を開く"
+		});
+		fireEvent.click(toggles[0]);
+
+		expect(await screen.findByText("要約0。")).toBeVisible();
+		expect(screen.queryByText(DIAGRAM_LABEL)).not.toBeInTheDocument();
+	});
+
+	it("要約も示唆も無くても、図解があればトグルを出す", async () => {
+		stubWeekly({
+			sections: [
+				{
+					heading: "不動産関連トピック",
+					articles: [
+						card(0, { summary: "", insight: null, diagram: FLOW_DIAGRAM })
+					]
+				}
+			]
+		});
+
+		renderWithProviders(<ReportsPage />);
+		fireEvent.click(
+			await screen.findByRole("button", { name: "要約と示唆を開く" })
+		);
+
+		expect(await screen.findByText(FLOW_DIAGRAM.title)).toBeVisible();
 	});
 
 	it("URL が使えない記事では出典行の括弧ごと出さない", async () => {

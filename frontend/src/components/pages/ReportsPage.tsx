@@ -28,6 +28,7 @@ import { reportKeys } from "@/api/query-keys";
 import {
 	type ArticleCard as ArticleCardData,
 	artifactUrl,
+	type Diagram,
 	fetchArticles,
 	fetchReport,
 	fetchReports,
@@ -287,7 +288,10 @@ export const READ_MORE_LABEL = "記事を読む";
  */
 function ArticleRow({ article }: { article: ArticleCardData }) {
 	const [open, setOpen] = useState(false);
-	const hasDetail = article.summary !== "" || article.insight !== null;
+	const hasDetail =
+		article.summary !== "" ||
+		article.insight !== null ||
+		article.diagram !== null;
 
 	return (
 		<div className="rounded border p-3">
@@ -349,12 +353,104 @@ function ArticleRow({ article }: { article: ArticleCardData }) {
 									{article.insight}
 								</p>
 							)}
+							{/* ⚠️ 図解が読めるのはここだけ（メール版は描かない＝T-49）。 */}
+							{article.diagram !== null && (
+								<DiagramView diagram={article.diagram} />
+							)}
 						</div>
 					)}
 				</>
 			)}
 		</div>
 	);
+}
+
+/** 図解パネルの見出し（メール版 `monthly_renderer.DIAGRAM_EYEBROW` と対）。 */
+export const DIAGRAM_LABEL = "図解";
+
+/** `flow` のステップを繋ぐ矢印（メール版 `FLOW_ARROW` と対）。 */
+const FLOW_ARROW = "→";
+
+/**
+ * 図解（T-49）。
+ *
+ * ⚠️ **描き方はここが決める。** サーバーが返すのは3タイプの構造化データだけで、
+ * HTML の断片ではない（`api/reports.ts` の `diagramSchema`）。タイプごとの
+ * 描き分けは `switch` で閉じてあり、**未知のタイプは型として存在しない**。
+ *
+ * ⚠️ メール版（`monthly_renderer`）は table＋inline style の制約があるが、
+ * こちらは Web なので通常の CSS を使う。**同じデータの別の描き方**であって、
+ * 内容は同じ。
+ */
+function DiagramView({ diagram }: { diagram: Diagram }) {
+	return (
+		<figure className="rounded border bg-slate-50 p-3">
+			<figcaption className="text-xs font-semibold text-slate-600">
+				<span className="mr-2 text-[10px] tracking-widest text-slate-400">
+					{DIAGRAM_LABEL}
+				</span>
+				{diagram.title}
+			</figcaption>
+			<div className="mt-2">
+				<DiagramBody diagram={diagram} />
+			</div>
+		</figure>
+	);
+}
+
+function DiagramBody({ diagram }: { diagram: Diagram }) {
+	switch (diagram.type) {
+		case "flow":
+			return (
+				<ol className="flex flex-wrap items-center gap-2">
+					{diagram.steps.map((step, index) => (
+						<li key={step} className="flex items-center gap-2">
+							{index > 0 && (
+								<span aria-hidden="true" className="text-sky-600">
+									{FLOW_ARROW}
+								</span>
+							)}
+							<span className="rounded border border-sky-200 bg-white px-2 py-1 text-xs">
+								{step}
+							</span>
+						</li>
+					))}
+				</ol>
+			);
+		case "compare":
+			return (
+				<div className="grid grid-cols-2 gap-2">
+					{[diagram.left, diagram.right].map((pane) => (
+						<div key={pane.label} className="rounded border bg-white">
+							<p className="rounded-t bg-slate-700 px-2 py-1 text-xs font-semibold text-white">
+								{pane.label}
+							</p>
+							<ul className="space-y-1 p-2 text-xs leading-relaxed">
+								{pane.points.map((point) => (
+									<li key={point}>{point}</li>
+								))}
+							</ul>
+						</div>
+					))}
+				</div>
+			);
+		case "metrics":
+			return (
+				<dl className="flex flex-wrap gap-2">
+					{diagram.items.map((item) => (
+						<div
+							key={`${item.value}-${item.label}`}
+							className="flex-1 rounded border border-sky-200 bg-white p-2 text-center"
+						>
+							<dd className="text-lg font-bold text-slate-800">{item.value}</dd>
+							<dt className="mt-1 text-[11px] text-muted-foreground">
+								{item.label}
+							</dt>
+						</div>
+					))}
+				</dl>
+			);
+	}
 }
 
 /** メール版 HTML の埋め込み（配信される形をそのまま見る）。 */

@@ -81,6 +81,16 @@ filter が作ったまま全件持っており、**この層が描画時に間�
 
 ⚠️ **URL 列は今までどおり全カードで使う**（リンクの置き場が変わっただけ）。
 リンクにできない URL では括弧ごと出さない（`_source_line()`）。
+
+---
+
+**⚠️ 週刊のメール版に図解は出さない**（2026-08-18 の T-49）
+
+filter 段の AI は**週刊でも記事ごとに図解を申告する**（`WeeklyNarrative.
+diagrams`）が、**この層は描かない**。1通あたりの縦を伸ばすと T-48 Step 1 の
+圧縮（1行要約・示唆はセクション先頭1件）が無意味になるため。図解を読めるのは
+**Web の閲覧ページ（T-36）のトグル展開内だけ**——示唆の間引きと同じ扱いで、
+`narrative_{period}.json` には全件残る。
 """
 
 import logging
@@ -93,6 +103,7 @@ from adapter.html import mail_html as m
 from adapter.html.category_colors import color_of
 from adapter.storage.artifact_store import ArtifactStore
 from enterprise.entities.config import IntelligenceConfig
+from enterprise.entities.diagram import Diagram
 from enterprise.entities.period import Period, PeriodError, parse_period
 from enterprise.entities.report_columns import (
     MULTI_VALUE_SEPARATOR,
@@ -230,18 +241,31 @@ class WeeklyNarrative:
             `\\n\\n` を含めば複数段落になる
         insights: 記事URL → 示唆ボックスの1段落（§9.2-4）。**鍵は URL**
             （§12.1 の非空必須項目で、記事を一意に指せる唯一の列）
+        diagrams: 記事URL → 図解（T-49）。**鍵は示唆と同じ**。
+            ⚠️ **メール版は描かない**（下の注記）
     """
 
     point_of_week: str | None = None
     insights: Mapping[str, str] = field(default_factory=dict)
+    diagrams: Mapping[str, Diagram] = field(default_factory=dict)
 
     def insight_for(self, url: object) -> str | None:
         """その記事の示唆。無ければ `None`（ボックスごと出さない）。"""
-        key = "" if url is None else str(url).strip()
-        if not key:
-            return None
-        text = self.insights.get(key)
+        text = self.insights.get(self._key(url))
         return text.strip() if text and text.strip() else None
+
+    def diagram_for(self, url: object) -> Diagram | None:
+        """その記事の図解（T-49）。無ければ `None`。
+
+        ⚠️ **このモジュールは呼ばない。** 週刊のメール版に図解は出さない
+        （1通あたりの縦を伸ばすと T-48 Step 1 の圧縮が無意味になる）。読むのは
+        Web の閲覧ページ（T-36 の `GET /reports/{period}/articles`）。
+        """
+        return self.diagrams.get(self._key(url))
+
+    @staticmethod
+    def _key(url: object) -> str:
+        return "" if url is None else str(url).strip()
 
 
 # --- 描画する業界（§9.2-1・§9.2-3）-------------------------------------------

@@ -48,6 +48,7 @@ from adapter.html.weekly_renderer import (
 )
 from adapter.storage.artifact_store import ArtifactStore
 from enterprise.entities.config import IntelligenceConfig
+from enterprise.entities.diagram import FlowDiagram
 from enterprise.entities.report_columns import (
     MULTI_VALUE_SEPARATOR,
     WEEKLY_ARTICLE_COLUMNS,
@@ -1006,3 +1007,40 @@ def test_the_rendered_html_matches_the_golden_file(
 def test_the_golden_file_itself_satisfies_the_mail_html_constraints() -> None:
     """ゴールデンを更新したときに §7.1 を割らないための歯止め。"""
     assert mail_html.forbidden_constructs(GOLDEN_PATH.read_text(encoding="utf-8")) == []
+
+
+# --- 図解（T-49。**メール版は描かない**）--------------------------------------
+
+
+def test_the_mail_version_does_not_draw_a_declared_diagram(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ 週刊のメール版に図解は出さない（T-48 Step 1 の圧縮を保つため）。
+
+    生成テキストには図解が入っているが、描かれるのは Web の閲覧ページだけ
+    （T-36 の `GET /reports/{period}/articles`）。
+    """
+    url = "https://example.com/news/1"
+    diagram = FlowDiagram(
+        type="flow", title="契約業務の流れ", steps=["受領", "AIが下書き", "確認"]
+    )
+    text = WeeklyNarrative(point_of_week="今週の総括。", diagrams={url: diagram})
+
+    markup = render([article(url=url)], config, text)
+
+    assert diagram.title not in markup
+    for step in diagram.steps:
+        assert f">{step}<" not in markup
+
+
+def test_the_narrative_still_carries_the_diagram_for_the_web_page() -> None:
+    """描画しないだけで**間引かない**（示唆の間引き＝T-48 Step 1 と同じ扱い）。"""
+    url = "https://example.com/news/1"
+    diagram = FlowDiagram(
+        type="flow", title="契約業務の流れ", steps=["受領", "AIが下書き", "確認"]
+    )
+    text = WeeklyNarrative(diagrams={url: diagram})
+
+    assert text.diagram_for(url) is diagram
+    assert text.diagram_for("https://example.com/other") is None
+    assert text.diagram_for(None) is None

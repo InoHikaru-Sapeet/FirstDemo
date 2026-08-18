@@ -26,6 +26,11 @@ Web の閲覧ページは記事ごとのトグル開閉で要約・示唆を出�
 理由が無い。⚠️ **`narrative_{period}.json` 自体は配信しない**（`is_servable()`
 の許可リストに入れていない＝生の成果物はダウンロードさせない）。
 
+⚠️ **図解（T-49）も同じ理由で返す。** 週刊は**メール版に図解を描かない**ので
+（1通の縦を伸ばすと T-48 Step 1 の圧縮が無意味になる）、図解が読めるのは
+この口を通した Web の閲覧ページだけ。**描画は決定的**——サーバーが返すのは
+`Diagram`（3タイプ固定の構造化データ）で、HTML の断片ではない。
+
 ---
 
 ⚠️ **一覧（`GET /reports`）は「置いてある HTML」から作る。**
@@ -98,6 +103,7 @@ from adapter.xlsx.report_writer import ReportStore
 from application.usecases.narrative import to_weekly_narrative
 from config import Settings, get_settings
 from enterprise.entities.config import IntelligenceConfig
+from enterprise.entities.diagram import Diagram
 from enterprise.entities.narrative import WeeklyNarrativeDocument, parse_narrative
 from enterprise.entities.period import Period, PeriodError, parse_period
 from enterprise.entities.principal import Principal
@@ -179,6 +185,8 @@ class ArticleCard(BaseModel):
         summary: 列4「一言要約」。⚠️ **切り詰めない**（メール版は全角60字で
             切るが、Web はトグルで開くので全文を出せる）
         insight: 示唆ボックスの1段落。**メール版が出していない分も返す**
+        diagram: 図解（T-49）。⚠️ **週刊のメール版は図解を描かない**ので、
+            これは「Web だけに出る」項目。無い記事は `None`（それが正常）
         source: 列21「ソース」
     """
 
@@ -189,6 +197,7 @@ class ArticleCard(BaseModel):
     url: str | None
     summary: str
     insight: str | None
+    diagram: Diagram | None
     source: str
 
 
@@ -427,6 +436,10 @@ def _card(
         url=safe_url(url),
         summary=str(record.get(COLUMN_SUMMARY) or "").strip(),
         insight=narrative.insight_for(url),
+        # ⚠️ **図解はメール版に出ていない**（週刊のメール版は描かない＝T-49）。
+        # 示唆の間引き（T-48 Step 1）と同じ扱いで、生成テキストの中身そのものは
+        # 配信物の本文なので Web で読める相手を HTML より狭める理由が無い。
+        diagram=narrative.diagram_for(url),
         source=str(record.get(COLUMN_SOURCE) or "").strip(),
     )
 

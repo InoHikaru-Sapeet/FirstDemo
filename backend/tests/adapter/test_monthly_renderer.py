@@ -10,6 +10,7 @@
 - **生成テキスト**（巻頭言・章導入文・むすび）は渡された分だけ出す。
   `require_editorial_and_closing=true` で空なら落とす
 - **§7.1 の禁止事項が出力に混ざらない**／ゴールデンファイル比較
+- **図解**（T-49）は3タイプとも table＋inline style だけで描け、無いのが正常
 """
 
 import copy
@@ -23,6 +24,7 @@ from typing import Any
 import pytest
 
 from adapter.html import mail_html
+from adapter.html.mail_html import escape as m_escape
 from adapter.html.monthly_renderer import (
     ACCENT,
     ACCENT_LIGHT,
@@ -33,7 +35,9 @@ from adapter.html.monthly_renderer import (
     CHAPTER_BADGE_FORMAT,
     CHAPTER_BAND_BACKGROUND,
     CLOSING_HEADING,
+    DIAGRAM_EYEBROW,
     EDITORIAL_HEADING,
+    FLOW_ARROW,
     HEADER_EYEBROW,
     INVERSE_TEXT,
     KEY_FIGURE_QUOTE_MAX_FULLWIDTH_CHARS,
@@ -55,6 +59,14 @@ from adapter.html.monthly_renderer import (
 from adapter.storage.artifact_store import ArtifactStore
 from application.usecases.monthly_cases import CHAPTER_LABEL_FORMAT
 from enterprise.entities.config import IntelligenceConfig
+from enterprise.entities.diagram import (
+    CompareDiagram,
+    ComparePane,
+    FlowDiagram,
+    MetricItem,
+    MetricsDiagram,
+)
+from enterprise.entities.narrative import case_diagram_key
 from enterprise.entities.report_columns import (
     MONTHLY_CASE_COLUMNS,
     MONTHLY_CASE_COLUMNS_BY_NAME,
@@ -835,6 +847,25 @@ def golden_narrative() -> MonthlyNarrative:
             "今月は、判断基準を文書化できている業務から順に置き換えが進んだ。\n\n"
             "来月は、基準が暗黙のままの領域をどう扱うかが論点になりそうだ。"
         ),
+        # ⚠️ **図解は3タイプのうち2件だけ**（T-49）。ゴールデンに
+        # 「図解がある事例」と「無い事例」の両方を通すため、CASE 3 には付けない。
+        case_diagrams={
+            case_diagram_key(1): FlowDiagram(
+                type="flow",
+                title="契約業務の組み替え",
+                steps=["ひな型を選ぶ", "AIが下書き", "担当者が差分確認", "締結"],
+            ),
+            case_diagram_key(2): CompareDiagram(
+                type="compare",
+                title="一次確認の担い手",
+                left=ComparePane(
+                    label="従来", points=["担当者が全件を読む", "根拠は記録されない"]
+                ),
+                right=ComparePane(
+                    label="現在", points=["機械が一次確認する", "判定の根拠が残る"]
+                ),
+            ),
+        },
     )
 
 
@@ -862,3 +893,132 @@ def test_the_rendered_html_matches_the_golden_file(
 
 def test_the_golden_file_itself_satisfies_the_mail_html_constraints() -> None:
     assert mail_html.forbidden_constructs(GOLDEN_PATH.read_text(encoding="utf-8")) == []
+
+
+# --- 図解（T-49）-------------------------------------------------------------
+
+FLOW = FlowDiagram(
+    type="flow",
+    title="契約業務の流れ",
+    steps=["契約書を受領", "AIが下書き", "担当者が確認", "締結"],
+)
+COMPARE = CompareDiagram(
+    type="compare",
+    title="導入前後の運用",
+    left=ComparePane(label="従来", points=["担当者が全文を読む", "平均3営業日"]),
+    right=ComparePane(label="導入後", points=["要点だけ確認する"]),
+)
+METRICS = MetricsDiagram(
+    type="metrics",
+    title="導入の効果",
+    items=[
+        MetricItem(value="月120時間", label="削減した工数"),
+        MetricItem(value="-42%", label="一次回答までの時間"),
+    ],
+)
+
+
+def render_with_diagram(config: IntelligenceConfig, diagram: Any) -> str:
+    return render(
+        [case(no=1)], config, narrative(case_diagrams={case_diagram_key(1): diagram})
+    )
+
+
+@pytest.mark.parametrize("diagram", [FLOW, COMPARE, METRICS])
+def test_a_declared_diagram_is_drawn_in_the_case_card(
+    config: IntelligenceConfig, diagram: Any
+) -> None:
+    markup = render_with_diagram(config, diagram)
+
+    assert DIAGRAM_EYEBROW in markup
+    assert diagram.title in markup
+
+
+def test_the_flow_steps_are_drawn_in_order_with_arrows(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ **矢印は画像ではなく文字**（§7.1 ／ メールクライアント互換）。"""
+    markup = render_with_diagram(config, FLOW)
+
+    positions = [markup.index(step) for step in FLOW.steps]
+    assert positions == sorted(positions)
+    assert markup.count(FLOW_ARROW) == len(FLOW.steps) - 1
+    assert "<img" not in markup
+
+
+def test_the_compare_diagram_is_a_two_column_table(
+    config: IntelligenceConfig,
+) -> None:
+    markup = render_with_diagram(config, COMPARE)
+
+    for text in ("従来", "導入後", "担当者が全文を読む", "要点だけ確認する"):
+        assert m_escape(text) in markup
+    # 左右のセルは同じ幅（対比が偏って見えないため）。
+    assert markup.count('width="48%"') == 4
+
+
+def test_the_metrics_diagram_shows_each_value_with_its_label(
+    config: IntelligenceConfig,
+) -> None:
+    markup = render_with_diagram(config, METRICS)
+
+    for item in METRICS.items:
+        assert m_escape(item.value) in markup
+        assert item.label in markup
+
+
+@pytest.mark.parametrize("diagram", [FLOW, COMPARE, METRICS])
+def test_every_diagram_type_passes_the_mail_html_constraints(
+    config: IntelligenceConfig, diagram: Any
+) -> None:
+    """⚠️ **禁止構文ゼロ**（table ＋ inline style だけで描く。§7.1）。"""
+    assert mail_html.forbidden_constructs(render_with_diagram(config, diagram)) == []
+
+
+def test_no_diagram_means_no_diagram_block(config: IntelligenceConfig) -> None:
+    """⚠️ **図解が無いのが正常**（空の箱を置かない）。"""
+    markup = render([case(no=1)], config, narrative())
+
+    assert DIAGRAM_EYEBROW not in markup
+
+
+def test_a_diagram_is_placed_after_the_commentary_and_before_the_source(
+    config: IntelligenceConfig,
+) -> None:
+    """本文（①事実…）より前に図解を置かない（解釈が事実に先行しないため）。"""
+    markup = render_with_diagram(config, FLOW)
+
+    body = markup.index("自社では書式の揃った領域から試すのが早い。")
+    figure = markup.index(DIAGRAM_EYEBROW)
+    source = markup.index("ITmedia（2026-07-08）")
+    assert body < figure < source
+
+
+def test_a_diagram_for_another_case_is_not_drawn(config: IntelligenceConfig) -> None:
+    """鍵は列1「No」（別の事例の図解が紛れ込まない）。"""
+    markup = render(
+        [case(no=1)], config, narrative(case_diagrams={case_diagram_key(2): FLOW})
+    )
+
+    assert DIAGRAM_EYEBROW not in markup
+
+
+def test_the_diagram_text_is_escaped(config: IntelligenceConfig) -> None:
+    """図解の語も crawl 由来の文字列（`<` を含めばレイアウトが崩れる）。"""
+    markup = render_with_diagram(
+        config,
+        FlowDiagram(type="flow", title="<b>図</b>", steps=["A<script>", "B", "C"]),
+    )
+
+    assert "<script>" not in markup
+    assert "&lt;b&gt;図&lt;/b&gt;" in markup
+
+
+def test_the_diagram_does_not_change_the_commentary(config: IntelligenceConfig) -> None:
+    """⚠️ **装飾のみ**：本文（解説の段落）は図解の有無で変わらない。"""
+    without = render([case(no=1)], config, narrative())
+    with_figure = render_with_diagram(config, FLOW)
+
+    for paragraph in case(no=1)["解説"]:
+        assert f">{paragraph}</p>" in without
+        assert f">{paragraph}</p>" in with_figure
