@@ -1190,7 +1190,7 @@ flowchart TD
   - **ゴールデンファイルを更新した**（`UPDATE_GOLDEN=1`）
   - テストは週刊レンダラ 53 → 57件（+4：プレーン見出し 1／字の大きさ 1／出典行のリンク 1／URL 無しの出典行 1。既存の「タイトルをリンクにする」1件は「URL 列を記事リンクに使う」へ書き換え）、フロント 97 → 100件（+3）。`make test` 全体 **2184件**（+4）。`make lint` / `make format` / `biome check` / `tsc -b` 通過
 
-#### - [ ] T-52: 成果物の再定義（週刊=週次ダイジェスト1本 ／ 月刊=全業界1冊＋Web絞り込み ／ メール版廃止）
+#### - [x] T-52: 成果物の再定義（週刊=週次ダイジェスト1本 ／ 月刊=全業界1冊＋Web絞り込み ／ メール版廃止）
 - **対応**: 仕様書 §1.2・§9（全体）・§10.2・§5.2（`tunable_thresholds.weekly`）・§13.1・§13.4.1 ／ 設計書 §2・§3.3・§7.3・§8.2
 - **依存**: T-46, T-48, T-49, T-50, T-36
 - **成果物**: `backend/src/enterprise/entities/config.py`, `config_validation.py`, `narrative.py`, `backend/src/application/usecases/{crawl,narrative,filter,dry_run,update_config}.py`, `backend/src/adapter/html/weekly_renderer.py`, `backend/src/adapter/storage/artifact_store.py`, `backend/src/adapter/http/fastapi/routers/reports.py`, `backend/src/adapter/cli/{migrate_config,export_prompts}.py`, `backend/schemas/config.schema.json`, `frontend/src/{api/reports.ts,api/config.ts,lib/configFields.ts,components/pages/ReportsPage.tsx}`, 各テスト
@@ -1220,6 +1220,67 @@ flowchart TD
   - **月刊 HTML への業界タグ表示**（Step 2 は閲覧ページの改修。HTML 側の体裁変更は起票し直す）
   - **要確認事項 #13（しきい値と実分布の乖離）・#14（月次の除外件数）** は本タスクで解かない
 - **備考**: 2026-08-18 の顧客要件変更で起票（§1「備考：成果物の再定義」が方針の正）。
+- **備考（Step 1 実績 2026-08-18。3コミット）**:
+  - **対象業界の置き場（選定）**：`tunable_thresholds.weekly.target_industries` →
+    **`tunable_thresholds.target_industries`**（直下）。⚠️ 起票時の2択（weekly に残す／
+    monthly へ移す）**のどちらでもない**——週刊はこの値を**一切見なくなった**ので
+    weekly に残すと名前が実態と食い違い、**顧客関連度の採点（T-19）は週次の filter でも
+    走る**ので monthly へ移すと週次実行が `monthly.*` を読む形になる。残った参照は
+    「月次 crawl の重点」「顧客関連度の採点（週次・月次）」「月刊の業界チップ」で、
+    **どちらのアプリにも属さない**。読み出し口も `TunableThresholds.industries` へ引き上げた
+  - **掲載件数の上限（選定）**：`max_industry_topics`(5) ＋ `max_common_topics`(6) →
+    **`weekly.max_topics`（初期値 12）**。⚠️ **2本の合計（11）ではない**——PM が示した
+    「max 5+7=12 相当」を採った（§5.2 の確定値2本との差1件は T-38 の改訂項目へ記録）
+  - **既存 `config.json` の移行手順**（`artifacts/` は環境ごとの実データなので
+    **コードでは移行しない**＝T-46 Step 3 と同じ扱い）:
+    1. `tunable_thresholds.weekly` の中の `"target_industries": [...]` を **`weekly` の外**
+       （`min_reliability_score_to_publish` の次）へ移す（値は変えない）
+    2. `weekly` の `max_industry_topics` ＋ `max_common_topics` を **`"max_topics": <2つの合計>`**
+       へ置き換える（1本のダイジェストに載せる件数として決め直してよい）
+    3. 放置すると `ConfigRepository.load()` が `extra="forbid"` で落ちる（**黙って既定へ
+       倒れない**＝移行漏れが起動時に分かる）。revision は上げなくてよい（鍵の形の移行）
+    4. 手で書き換えた内容を履歴へ残すなら `make config-record ARGS='--apply'`（T-47）
+    - **この環境の `artifacts/config.json` は移行済み**（対象業界 `不動産` / `IT` は保持、
+      `max_topics` は運用値 3+3 の合計 **6**。旧版は `config.json.pre-t52.bak`）
+  - **crawl**：対象業界の重点を**月次だけ**に限った（`PROMPT_VERSION` 0.2.0 → **0.3.0**）。
+    ⚠️ **重点と歯止め（絞り込みに転じさせない注記）は `_industry_focus_lines()` が4行
+    まとめて返す**形にし、分けて出せなくした
+  - **narrative**：業界ごとの入れ子（T-46 Step 4）をほどいて**単一構造**へ。今週のポイントは
+    **見出し1文＋詳細1段落の組**（`point_of_week_details`。⚠️ **鍵は見出しの文**——索引で
+    対応づけると詳細が1件欠けたときに別の見出しへずれて付き、文章としては読めるので
+    気づけない）。往復は period につき1回へ戻った（`WEEKLY_NARRATIVE_PROMPT_VERSION`
+    0.3.0 → **0.4.0**）。⚠️ **旧い形のファイルは落ちる**（`--from filter` からやり直す）
+  - **render**：業界振り分け・2セクション（§9.2-3・§9.2-4）を廃止し **点数順の単一リスト**
+    （見出しは `TOPICS_SECTION_HEADING`＝「今週のトピック」）。ヘッダの「〈業界〉版」も削除。
+    正規名は **`weekly_ai_intelligence_newsletter_{period}.html`**（業界が消えた）。
+    ⚠️ **古い名前のファイルは配れないし一覧にも出ない**（`is_servable()` / `rendered_periods()`
+    が同じ書式から導かれる。成果物は移行しない）。**点数は描かない**（順序を決めるために
+    読むだけ＝実装は元から出しておらず、テストで固定したのが差分）
+  - ⚠️ **列19「業界」を読まなくなっただけで xlsx 22列は不変**（業界タグは月刊の閲覧ページが使う）
+- **備考（Step 2 実績 2026-08-18。2コミット）**:
+  - **週刊**：今週のポイントを**箇条書き＋クリックで詳細展開**、記事は**上位5件＋
+    「続きを見る（残りN件）」**（`INITIAL_ARTICLE_COUNT`＝5）。⚠️ **選別は変えない**
+    （サーバーが返した順・集合のままで、表示の件数を段階的に増やすだけ）。
+    ⚠️ **詳細が無い項目は開く口を出さない**（開けるのに空、を作らない）
+  - **月刊の業界タグの取得経路（調査結果）**：月次8列に「業界」の列は無く、業界は
+    **週次22列 列19 のタグ**。しかも**月次実行は22列を1行も書かない**ので既存の成果物から
+    引けない。3案のうち **`narrative_{period}.json` の `case_industries`（`No` → タグ）** を採用
+    （月次8列へ列を足す＝§8.2 の確定値に触るので不可／閲覧の口が22列から引く＝引く先が無い）。
+    ⚠️ **AI には聞かない**——filter が事例の **URL** で22列の行を引き当てて写すだけ
+    （列22 は §12.1 の非空必須項目で記事を一意に指せる唯一の列＝示唆の鍵と同じ理由）。
+    ⚠️ **空のタグは鍵ごと置かない**
+  - **`GET /reports/{period}/cases` を新設**（全ロール可。`GET /reports/{period}` と同じ行）。
+    ⚠️ **config を読まない**（月次8列の行がそのまま号の内容で選別が要らない）。
+    ⚠️ **業界チップの候補はその号の事例に付いているタグから作る**——`target_industries`
+    （admin 限定）を候補にすると全ロールの口から設定値が読める（§6.1）。押しても0件の
+    チップを出さない意味でもこちらが正しい
+  - **月刊の閲覧は iframe をやめて事例カードへ**（CASE 番号・企業・章・解説3段落・図解・
+    出典＋**業界タグ**）。⚠️ **絞り込みは表示だけ**（`No` 昇順＝章グルーピング順は保つ）
+  - **「メール版 HTML を開く」リンクを一覧から削除**。⚠️ **生成 HTML は `GET /files` から
+    従来どおり取得できる**（廃止したのは導線だけ）。中間xlsx へのリンクは残した
+  - ⚠️ **月刊 HTML の体裁に業界タグは足していない**（スコープ外。起票し直すこと）
+  - **取り残しを1件直した**：T-26 の `WeeklyRender` プロトコルに `industry` 引数が残り
+    `make type-check` の診断が8 → 9件に増えていた（Step 1 (3/3) の見落ち）
 - **備考（Step 3 の選定 2026-08-18）— メール制約の検査は「2つに割って、片方だけ凍結」**:
   起票時の選択肢は「①凍結して全部残す」「②レンダラごと整理する」の2つだったが、
   **どちらでもなく `forbidden_constructs()` を2つに割った**。理由は、1つのタプルに
