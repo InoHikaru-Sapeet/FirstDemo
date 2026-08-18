@@ -6,16 +6,22 @@
 - **空の narrative が書ける**（採用記事0件の実行。必須かどうかを決めるのは config）
 - **対象期間の食い違いを落とす**（先週の生成テキストで今週の HTML を作らせない）
 - **示唆の鍵は生の URL**（T-24 の `insight_for()` が引く形）
+- **図解も同じファイルに置く**（T-49。週次は URL・月次は `No` が鍵。無いのが正常）
 - **週次は業界ごとに持つ**（週刊は業界ごとに1通。T-46 Step 4）
 """
 
+import json
+
 import pytest
 
+from enterprise.entities.diagram import FlowDiagram
 from enterprise.entities.json_document import DocumentParseError
 from enterprise.entities.narrative import (
     MonthlyNarrativeDocument,
     WeeklyIndustryNarrative,
     WeeklyNarrativeDocument,
+    case_diagram_key,
+    diagram_by_key,
     dump_narrative,
     empty_narrative,
     parse_monthly_narrative,
@@ -31,6 +37,10 @@ MONTHLY_PERIOD = "2026-07"
 
 URL = "https://example.com/news/1"
 INDUSTRY = "不動産"
+
+FLOW_DIAGRAM = FlowDiagram(
+    type="flow", title="契約業務の自動化", steps=["受領", "AIが下書き", "確認"]
+)
 
 
 def industry_narrative(**overrides: object) -> dict[str, object]:
@@ -229,3 +239,67 @@ def test_the_first_text_for_a_key_wins() -> None:
 
 def test_blank_pairs_are_dropped_and_whitespace_is_trimmed() -> None:
     assert text_by_key([(" a ", " 文 "), ("", "x"), ("b", "  ")]) == {"a": "文"}
+
+
+# --- 図解（T-49）-------------------------------------------------------------
+
+
+def test_a_weekly_narrative_holds_diagrams_keyed_by_the_article_url() -> None:
+    """図解の鍵は**示唆と同じ生の URL**（当週シート列22 の値）。"""
+    document = weekly(
+        industries={INDUSTRY: industry_narrative(diagrams={URL: FLOW_DIAGRAM})}
+    )
+
+    stored = document.for_industry(INDUSTRY).diagrams
+    assert stored[URL].type == "flow"
+    assert parse_weekly_narrative(dump_narrative(document)) == document
+
+
+def test_a_monthly_narrative_holds_diagrams_keyed_by_the_case_number() -> None:
+    """月次の鍵は列1「No」を文字列にしたもの（URL は非空が保証されない）。"""
+    document = monthly(case_diagrams={case_diagram_key(3): FLOW_DIAGRAM})
+
+    assert document.case_diagrams["3"].type == "flow"
+    assert parse_monthly_narrative(dump_narrative(document)) == document
+
+
+def test_a_case_diagram_key_that_is_not_a_number_is_rejected() -> None:
+    """⚠️ 章ラベルや URL を鍵にしたファイルを黙って受け取らない。"""
+    with pytest.raises(ValueError):
+        MonthlyNarrativeDocument(
+            period=MONTHLY_PERIOD,
+            case_diagrams={"第1章 業務への組み込み": FLOW_DIAGRAM},
+        )
+
+
+def test_no_diagram_is_the_normal_case() -> None:
+    """⚠️ **鍵が無い＝図解なし**。空の対応表で読み書きできる。"""
+    assert weekly().for_industry(INDUSTRY).diagrams == {}
+    assert monthly().case_diagrams == {}
+
+
+def test_a_diagram_outside_the_schema_is_rejected_in_the_file() -> None:
+    """narrative ファイル経由でもスキーマ外の図解は入らない。"""
+    with pytest.raises(DocumentParseError):
+        parse_monthly_narrative(
+            json.dumps(
+                {
+                    "period": MONTHLY_PERIOD,
+                    "case_diagrams": {"1": {"type": "timeline", "title": "年表"}},
+                },
+                ensure_ascii=False,
+            )
+        )
+
+
+def test_a_diagram_with_no_target_is_dropped() -> None:
+    """`diagram_by_key()`：`None`（図解なし）と空の宛先は落とす。"""
+    assert diagram_by_key([(" a ", FLOW_DIAGRAM), ("b", None), ("", FLOW_DIAGRAM)]) == {
+        "a": FLOW_DIAGRAM
+    }
+
+
+def test_the_first_diagram_for_a_key_wins() -> None:
+    other = FlowDiagram(type="flow", title="別の図", steps=["A", "B", "C"])
+
+    assert diagram_by_key([("a", FLOW_DIAGRAM), ("a", other)]) == {"a": FLOW_DIAGRAM}

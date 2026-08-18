@@ -49,6 +49,26 @@ T-24 / T-25 のレンダラが受け取るのは `\\n\\n` 区切りの文字列�
 `WeeklyNarrative.insight_for()` が当週シートの行から引くときの鍵がこれで、
 **正規化した URL では引けない**（重複判定の正規化＝T-18 は「同じ記事か」を
 判定するためのもので、行を指す鍵ではない）。
+
+---
+
+**⚠️ 図解もここに置く**（2026-08-18 の T-49）
+
+図解の**内容**（`enterprise.entities.diagram.Diagram`）は生成テキストと同じ
+「AI が作って narrative に落ちるもの」なので、置き場もここ。**描画は決定的
+Python**（レンダラ）で、render に AI は足していない（§1.1）。
+
+- 週次: `WeeklyIndustryNarrative.diagrams`（**鍵は示唆と同じ記事URL**）
+- 月次: `MonthlyNarrativeDocument.case_diagrams`（**鍵は月次8列の列1「No」を
+  文字列にしたもの**）
+
+⚠️ **月次の鍵に URL を使わない。** 列5「URL」は非空が保証されておらず、同じ
+一次発表を指す事例が並べば重なりうる。`No` は §8.2 の通し番号（昇順＝章
+グルーピング順）で T-22・T-25 の両方が昇順を強制しているので、事例を一意に
+指せるのはこちら。JSON の鍵は文字列しか持てないので `"3"` の形で持つ
+（`case_diagram_key()`）。
+
+⚠️ **図解は 0〜1個で、無くてよい**（鍵が無い＝図解なし）。
 """
 
 from collections.abc import Iterable, Sequence
@@ -63,6 +83,7 @@ from pydantic import (
     field_validator,
 )
 
+from enterprise.entities.diagram import Diagram
 from enterprise.entities.json_document import (
     DocumentIssue,
     DocumentParseError,
@@ -80,6 +101,20 @@ SENTENCE_JOINER = ""
 
 _NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 """空白だけの段落・文を通さない（描画すると空の `<p>` になる）。"""
+
+_CaseNumberKey = Annotated[str, StringConstraints(pattern=r"^\d+$")]
+"""月次の図解の鍵（列1「No」を文字列にしたもの。`case_diagram_key()`）。"""
+
+
+def case_diagram_key(no: object) -> str:
+    """月次8列の列1「No」を図解の鍵へ（`3` → `"3"`）。
+
+    ⚠️ **鍵の作り方をこの1箇所に閉じる。** 書き手（T-44）と読み手（T-25 へ渡す
+    `to_monthly_narrative()`）で `str()` の掛け方がずれると、図解が黙って
+    どの事例にも当たらなくなる。
+    """
+    return str(int(str(no).strip()))
+
 
 _STRICT = ConfigDict(extra="forbid")
 
@@ -118,12 +153,15 @@ class WeeklyIndustryNarrative(BaseModel):
         point_of_week_sentences: 今週のポイント（当週の総括3〜4文）。
             空＝生成していない（採用記事が0件だった実行）
         insights: 記事URL → 示唆ボックスの1段落。**鍵は当週シート列22 の値**
+        diagrams: 記事URL → 図解（T-49）。**鍵は示唆と同じ**。記事ごとに
+            0〜1個で、鍵が無い記事には図解が無い（それが正常）
     """
 
     model_config = _STRICT
 
     point_of_week_sentences: list[_NonEmptyText] = Field(default_factory=list)
     insights: dict[_NonEmptyText, _NonEmptyText] = Field(default_factory=dict)
+    diagrams: dict[_NonEmptyText, Diagram] = Field(default_factory=dict)
 
     @property
     def point_of_week(self) -> str | None:
@@ -168,12 +206,15 @@ class MonthlyNarrativeDocument(_NarrativeDocument):
         editorial_paragraphs: 巻頭言の総論（3段落）
         chapter_intros: 章ラベル（`第N章 …`＝月次8列の列2 の値）→ 章導入文
         closing_paragraphs: むすび（2段落：今月の総括 ＋ 来月の視点）
+        case_diagrams: 事例の `No`（文字列）→ 図解（T-49）。事例ごとに 0〜1個で、
+            鍵が無い事例には図解が無い（それが正常）
     """
 
     editorial_subtitle: str | None = None
     editorial_paragraphs: list[_NonEmptyText] = Field(default_factory=list)
     chapter_intros: dict[_NonEmptyText, _NonEmptyText] = Field(default_factory=dict)
     closing_paragraphs: list[_NonEmptyText] = Field(default_factory=list)
+    case_diagrams: dict[_CaseNumberKey, Diagram] = Field(default_factory=dict)
 
     @property
     def editorial(self) -> str | None:
@@ -299,6 +340,23 @@ def text_by_key(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
     return cleaned
 
 
+def diagram_by_key(pairs: Iterable[tuple[str, Diagram | None]]) -> dict[str, Diagram]:
+    """「宛先 → 図解」の対応表を整える（T-49。`text_by_key()` の図解版）。
+
+    ⚠️ **`None`（図解なし）は落とす。** 「該当するタイプが無ければ作らない」が
+    正常な経路なので（`enterprise.entities.diagram` の docstring）、鍵ごと
+    置かないのが「図解なし」の表し方。空の鍵も捨てる。
+
+    **同じ宛先が2度現れたら先に来たほうが勝つ**（`text_by_key()` と同じ向き）。
+    """
+    cleaned: dict[str, Diagram] = {}
+    for key, diagram in pairs:
+        stripped = key.strip()
+        if stripped and diagram is not None:
+            cleaned.setdefault(stripped, diagram)
+    return cleaned
+
+
 __all__ = [
     "MONTHLY_NARRATIVE_ADAPTER",
     "NARRATIVE_LABEL",
@@ -308,6 +366,8 @@ __all__ = [
     "NarrativeDocument",
     "WeeklyIndustryNarrative",
     "WeeklyNarrativeDocument",
+    "case_diagram_key",
+    "diagram_by_key",
     "dump_narrative",
     "empty_narrative",
     "text_by_key",
