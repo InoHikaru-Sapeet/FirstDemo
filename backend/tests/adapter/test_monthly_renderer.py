@@ -11,6 +11,7 @@
   `require_editorial_and_closing=true` で空なら落とす
 - **§7.1 の禁止事項が出力に混ざらない**／ゴールデンファイル比較
 - **図解**（T-49）は3タイプとも table＋inline style だけで描け、無いのが正常
+- **`--from render` の再描画**でも T-48 Step 2 の装飾が出る（置いてあるファイルが入力）
 """
 
 import copy
@@ -57,7 +58,9 @@ from adapter.html.monthly_renderer import (
     split_chapter_label,
 )
 from adapter.storage.artifact_store import ArtifactStore
+from adapter.xlsx.report_writer import ReportStore
 from application.usecases.monthly_cases import CHAPTER_LABEL_FORMAT
+from application.usecases.narrative import to_monthly_narrative
 from enterprise.entities.config import IntelligenceConfig
 from enterprise.entities.diagram import (
     CompareDiagram,
@@ -66,7 +69,13 @@ from enterprise.entities.diagram import (
     MetricItem,
     MetricsDiagram,
 )
-from enterprise.entities.narrative import case_diagram_key
+from enterprise.entities.narrative import (
+    MonthlyNarrativeDocument,
+    case_diagram_key,
+    dump_narrative,
+    parse_narrative,
+)
+from enterprise.entities.period import parse_period
 from enterprise.entities.report_columns import (
     MONTHLY_CASE_COLUMNS,
     MONTHLY_CASE_COLUMNS_BY_NAME,
@@ -1022,3 +1031,80 @@ def test_the_diagram_does_not_change_the_commentary(config: IntelligenceConfig) 
     for paragraph in case(no=1)["解説"]:
         assert f">{paragraph}</p>" in without
         assert f">{paragraph}</p>" in with_figure
+
+
+# --- `--from render` の再描画（T-48 Step 2 の確認・2026-08-18）----------------
+
+
+def test_a_rerender_from_the_stored_files_shows_the_step2_decorations(
+    store: ArtifactStore, config: IntelligenceConfig
+) -> None:
+    """⚠️ **`--from render` の経路で T-48 Step 2 の装飾が出ること**。
+
+    `run_orchestrator._render()` は filter の戻り値ではなく**置いてあるファイル**
+    （中間xlsx ＋ `narrative_{period}.json`）から描き直す（§8.2）。装飾は
+    レンダラ側にあるので、**再描画でも同じ体裁が出る**——それをこの1本で固定する
+    （既存のオーケストレータのテストはレンダラを差し替えているので、実物の HTML は
+    通らない）。
+    """
+    cases = golden_cases()
+    ReportStore(store).write_monthly(
+        period=PERIOD, cases=cases, revision=REVISION, run_id=RUN_ID
+    )
+    document = MonthlyNarrativeDocument(
+        period=PERIOD,
+        editorial_paragraphs=["俯瞰。", "共通する変化。", "持ち帰る視点。"],
+        chapter_intros={cases[0]["トピック(章)"]: "この章には…を集めた。"},
+        closing_paragraphs=["今月の総括。", "来月への視点。"],
+    )
+    store.write_text(store.narrative_path(PERIOD), dump_narrative(document))
+
+    # ここから下が `--from render` と同じ読み方（T-26 の `_render()`）。
+    reread = parse_narrative(
+        store.read_text(store.narrative_path(PERIOD)), period=parse_period(PERIOD)
+    )
+    assert isinstance(reread, MonthlyNarrativeDocument)
+    markup = (
+        MonthlyRenderer(store)
+        .render(
+            period=PERIOD,
+            cases=ReportStore(store).read_monthly(PERIOD),
+            config=config,
+            narrative=to_monthly_narrative(reread),
+            revision=REVISION,
+            run_id=RUN_ID,
+        )
+        .markup
+    )
+
+    # 章ナンバーバッジ（ネイビー地の白抜きチップ）
+    assert f"background-color:{NAVY};border-radius:4px" in markup
+    assert CHAPTER_BADGE_FORMAT.format(number=1) in markup
+    # 章色帯（左端の帯＋地色）と、残してある確定値の下端罫
+    assert f"border-left:6px solid {ACCENT}" in markup
+    assert f"background-color:{CHAPTER_BAND_BACKGROUND}" in markup
+    assert f"border-bottom:2px solid {ACCENT}" in markup
+    # `CASE NN` バッジ（水色地）
+    assert f"background-color:{ACCENT_LIGHT};border-radius:3px" in markup
+    assert CASE_NUMBER_FORMAT.format(no=1) in markup
+    # キーとなる数値の引用ボックス（ゴールデンの CASE 1 に「月120時間」がある）
+    assert (
+        f"background-color:{PANEL_BACKGROUND};border-left:4px solid {ACCENT}" in markup
+    )
+    assert "月120時間" in markup
+
+
+def test_a_rerender_reads_the_files_not_the_filter_result(
+    store: ArtifactStore, config: IntelligenceConfig
+) -> None:
+    """再描画の入力が**ファイル**であることを、書いた値の往復で確かめる。"""
+    ReportStore(store).write_monthly(
+        period=PERIOD,
+        cases=[case(no=1, title="xlsx から読み戻した事例")],
+        revision=REVISION,
+        run_id=RUN_ID,
+    )
+
+    reread = ReportStore(store).read_monthly(PERIOD)
+
+    assert [row["タイトル"] for row in reread] == ["xlsx から読み戻した事例"]
