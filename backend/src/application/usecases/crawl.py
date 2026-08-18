@@ -95,7 +95,8 @@ logger = logging.getLogger(__name__)
 # 監査／validation メタに載る（設計書 §9.2 の再現性要件）。
 PROMPT_NAME = "PROMPT-1/crawl"
 # 0.2.0: 対象業界の重点と月次の「導入企業側の事例」を足した（T-46 Step 1）。
-PROMPT_VERSION = "0.2.0"
+# 0.3.0: 対象業界の重点を**月次だけ**に限った（T-52 Step 1。週刊は業界版を廃止）。
+PROMPT_VERSION = "0.3.0"
 
 # 仕様書 §13.2 の「収集対象の優先ソース」（**逐語**）。
 # ⚠️ **config には無い確定値**（§5.2 の可変項目に「優先ソース」は無い）ので、
@@ -126,6 +127,12 @@ MONTHLY_EMPHASIS = (
 # 置き換えではない**（初運用 2026-W33 の実測で、収集の母集団に対象業界の記事が
 # 1件も入らず §9.2-3 の業界関連トピックが構造的に空になった）。絞り込みへ
 # 転じさせないため、次の3行はいつも一緒に出す。
+#
+# ⚠️ **出すのは月次だけ**（2026-08-18 の T-52 Step 1）。週刊は業界版を廃止して
+# 業界を問わない週次ダイジェスト1本になったので、**週次の収集で業界に重心を
+# 置く理由が無くなった**（重点の元の目的は §9.2-3 の業界関連トピックを埋める
+# ことで、そのセクション自体が無くなった）。月次は「その業界の企業の活用事例」を
+# 事例へ昇格させる材料が要るので残す。
 INDUSTRY_FOCUS_HEADING = "■ 対象業界（必ず含める。絞り込みではない）"
 INDUSTRY_FOCUS_FORMAT = "- 対象業界: {industries}"
 INDUSTRY_FOCUS_INSTRUCTION = (
@@ -206,8 +213,8 @@ class CrawlWorker:
     `config` は実行開始時に固定参照しているもの（§6.3 の revision ピン留め済み）を
     渡すこと。crawl が config から取るのは**情報カテゴリの一覧と対象業界だけ**で、
     しきい値・配点・除外ルールは見ない（この段で判断しないため）。⚠️ 対象業界は
-    **収集の重点**として渡すのであって、絞り込みの条件ではない（T-46 Step 1。
-    `build_crawl_prompt` の ⚠️）。
+    **月次の収集の重点**として渡すのであって、絞り込みの条件ではない（T-46 Step 1 ／
+    月次限定は T-52 Step 1。`build_crawl_prompt` の ⚠️）。
     """
 
     def __init__(
@@ -372,16 +379,22 @@ def build_crawl_prompt(
     1. **期間の実日付**（`2026-W31` の解釈を実行ごとに揺らさない）
     2. **収集日**（`collected_at` はモデルが今日を知らないと埋められない）
     3. **web 検索を必ず使う指示**（検索なしの収集は受け取らない。冒頭 ⚠️）
-    4. **対象業界の重点**（T-46 Step 1。下の ⚠️）
+    4. **対象業界の重点**（T-46 Step 1。**月次のみ**＝T-52 Step 1。下の ⚠️）
 
     ⚠️ **7カテゴリは config から取る**（§13.2 自身が「config.json の7カテゴリ」と
     書いている）。ここに名前を写すと、admin がカテゴリを変えても crawl の網羅指示が
     追随しない。**対象業界も同じく config から取る**。
 
+    ⚠️ **対象業界の重点を出すのは月次だけ**（T-52 Step 1）。週刊は業界版を廃止して
+    業界を問わない週次ダイジェスト1本になったので、週次の収集で業界に重心を置く
+    理由が無くなった（重点を入れた元の目的＝§9.2-3 の業界関連トピックを埋めること、
+    そのセクションが無くなった）。月次は事例（導入企業側の活用事例）の材料が要るので
+    残す。
+
     ⚠️ **対象業界は「必ず含める」であって「これだけ集める」ではない。**
     初運用（2026-W33）の実測では、対象業界を渡さない収集の結果、採用15件の `業界`
-    タグがすべて「業界横断」「IT」系になり、§9.2-3 の業界関連トピックが構造的に
-    空になった。**収集の母集団に無いものは後段では作れない**ので、この段で
+    タグがすべて「業界横断」「IT」系になり、当時の §9.2-3 業界関連トピックが構造的に
+    空になった。**収集の母集団に無いものは後段では作れない**ので、月次では
     「網羅は維持したまま対象業界の記事も必ず入れる」ことを求める。
     ⚠️ **絞り込みに転じさせないこと**（`INDUSTRY_NOT_A_FILTER_NOTICE` を必ず一緒に
     出す）。ここで絞ると、業界タグの確定（T-19）と除外（T-17）が判断する材料自体が
@@ -427,15 +440,9 @@ def build_crawl_prompt(
         ),
         f"- {WEEKLY_EMPHASIS if span.is_weekly else MONTHLY_EMPHASIS}",
         "",
-        INDUSTRY_FOCUS_HEADING,
-        INDUSTRY_FOCUS_FORMAT.format(
-            industries=INDUSTRY_SEPARATOR.join(
-                config.tunable_thresholds.weekly.industries
-            )
-        ),
-        INDUSTRY_FOCUS_INSTRUCTION.format(count=len(categories)),
-        INDUSTRY_NOT_A_FILTER_NOTICE,
-        "",
+        # ⚠️ **週次には出さない**（T-52 Step 1）。空文字を挟まないよう、月次の
+        # ときだけ4行まとめて足す。
+        *([] if span.is_weekly else _industry_focus_lines(config, len(categories))),
         "■ この段階でやらないこと",
         f"- {NO_JUDGEMENT_NOTICE}",
         f"- {NO_DEDUP_NOTICE}",
@@ -451,6 +458,25 @@ def build_crawl_prompt(
         f"- primary_or_secondary: {_choices(PrimaryOrSecondary)}",
     ]
     return "\n".join(sections)
+
+
+def _industry_focus_lines(config: IntelligenceConfig, category_count: int) -> list[str]:
+    """対象業界の重点（**月次だけ**。T-46 Step 1 ／ T-52 Step 1）。
+
+    ⚠️ **4行をまとめて返すのが要点。** 重点（`INDUSTRY_FOCUS_INSTRUCTION`）だけを
+    出して歯止め（`INDUSTRY_NOT_A_FILTER_NOTICE`）を落とすと、モデルは対象業界で
+    **絞り込み**始める——収集の母集団から他カテゴリが消え、業界タグの確定（T-19）と
+    除外（T-17）が判断する材料そのものが無くなる。分けて呼べる形にしない。
+    """
+    return [
+        INDUSTRY_FOCUS_HEADING,
+        INDUSTRY_FOCUS_FORMAT.format(
+            industries=INDUSTRY_SEPARATOR.join(config.tunable_thresholds.industries)
+        ),
+        INDUSTRY_FOCUS_INSTRUCTION.format(count=category_count),
+        INDUSTRY_NOT_A_FILTER_NOTICE,
+        "",
+    ]
 
 
 def _choices(

@@ -199,7 +199,7 @@ def seed_config(harness: Harness, *, industries: list[str] | None = None) -> Non
     """
     raw = json.loads(INITIAL_CONFIG_PATH.read_text(encoding="utf-8"))
     if industries is not None:
-        raw["tunable_thresholds"]["weekly"]["target_industries"] = industries
+        raw["tunable_thresholds"]["target_industries"] = industries
     harness.store.write_text(
         harness.store.config_path(), json.dumps(raw, ensure_ascii=False)
     )

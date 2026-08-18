@@ -253,7 +253,7 @@ async def test_a_snapshot_written_under_an_older_schema_can_still_be_diffed(
     row = await db.get(ConfigRevision, 1)
     assert row is not None
     snapshot = copy.deepcopy(row.config_snapshot)
-    snapshot["tunable_thresholds"]["weekly"].pop("target_industries")
+    snapshot["tunable_thresholds"].pop("target_industries")
     snapshot["tunable_thresholds"]["weekly"]["target_industry"] = "不動産"
     row.config_snapshot = snapshot
     await db.commit()
@@ -270,7 +270,7 @@ async def test_a_snapshot_written_under_an_older_schema_can_still_be_diffed(
     assert "target_industries" in out.text
     # 記録後は現行スキーマで固定できる
     pinned = await repo.get_pinned(2)
-    assert pinned.tunable_thresholds.weekly.industries == ("不動産",)
+    assert pinned.tunable_thresholds.industries == ("不動産",)
 
 
 # --- 乖離なし・冪等 -----------------------------------------------------------

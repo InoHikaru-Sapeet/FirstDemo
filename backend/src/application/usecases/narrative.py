@@ -226,7 +226,7 @@ class NarrativeBuilder:
             )
             return WeeklyNarrativeDocument(period=period.text)
 
-        industries = self._config.tunable_thresholds.weekly.industries
+        industries = self._config.tunable_thresholds.industries
         return WeeklyNarrativeDocument(
             period=period.text,
             industries={
@@ -564,8 +564,7 @@ def build_weekly_narrative_prompt(
     ⚠️ **出力形式（JSON だけを出せ・JSON Schema）の指示は含めない。**
     `AIClient` の実装が付ける（他のプロンプトと同じ）。
     """
-    weekly = config.tunable_thresholds.weekly
-    reader = industry or _industry_label(weekly)
+    reader = industry or _industry_label(config.tunable_thresholds)
     labels: dict[str, str] = {
         str(category.id): category.label for category in config.information_categories
     }
@@ -605,14 +604,14 @@ def build_weekly_narrative_prompt(
     )
 
 
-def _industry_label(weekly: Any) -> str:
+def _industry_label(thresholds: Any) -> str:
     """対象業界の提示（複数なら「A・B」）。
 
     ⚠️ 本番の生成は**業界ごとに1回**（`NarrativeBuilder.build_weekly()` が
     業界を渡す）。この形が使われるのは、業界を指定せずにプロンプトだけを
     組み立てたときだけ。
     """
-    return "・".join(weekly.industries)
+    return "・".join(thresholds.industries)
 
 
 def _weekly_article_lines(

@@ -122,8 +122,8 @@
       "share_only": 60
     },
     "min_reliability_score_to_publish": 5,
+    "target_industries": ["不動産"],
     "weekly": {
-      "target_industries": ["不動産"],
       "max_industry_topics": 5,
       "max_common_topics": 6,
       "point_of_week_required": true

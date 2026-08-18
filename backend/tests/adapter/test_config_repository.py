@@ -561,16 +561,10 @@ def test_summaries_keep_japanese_readable(config: IntelligenceConfig) -> None:
     changed = config.model_copy(
         update={
             "tunable_thresholds": config.tunable_thresholds.model_copy(
-                update={
-                    "weekly": config.tunable_thresholds.weekly.model_copy(
-                        update={"target_industries": ["製造"]}
-                    )
-                }
+                update={"target_industries": ["製造"]}
             )
         }
     )
 
     summary = summarize_diff(diff_configs(config, changed))
-    assert summary == (
-        'tunable_thresholds.weekly.target_industries ["不動産"]→["製造"]'
-    )
+    assert summary == 'tunable_thresholds.target_industries ["不動産"]→["製造"]'

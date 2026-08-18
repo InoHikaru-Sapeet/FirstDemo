@@ -35,6 +35,7 @@ from adapter.llm.ai_client import (
 from adapter.storage.artifact_store import ArtifactStore
 from application.usecases.crawl import (
     EXCLUDED_SOURCES,
+    INDUSTRY_FOCUS_HEADING,
     INDUSTRY_NOT_A_FILTER_NOTICE,
     MONTHLY_EMPHASIS,
     NO_DEDUP_NOTICE,
@@ -571,18 +572,18 @@ def test_the_prompt_leaves_the_output_format_to_the_ai_client(
     assert "JSON だけ" not in prompt
 
 
-def test_the_prompt_asks_for_the_target_industry_without_narrowing(
+def test_the_monthly_prompt_asks_for_the_target_industry_without_narrowing(
     config: IntelligenceConfig,
 ) -> None:
     """T-46 Step 1：対象業界は「必ず含める」。**絞り込みの条件にはしない**。
 
-    初運用（2026-W33）では対象業界を渡さなかった結果、収集の母集団に不動産の
-    記事が1件も入らず、§9.2-3 の業界関連トピックが構造的に空になった。
-    ⚠️ ここで絞ると、業界タグの確定（T-19）と除外（T-17）の材料が消える。
+    初運用（2026-07）では対象業界を渡さなかった結果、収集の母集団に不動産の
+    記事が1件も入らなかった。⚠️ ここで絞ると、業界タグの確定（T-19）と
+    除外（T-17）の材料が消える。
     """
-    prompt = build_crawl_prompt(WEEKLY_PERIOD, config, collected_at=TODAY)
+    prompt = build_crawl_prompt(MONTHLY_PERIOD, config, collected_at=TODAY)
 
-    for industry in config.tunable_thresholds.weekly.industries:
+    for industry in config.tunable_thresholds.industries:
         assert industry in prompt
     assert "必ず収集対象に含める" in prompt
     assert INDUSTRY_NOT_A_FILTER_NOTICE in prompt
@@ -591,15 +592,52 @@ def test_the_prompt_asks_for_the_target_industry_without_narrowing(
         assert category.label in prompt
 
 
+def test_the_weekly_prompt_no_longer_carries_the_industry_focus(
+    config: IntelligenceConfig,
+) -> None:
+    """T-52 Step 1：**週次から業界重点を外した**（月次には残す）。
+
+    週刊は業界版を廃止して業界を問わない週次ダイジェスト1本になったので、
+    重点を入れた元の目的（旧 §9.2-3 の業界関連トピックを埋める）が消えた。
+    ⚠️ **網羅の指示まで落としていないこと**も併せて見る。
+    """
+    weekly = build_crawl_prompt(WEEKLY_PERIOD, config, collected_at=TODAY)
+    monthly = build_crawl_prompt(MONTHLY_PERIOD, config, collected_at=TODAY)
+
+    assert INDUSTRY_FOCUS_HEADING not in weekly
+    assert "必ず収集対象に含める" not in weekly
+    assert INDUSTRY_NOT_A_FILTER_NOTICE not in weekly
+    # 月次には残っている（片方だけ外したことを固定する）。
+    assert INDUSTRY_FOCUS_HEADING in monthly
+    # 7カテゴリの網羅は週次でもそのまま。
+    for category in config.information_categories:
+        assert category.label in weekly
+
+
+def test_the_industry_focus_never_ships_without_its_guard(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ 重点と歯止めは**必ず一緒に出る**（`_industry_focus_lines()`）。
+
+    重点だけを出すと、モデルは対象業界で絞り込み始める（収集の母集団から他の
+    カテゴリが消える）。分けて出せる形にしないことをここで固定する。
+    """
+    for period in (WEEKLY_PERIOD, MONTHLY_PERIOD):
+        prompt = build_crawl_prompt(period, config, collected_at=TODAY)
+        assert ("必ず収集対象に含める" in prompt) == (
+            INDUSTRY_NOT_A_FILTER_NOTICE in prompt
+        )
+
+
 def test_a_renamed_target_industry_follows_into_the_prompt(
     initial_raw: dict[str, Any],
 ) -> None:
     """⚠️ 業界名を写さず config から取る（admin の変更に追随する）。"""
     raw = copy.deepcopy(initial_raw)
-    raw["tunable_thresholds"]["weekly"]["target_industries"] = ["医薬品"]
+    raw["tunable_thresholds"]["target_industries"] = ["医薬品"]
     config = IntelligenceConfig.model_validate(raw)
 
-    prompt = build_crawl_prompt(WEEKLY_PERIOD, config, collected_at=TODAY)
+    prompt = build_crawl_prompt(MONTHLY_PERIOD, config, collected_at=TODAY)
 
     assert "医薬品" in prompt
     assert "不動産" not in prompt

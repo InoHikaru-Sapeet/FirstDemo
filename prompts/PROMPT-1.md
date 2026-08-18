@@ -10,7 +10,7 @@
 
 | 項目 | 値 |
 |---|---|
-| `prompt_version` | `0.2.0` |
+| `prompt_version` | `0.3.0` |
 | 実行時の識別子 | `PROMPT-1/crawl` |
 | 用途（ステージ） | crawl（パイプライン1段目） |
 | 対応する仕様・設計 | 仕様書 §13.2 ／ 設計書 §9.1・§8.2 |
@@ -25,11 +25,11 @@
 | `{{PERIOD_RANGE}}` | period を開いた実日付（`enterprise.entities.period`） |
 | `{{COLLECTED_AT}}` | 実行日（`Settings.tzinfo` の今日） |
 | `{{information_categories}}` | `config.information_categories`（7カテゴリの id・ラベル・説明） |
-| `{{weekly.target_industries}}` | `config.tunable_thresholds.weekly.target_industries`（T-46 Step 1） |
+| `{{target_industries}}` | `config.tunable_thresholds.target_industries`（T-46 Step 1 ／ 月次のみ＝T-52 Step 1） |
 
 ## 補足
 
-- 週次と月次で入れ替わるのは**「収集範囲の観点」の最終行（収集の重心）だけ**です。差分が読めるよう両方を載せています。
+- 週次と月次の差は2つです。**「収集範囲の観点」の最終行（収集の重心）**と、**「対象業界（必ず含める）」の段落が月次にだけ出ること**（T-52 Step 1。週刊は業界版を廃止したので週次の収集で業界に重心を置かない）。差分が読めるよう両方を載せています。
 - **出力形式（JSON だけを出す指示と JSON Schema）はこの本文に含みません。**AI クライアント層が付けます（下の注記を参照）。
 
 ## 本文
@@ -69,11 +69,6 @@ TechCrunch / VentureBeat / Ledge.ai / ITmedia / 各社公式プレスリリー�
 - AI人材育成・組織変革（ai_training_org_change） — AI研修、リスキリング、AI推進組織、CoE、社内展開、チェンジマネジメントに関する情報
 - AI導入・運用ノウハウ（ai_implementation_ops） — AI導入、PoC、本番運用、評価、ROI、品質管理、定着化、内製化に関する実務情報
 - 「今週」の新規性を重視する（対象期間に新しく出た動きを優先する）。
-
-■ 対象業界（必ず含める。絞り込みではない）
-- 対象業界: 不動産
-- 上の7カテゴリの網羅は維持したうえで、**対象業界に直接関わる記事を必ず収集対象に含める**（その業界の企業によるAI活用、その業界向けのAIサービス・製品、業界固有の規制・市場動向）。
-- ⚠️ 対象業界で**絞り込まない**。対象業界の記事が見つからないときに他のカテゴリの記事を減らして帳尻を合わせない（業界タグの確定・採否の判断は次段の責務）。
 
 ■ この段階でやらないこと
 - スコアリング・除外判定・タグ確定はしない（次段の責務）。ここは網羅的に集めることに徹する。

@@ -22,7 +22,7 @@
 | 変数 | 注入元 |
 |---|---|
 | `{{ARTICLE}}` | `raw_articles_{period}.json` の1件（そのまま JSON で） |
-| `{{weekly.target_industries}}` | `config.tunable_thresholds.weekly.target_industries`（顧客関連度の基準） |
+| `{{target_industries}}` | `config.tunable_thresholds.target_industries`（顧客関連度の基準） |
 | `{{information_categories}}` | `config.information_categories`（id・ラベル・優先度・説明） |
 | `{{required_tags}}` | `config.required_tags` と候補値（`config.enums.*`） |
 | `{{scoring_axes}}` | `config.scoring_axes`（配点＝実行時の `weight`・評価観点・得点帯） |

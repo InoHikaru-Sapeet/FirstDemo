@@ -723,7 +723,7 @@ class RunOrchestrator:
 
         if period.is_weekly and isinstance(document, WeeklyNarrativeDocument):
             articles = pipeline.reports.read_weekly(period.text)
-            industries = pipeline.config.tunable_thresholds.weekly.industries
+            industries = pipeline.config.tunable_thresholds.industries
             return [
                 pipeline.weekly_renderer.render(
                     period=period.text,

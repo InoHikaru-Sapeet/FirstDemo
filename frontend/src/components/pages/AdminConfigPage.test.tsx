@@ -37,8 +37,8 @@ const CONFIG = {
 				reference_info: 70,
 				share_only: 60
 			},
+			target_industries: ["不動産"],
 			weekly: {
-				target_industries: ["不動産"],
 				max_industry_topics: 6,
 				max_common_topics: 8,
 				point_of_week_required: true

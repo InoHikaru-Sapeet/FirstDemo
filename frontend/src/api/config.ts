@@ -46,7 +46,6 @@ const adoptionClassScoreMapSchema = z.object({
 });
 
 const weeklyThresholdsSchema = z.object({
-	target_industries: z.array(z.string()),
 	max_industry_topics: z.number().int(),
 	max_common_topics: z.number().int(),
 	point_of_week_required: z.boolean()
@@ -70,6 +69,9 @@ export const tunableThresholdsSchema = z.object({
 	min_total_score_to_publish: z.number().int(),
 	min_reliability_score_to_publish: z.number().int(),
 	adoption_class_score_map: adoptionClassScoreMapSchema,
+	// ⚠️ **`weekly` の外**（T-52 Step 1）。週刊は業界版を廃止したので、
+	// 対象業界は週刊のパラメータではなくなった。
+	target_industries: z.array(z.string()),
 	weekly: weeklyThresholdsSchema,
 	monthly: monthlyThresholdsSchema,
 	dedup: dedupThresholdsSchema
@@ -79,7 +81,7 @@ export type TunableThresholds = z.infer<typeof tunableThresholdsSchema>;
 /**
  * `ConfigResponse` のうちこの画面が読む枝。
  *
- * ⚠️ `enums.industry` は**週刊の対象業界の選択肢**（参照整合はサーバーが見る。
+ * ⚠️ `enums.industry` は**対象業界の選択肢**（参照整合はサーバーが見る。
  * 設計書 §2.1.1-3）。運用で増減しうるので自由文字列のリスト。
  */
 export const configSchema = z.object({

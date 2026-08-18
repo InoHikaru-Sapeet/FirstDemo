@@ -265,10 +265,11 @@ SPEC_TUNABLE_THRESHOLDS: dict[str, Any] = {
         "share_only": 60,
     },
     "min_reliability_score_to_publish": 5,
+    # ⚠️ §5.2 は `weekly.target_industry`（単数・週刊の下）。2026-08-17 の PM 要件で
+    # 複数形へ（T-46 Step 3）、2026-08-18 の T-52 で**週刊の外**へ出した（週刊は
+    # 業界版を廃止したので週刊のパラメータではない）。→ §5.2 の改訂は T-38。
+    "target_industries": ["不動産"],
     "weekly": {
-        # ⚠️ §5.2 は `target_industry`（単数）。2026-08-17 の PM 要件で複数形へ
-        # （T-46 Step 3。→ §5.2 の改訂は T-38）。初期値は1件。
-        "target_industries": ["不動産"],
         "max_industry_topics": 5,
         "max_common_topics": 6,
         "point_of_week_required": True,

@@ -420,8 +420,8 @@ def test_the_total_is_recomputed_from_the_axis_scores(
             ConfigIssueCode.RESCORE_REQUIRED,
         ),
         (
-            {"tunable_thresholds": {"weekly": {"target_industries": ["不動産"]}}},
-            "tunable_thresholds.weekly.target_industries",
+            {"tunable_thresholds": {"target_industries": ["不動産"]}},
+            "tunable_thresholds.target_industries",
             ConfigIssueCode.RESCORE_REQUIRED,
         ),
         (

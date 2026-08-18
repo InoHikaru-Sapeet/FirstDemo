@@ -12,7 +12,7 @@
 
 | HTML | 中間xlsx / config |
 |---|---|
-| ヘッダ「〈業界〉版」 | 描画する業界（`config.weekly.target_industries` のどれか） |
+| ヘッダ「〈業界〉版」 | 描画する業界（`config.target_industries` のどれか） |
 | ヘッダ「対象週」 | シート名（`YYYY-Www`） |
 | 今週のポイント | （生成テキスト → `WeeklyNarrative`） |
 | 業界関連トピック | 列19「業界」に**その業界**を含む記事 |
@@ -289,7 +289,7 @@ def resolve_industry(config: IntelligenceConfig, industry: str | None = None) ->
         WeeklyRenderError: config の対象業界に無い業界を指定された場合
             （誰も選んでいない業界版を出さない）
     """
-    industries = config.tunable_thresholds.weekly.industries
+    industries = config.tunable_thresholds.industries
     if industry is None:
         if len(industries) > 1:
             # ⚠️ 黙って先頭だけを描かない（残りの業界版が出ていないことに

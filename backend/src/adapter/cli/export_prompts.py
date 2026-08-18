@@ -269,7 +269,7 @@ def _weekly_narrative(config: IntelligenceConfig) -> str:
     return build_weekly_narrative_prompt(
         SAMPLE_WEEKLY_RECORDS,
         config,
-        industry=config.tunable_thresholds.weekly.industries[0],
+        industry=config.tunable_thresholds.industries[0],
     )
 
 
@@ -315,8 +315,9 @@ PROMPT_DOCS: tuple[PromptDoc, ...] = (
                 "`config.information_categories`（7カテゴリの id・ラベル・説明）",
             ),
             (
-                "`{{weekly.target_industries}}`",
-                "`config.tunable_thresholds.weekly.target_industries`（T-46 Step 1）",
+                "`{{target_industries}}`",
+                "`config.tunable_thresholds.target_industries`"
+                "（T-46 Step 1 ／ 月次のみ＝T-52 Step 1）",
             ),
         ),
         bodies=(
@@ -324,8 +325,10 @@ PROMPT_DOCS: tuple[PromptDoc, ...] = (
             ("月次（`period = 2026-07`）", _crawl_monthly),
         ),
         notes=(
-            "週次と月次で入れ替わるのは**「収集範囲の観点」の最終行（収集の重心）"
-            "だけ**です。差分が読めるよう両方を載せています。",
+            "週次と月次の差は2つです。**「収集範囲の観点」の最終行（収集の重心）**と、"
+            "**「対象業界（必ず含める）」の段落が月次にだけ出ること**（T-52 Step 1。"
+            "週刊は業界版を廃止したので週次の収集で業界に重心を置かない）。"
+            "差分が読めるよう両方を載せています。",
             "**出力形式（JSON だけを出す指示と JSON Schema）はこの本文に含みません。**"
             "AI クライアント層が付けます（下の注記を参照）。",
         ),
@@ -345,8 +348,8 @@ PROMPT_DOCS: tuple[PromptDoc, ...] = (
         variables=(
             ("`{{ARTICLE}}`", "`raw_articles_{period}.json` の1件（そのまま JSON で）"),
             (
-                "`{{weekly.target_industries}}`",
-                "`config.tunable_thresholds.weekly.target_industries`（顧客関連度の基準）",
+                "`{{target_industries}}`",
+                "`config.tunable_thresholds.target_industries`（顧客関連度の基準）",
             ),
             (
                 "`{{information_categories}}`",
@@ -390,7 +393,7 @@ PROMPT_DOCS: tuple[PromptDoc, ...] = (
         variables=(
             (
                 "`{{target_industry}}`",
-                "`config.tunable_thresholds.weekly.target_industries` の**1つ**"
+                "`config.tunable_thresholds.target_industries` の**1つ**"
                 "（週刊は業界ごとに1通。T-46 Step 4）",
             ),
             (

@@ -148,11 +148,11 @@ def test_confirmed_initial_thresholds(raw: dict[str, Any]) -> None:
     assert tunable.adoption_class_score_map.reference_info == 70
     assert tunable.adoption_class_score_map.share_only == 60
     assert tunable.min_reliability_score_to_publish == 5
-    # ⚠️ §5.2 は `target_industry`（単数）。2026-08-17 の PM 要件で複数形へ
-    # （T-46 Step 3。→ §5.2 の改訂は T-38）。初期値は1件。
-    assert tunable.weekly.target_industries == ["不動産"]
-    # 参照側（crawl / 採点 / 生成テキスト / 描画）はこの読み出し口だけを見る。
-    assert tunable.weekly.industries == ("不動産",)
+    # ⚠️ §5.2 は `weekly.target_industry`（単数・週刊の下）。T-46 Step 3 で複数形へ、
+    # T-52 Step 1 で**週刊の外**へ出した（→ §5.2 の改訂は T-38）。初期値は1件。
+    assert tunable.target_industries == ["不動産"]
+    # 参照側（月次 crawl / 採点 / 月刊の業界チップ）はこの読み出し口だけを見る。
+    assert tunable.industries == ("不動産",)
     assert tunable.weekly.max_industry_topics == 5
     assert tunable.weekly.max_common_topics == 6
     assert tunable.weekly.point_of_week_required is True
@@ -389,7 +389,7 @@ def test_industry_and_business_area_accept_new_values(raw: dict[str, Any]) -> No
         ("tunable_thresholds.dedup.monthly_lookback_months", 0),
         ("tunable_thresholds.dedup.monthly_lookback_months", -1),
         # 対象業界は **1件以上**（0件だと週刊が1通も出せない。T-46 Step 3）
-        ("tunable_thresholds.weekly.target_industries", []),
+        ("tunable_thresholds.target_industries", []),
     ],
 )
 def test_out_of_range_values_are_rejected(
@@ -416,7 +416,7 @@ def test_out_of_range_values_are_rejected(
         ("tunable_thresholds.min_total_score_to_publish", 65),
         ("tunable_thresholds.adoption_class_score_map.propose_next_meeting", 90),
         ("tunable_thresholds.min_reliability_score_to_publish", 7),
-        ("tunable_thresholds.weekly.target_industries", ["金融", "不動産"]),
+        ("tunable_thresholds.target_industries", ["金融", "不動産"]),
         ("tunable_thresholds.weekly.max_industry_topics", 8),
         ("tunable_thresholds.weekly.point_of_week_required", False),
         ("tunable_thresholds.monthly.target_case_count", 12),
@@ -444,7 +444,7 @@ def test_cross_field_rules_are_not_enforced_here(raw: dict[str, Any]) -> None:
     """
     _set(raw, "scoring_axes.0.weight", 99)  # 合計 174
     _set(raw, "tunable_thresholds.adoption_class_score_map.share_only", 95)  # 降順崩れ
-    _set(raw, "tunable_thresholds.weekly.target_industries", ["存在しない業界"])
+    _set(raw, "tunable_thresholds.target_industries", ["存在しない業界"])
 
     config = IntelligenceConfig.model_validate(raw)
 
@@ -661,6 +661,8 @@ def test_tunable_thresholds_ranges_match_the_design(schema: dict[str, Any]) -> N
         "min_total_score_to_publish",
         "adoption_class_score_map",
         "min_reliability_score_to_publish",
+        # ⚠️ **`weekly` の外**（T-52 Step 1。週刊は業界版を廃止した）。
+        "target_industries",
         "weekly",
         "monthly",
         "dedup",
@@ -672,8 +674,8 @@ def test_tunable_thresholds_ranges_match_the_design(schema: dict[str, Any]) -> N
     reliability = tunable["properties"]["min_reliability_score_to_publish"]
     assert (reliability["minimum"], reliability["maximum"]) == (0, 10)
 
-    # 対象業界は複数可・**最低1件**（T-46 Step 3）。
-    industries = _prop(schema, "tunable_thresholds.weekly.target_industries")
+    # 対象業界は複数可・**最低1件**（T-46 Step 3 ／ 置き場は T-52 Step 1）。
+    industries = _prop(schema, "tunable_thresholds.target_industries")
     assert industries["type"] == "array"
     assert industries["items"]["type"] == "string"
     assert industries["minItems"] == 1

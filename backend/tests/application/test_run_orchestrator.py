@@ -487,7 +487,7 @@ async def test_one_html_is_rendered_per_target_industry(
     T-46 Step 4 の申し送り「render ループは呼び出し側の責務。**T-26 でも同じ形に
     すること**」をここで固定する。
     """
-    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融"]
+    config.tunable_thresholds.target_industries = ["不動産", "金融"]
     test = harness(store, jobs, config)
     store.write_text(
         store.narrative_path(WEEKLY_PERIOD),

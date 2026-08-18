@@ -239,35 +239,17 @@ class AdoptionClassScoreMap(_StrictModel):
 
 
 class WeeklyThresholds(_StrictModel):
-    """週刊メルマガの可変パラメータ（仕様書 §7.2）。"""
+    """週刊（週次ダイジェスト）の可変パラメータ（仕様書 §7.2）。
 
-    # ⚠️ **仕様書 §5.2 は `target_industry`（単数の文字列）**。2026-08-17 に
-    # PM 要件として複数業界対応が確定し、**`target_industries`（1件以上のリスト）**
-    # へ変えた（T-46 Step 3。→ §5.2・§9.2 の改訂は T-38）。週刊は業界ごとに1通
-    # 出す（`weekly_..._{industry}_{period}.html`）ので、**業界の数がそのまま
-    # 生成物の数**になる。
-    #
-    # **既定値は置かない。** 鍵が無い config を黙って `["不動産"]` として読むと、
-    # 移行し忘れた環境が「なぜかその業界版だけ出る」状態で動き続ける
-    # （`monthly_lookback_months` に既定を置いたのとは事情が違う——あちらは
-    # **新しい鍵**で、既存ファイルをそのまま読ませる必要があった。こちらは
-    # **鍵の入れ替え**なので、古い鍵は `extra="forbid"` で必ず落ちる）。
-    #
-    # 各要素が enums.industry に実在すること・重複が無いことは T-05（§2.1.1-3）。
-    target_industries: list[str] = Field(min_length=1)
+    ⚠️ **対象業界（`target_industries`）はここには無い**（2026-08-18 の T-52）。
+    週刊は業界版を廃止して**業界を問わない週次ダイジェスト1本**になったので、
+    対象業界は週刊のパラメータではなくなった（置き場は
+    `TunableThresholds.target_industries`）。
+    """
+
     max_industry_topics: int = Field(ge=0)
     max_common_topics: int = Field(ge=0)
     point_of_week_required: bool
-
-    @property
-    def industries(self) -> tuple[str, ...]:
-        """対象業界（**必ず1件以上**）。
-
-        収集の重点（T-16 / T-46）・顧客関連度の採点（T-19）・生成テキスト（T-44）・
-        描画（T-24）が参照する読み出し口を**1つ**にしてある。参照側はここだけを
-        見ていればよい（フィールドを直接読むと、形が変わるたびに全員が変わる）。
-        """
-        return tuple(self.target_industries)
 
 
 class MonthlyThresholds(_StrictModel):
@@ -306,9 +288,45 @@ class TunableThresholds(_StrictModel):
     adoption_class_score_map: AdoptionClassScoreMap
     # 信頼性は6軸中 0-10 点なので上限は 10（仕様書 §5.2 scoring_axes.reliability）。
     min_reliability_score_to_publish: int = Field(ge=0, le=10)
+
+    # ⚠️ **`weekly` の中から出した**（2026-08-18 の T-52 Step 1）。仕様書 §5.2 は
+    # `weekly.target_industry`（単数）→ T-46 Step 3 で
+    # `weekly.target_industries`（複数）→ ここで **`tunable_thresholds` 直下**へ。
+    # → §5.2・§7.2 の改訂は T-38。
+    #
+    # **週刊の下に置けなくなった理由**: 週刊は業界版を廃止して1本になったので、
+    # 週刊の生成はこの値を**一切見ない**（T-52）。**残った参照は週刊のものではない**:
+    #
+    # | 参照 | 何に使うか |
+    # |---|---|
+    # | crawl（T-16 / T-46 Step 1） | **月次**の収集で対象業界の記事を必ず含める |
+    # | 分類・採点（T-19） | **顧客関連度**の判断基準（週次・月次の両方の filter） |
+    # | 月刊の閲覧ページ（T-52 Step 2） | 業界チップの候補 |
+    #
+    # `monthly` の下へ移す案もあったが、**顧客関連度の採点は週次の filter でも
+    # 走る**（`monthly.*` を週次実行が読む形になる）ので採らなかった。
+    # 「顧客の関心業界」はどちらのアプリにも属さない全体のパラメータなので直下。
+    #
+    # **既定値は置かない**（鍵の入れ替えなので、古い場所は `extra="forbid"` が
+    # 必ず落とす＝移行漏れが起動時に分かる。T-46 Step 3 と同じ判断）。
+    # 各要素が enums.industry に実在すること・重複が無いことは T-05（§2.1.1-3）。
+    target_industries: list[str] = Field(min_length=1)
+
     weekly: WeeklyThresholds
     monthly: MonthlyThresholds
     dedup: DedupThresholds
+
+    @property
+    def industries(self) -> tuple[str, ...]:
+        """対象業界（**必ず1件以上**）。
+
+        収集の重点（T-16 / T-46）・顧客関連度の採点（T-19）・月刊の業界チップ
+        （T-52）が参照する読み出し口を**1つ**にしてある。参照側はここだけを見て
+        いればよい（フィールドを直接読むと、形が変わるたびに全員が変わる。
+        T-46 Step 1 で `WeeklyThresholds.industries` として足した口を、置き場の
+        移動に合わせてここへ引き上げた）。
+        """
+        return tuple(self.target_industries)
 
 
 class IntelligenceConfig(_StrictModel):

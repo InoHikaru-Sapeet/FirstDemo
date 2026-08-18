@@ -26,8 +26,8 @@ const CONFIG = {
 			reference_info: 70,
 			share_only: 60
 		},
+		target_industries: ["不動産"],
 		weekly: {
-			target_industries: ["不動産"],
 			max_industry_topics: 6,
 			max_common_topics: 8,
 			point_of_week_required: true
@@ -78,9 +78,7 @@ describe("toFormValues", () => {
 		expect(values["tunable_thresholds.weekly.point_of_week_required"]).toBe(
 			true
 		);
-		expect(values["tunable_thresholds.weekly.target_industries"]).toEqual([
-			"不動産"
-		]);
+		expect(values["tunable_thresholds.target_industries"]).toEqual(["不動産"]);
 	});
 });
 
@@ -135,13 +133,13 @@ describe("changedFields", () => {
 		const reordered = changedFields(
 			CONFIG,
 			withChange({
-				"tunable_thresholds.weekly.target_industries": ["不動産"]
+				"tunable_thresholds.target_industries": ["不動産"]
 			})
 		);
 		const added = changedFields(
 			CONFIG,
 			withChange({
-				"tunable_thresholds.weekly.target_industries": ["金融", "不動産"]
+				"tunable_thresholds.target_industries": ["金融", "不動産"]
 			})
 		);
 

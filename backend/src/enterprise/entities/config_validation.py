@@ -157,9 +157,10 @@ INITIAL_TUNABLE_THRESHOLDS: dict[str, Any] = {
     "tunable_thresholds.adoption_class_score_map.reference_info": 70,
     "tunable_thresholds.adoption_class_score_map.share_only": 60,
     "tunable_thresholds.min_reliability_score_to_publish": 5,
-    # ⚠️ **§5.2 は `target_industry`（単数）**。2026-08-17 の PM 要件で複数形へ
-    # 変えた（T-46 Step 3。→ §5.2 の改訂は T-38）。初期値は1件。
-    "tunable_thresholds.weekly.target_industries": ["不動産"],
+    # ⚠️ **§5.2 は `weekly.target_industry`（単数・週刊の下）**。2026-08-17 の
+    # PM 要件で複数形へ（T-46 Step 3）、2026-08-18 の T-52 で**週刊の外**へ出した
+    # （週刊は業界版を廃止したので週刊のパラメータではない）。→ §5.2 の改訂は T-38。
+    "tunable_thresholds.target_industries": ["不動産"],
     "tunable_thresholds.weekly.max_industry_topics": 5,
     "tunable_thresholds.weekly.max_common_topics": 6,
     "tunable_thresholds.weekly.point_of_week_required": True,
@@ -257,25 +258,29 @@ def check_adoption_threshold_order(config: IntelligenceConfig) -> list[ConfigIss
     return issues
 
 
-# --- §2.1.1-3: weekly.target_industries[*] ∈ enums.industry -----------------
+# --- §2.1.1-3: target_industries[*] ∈ enums.industry ------------------------
 
-TARGET_INDUSTRIES_PATH = "tunable_thresholds.weekly.target_industries"
+TARGET_INDUSTRIES_PATH = "tunable_thresholds.target_industries"
+"""⚠️ **`weekly` の下から `tunable_thresholds` 直下へ移った**（T-52 Step 1）。"""
 
 
 def check_target_industries_reference(config: IntelligenceConfig) -> list[ConfigIssue]:
-    """週刊メルマガの対象業界（複数可）を検証する（参照整合と重複）。
+    """対象業界（複数可）を検証する（参照整合と重複）。
 
-    ⚠️ **対象業界は出力ファイル名に入る**（`weekly_..._{industry}_{period}.html`）
-    ので、enum 外の値を通すとレンダラ（T-24）が誰も選べない業界版を出してしまう。
+    ⚠️ **enum 外の業界を通さない。** この値は月次の収集の重点（T-16）・顧客関連度の
+    採点（T-19）・月刊の業界チップ（T-52 Step 2）が使う。enum 外の値は**どの記事の
+    `業界` タグとも一致しない**（タグは config の候補から選ばせている＝T-19）ので、
+    通すと「重点にしたのに1件も当たらない」「絞り込んでも0件」が静かに起きる。
 
-    ⚠️ **重複も落とす**（T-46 Step 3）。業界の数がそのまま生成物の数なので、
-    同じ業界が2回並ぶと**同じファイルを2回書く**（＝退避の世代を無駄に消費し、
-    2回目が1回目を上書きする）。件数が1以上であることはモデル（T-04）が持つ。
+    ⚠️ **重複も落とす**（T-46 Step 3 から継続）。かつての理由は「業界の数がそのまま
+    生成物の数だから」（業界版を廃止したのでこの理由は消えた）。それでも落とすのは、
+    重複した業界がプロンプトに2度並び（`_industry_label()`）、業界チップも2つ出る＝
+    **同じものを2回指す設定に意味が無い**ため。件数が1以上であることはモデル（T-04）。
 
     違反は要素ごとに1件返す（フォームの該当欄へ対応づけられるよう、path に索引を
     付ける）。重複はどの1件が悪いとも言えないのでセクションの path に置く。
     """
-    industries = config.tunable_thresholds.weekly.target_industries
+    industries = config.tunable_thresholds.target_industries
 
     issues = [
         ConfigIssue(
@@ -301,8 +306,8 @@ def check_target_industries_reference(config: IntelligenceConfig) -> list[Config
                 path=TARGET_INDUSTRIES_PATH,
                 reason=(
                     f"同じ業界が複数回指定されている（{'、'.join(duplicated)}）。"
-                    "業界ごとに1通の週刊メルマガを出すので、"
-                    "重複すると同じファイルを2回書くことになる"
+                    "同じ業界を2度指しても収集の重点・採点の基準・"
+                    "月刊の業界チップは変わらない"
                 ),
                 code=ConfigIssueCode.DUPLICATE_INDUSTRY_REFERENCE,
             )

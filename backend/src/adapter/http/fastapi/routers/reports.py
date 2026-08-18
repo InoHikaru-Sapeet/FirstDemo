@@ -56,7 +56,7 @@ Web の閲覧ページは記事ごとのトグル開閉で要約・示唆を出�
 
 ⚠️ **一覧は config ではなく「置いてあるファイル」から作る。**
 
-対象業界は `config.tunable_thresholds.weekly.target_industries` に書いてあるが、
+対象業界は `config.tunable_thresholds.target_industries` に書いてあるが、
 このエンドポイントは**全ロールが叩ける**のに対し config は admin 以外に
 **存在も中身も返さない**（仕様書 §2・§6.1）。config を読んで一覧を組み立てると、
 設定値が非 admin へ漏れる経路になる。`ArtifactStore.weekly_html_paths()` が

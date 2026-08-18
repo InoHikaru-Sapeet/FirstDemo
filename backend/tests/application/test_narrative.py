@@ -237,7 +237,7 @@ async def test_each_target_industry_gets_its_own_round_trip(
 
     ⚠️ 往復は業界の数だけ増える（1回数分）。**記事ごとの往復は増やさない**。
     """
-    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融"]
+    config.tunable_thresholds.target_industries = ["不動産", "金融"]
     client = ScriptedAIClient(weekly_payload(), weekly_payload())
 
     document = await builder(config, client).build_weekly(
@@ -326,7 +326,7 @@ async def test_the_prompt_carries_the_target_industry_and_every_url(
     )
 
     prompt = client.prompts[0]
-    for industry in config.tunable_thresholds.weekly.industries:
+    for industry in config.tunable_thresholds.industries:
         assert industry in prompt
     assert URL_A in prompt and URL_B in prompt
     assert "自社ではどう捉えるか" in prompt

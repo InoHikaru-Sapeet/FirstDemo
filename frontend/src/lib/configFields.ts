@@ -75,14 +75,21 @@ export const FIELD_GROUPS: FieldGroup[] = [
 		]
 	},
 	{
-		title: "週刊メルマガ",
+		title: "共通",
 		fields: [
 			{
-				path: "tunable_thresholds.weekly.target_industries",
+				// ⚠️ **週刊の欄ではなくなった**（T-52）。週刊は業界版を廃止したので、
+				// この値を使うのは月次の収集の重点・顧客関連度の採点・月刊の業界チップ。
+				path: "tunable_thresholds.target_industries",
 				label: "対象業界",
 				kind: "industries",
-				hint: "⚠️ 選んだ業界の数だけメールが出る（業界ごとに1通）。1つ以上必須。"
-			},
+				hint: "月刊の収集の重点・顧客関連度の採点・月刊の業界チップに使う。1つ以上必須。"
+			}
+		]
+	},
+	{
+		title: "週刊メルマガ",
+		fields: [
 			{
 				path: "tunable_thresholds.weekly.max_industry_topics",
 				label: "業界関連トピックの上限",

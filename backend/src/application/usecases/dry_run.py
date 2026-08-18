@@ -139,7 +139,7 @@ RESCORE_REQUIRED_PATHS: Final[frozenset[str]] = frozenset(
         # 対象業界は**顧客関連度の判断基準としてプロンプトに載る**
         # （`build_classification_prompt`「いずれかに関係すれば関係する」）。
         # 業界を足す／外すと、顧客関連度の点とタグが変わりうる。
-        "tunable_thresholds.weekly.target_industries",
+        "tunable_thresholds.target_industries",
         # カテゴリ優先度も分類プロンプトに載る（`- {id}: {label}（優先度 …）`）。
         # 下流に決定的な用途は無いが、**AI へ渡している以上「変えても同じ点が
         # 出る」とは言えない**ので、安全側に倒して再採点扱いにする。
@@ -197,7 +197,7 @@ _REASONS: Final[Mapping[str, tuple[ConfigIssueCode, str]]] = {
         "軸の配点は各軸の得点上限そのものです。保存済みの点数は古い上限で"
         "付けられているため、再採点しないと新しい配点での結果は出せません。",
     ),
-    "tunable_thresholds.weekly.target_industries": (
+    "tunable_thresholds.target_industries": (
         ConfigIssueCode.RESCORE_REQUIRED,
         "対象業界は顧客関連度の判断基準として採点プロンプトに載ります。"
         "変更すると点数とタグが変わりうるため、再採点が必要です。",

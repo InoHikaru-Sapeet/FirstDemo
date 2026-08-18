@@ -717,9 +717,11 @@ def build_classification_prompt(article: RawArticle, config: IntelligenceConfig)
         "選ぶ。",
         "",
         # ⚠️ 対象業界は**複数ありうる**（T-46 Step 3）。顧客関連度は
-        # 「いずれかの業界に関係するか」で見る（読み手が業界ごとに分かれるため）。
+        # 「いずれかの業界に関係するか」で見る。⚠️ **読み出し口が
+        # `weekly` の下から `tunable_thresholds` 直下へ移った**（T-52 Step 1。
+        # 週刊は業界版を廃止したので、この値は週刊のパラメータではない）。
         "■ 対象業界（顧客関連度の判断基準。いずれかに関係すれば「関係する」）: "
-        + " / ".join(thresholds.weekly.industries),
+        + " / ".join(thresholds.industries),
         "",
         "■ 対象記事",
         article.model_dump_json(indent=2),

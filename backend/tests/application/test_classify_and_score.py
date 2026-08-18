@@ -1193,7 +1193,7 @@ def test_the_prompt_shows_the_bands_and_criteria(
 
 def test_the_prompt_shows_the_target_industry(raw: dict[str, Any]) -> None:
     """§13.3 が config パラメータに挙げている「対象業界」（顧客関連度の基準）。"""
-    raw["tunable_thresholds"]["weekly"]["target_industries"] = ["金融"]
+    raw["tunable_thresholds"]["target_industries"] = ["金融"]
     config = IntelligenceConfig.model_validate(raw)
     article = RawArticle(
         collected_at="2026-08-14",
@@ -1213,7 +1213,7 @@ def test_the_prompt_shows_the_target_industry(raw: dict[str, Any]) -> None:
 
 def test_the_prompt_shows_every_target_industry(raw: dict[str, Any]) -> None:
     """対象業界は複数ありうる（T-46 Step 3）。顧客関連度は「いずれか」で見る。"""
-    raw["tunable_thresholds"]["weekly"]["target_industries"] = ["不動産", "金融"]
+    raw["tunable_thresholds"]["target_industries"] = ["不動産", "金融"]
     config = IntelligenceConfig.model_validate(raw)
     article = RawArticle(
         collected_at="2026-08-14",

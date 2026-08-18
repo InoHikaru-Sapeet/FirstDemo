@@ -21,7 +21,7 @@
 
 | 変数 | 注入元 |
 |---|---|
-| `{{target_industry}}` | `config.tunable_thresholds.weekly.target_industries` の**1つ**（週刊は業界ごとに1通。T-46 Step 4） |
+| `{{target_industry}}` | `config.tunable_thresholds.target_industries` の**1つ**（週刊は業界ごとに1通。T-46 Step 4） |
 | `{{POINT_OF_WEEK_SENTENCES}}` | `narrative.POINT_OF_WEEK_MIN/MAX_SENTENCES`（仕様書 §9.2-2 の 3〜4文） |
 | `{{ARTICLES}}` | 当週シートの採用行（22列のうちタイトル・URL・カテゴリ・業界・出典・合計スコア・一言要約） |
 

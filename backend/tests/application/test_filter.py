@@ -926,7 +926,7 @@ async def test_the_weekly_narrative_is_generated_per_industry(
     config: IntelligenceConfig, store: ArtifactStore
 ) -> None:
     """T-46 Step 4：週刊は業界ごとに1通なので、生成テキストも業界ごとに作る。"""
-    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融"]
+    config.tunable_thresholds.target_industries = ["不動産", "金融"]
     write_articles(store, [article()], WEEKLY_PERIOD)
     client = ScriptedAIClient()
 

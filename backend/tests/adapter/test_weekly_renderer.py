@@ -302,7 +302,7 @@ def test_the_header_carries_the_brand_industry_and_week(
 def test_the_industry_name_comes_from_config_not_a_literal(
     config: IntelligenceConfig,
 ) -> None:
-    config.tunable_thresholds.weekly.target_industries = ["金融"]
+    config.tunable_thresholds.target_industries = ["金融"]
 
     markup = render([article(title="地銀のAI活用", industries=("金融",))], config)
 
@@ -319,7 +319,7 @@ def test_each_target_industry_gets_its_own_edition(
     同じ当週シートから、業界の指定だけを変えて別の号が出る。振り分けもその業界で
     行う（他方の業界の記事は「業界共通トピック」へ回る）。
     """
-    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融"]
+    config.tunable_thresholds.target_industries = ["不動産", "金融"]
     articles = [
         article(title="大手不動産のAI活用", industries=("不動産",)),
         article(
@@ -360,7 +360,7 @@ def test_rendering_without_an_industry_warns_when_several_are_configured(
     config: IntelligenceConfig, caplog: pytest.LogCaptureFixture
 ) -> None:
     """指定が無ければ先頭を描くが、**黙って**残りを落とさない。"""
-    config.tunable_thresholds.weekly.target_industries = ["不動産", "金融"]
+    config.tunable_thresholds.target_industries = ["不動産", "金融"]
 
     with caplog.at_level("WARNING"):
         markup = render([article()], config)
