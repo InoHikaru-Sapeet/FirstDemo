@@ -124,8 +124,7 @@
     "min_reliability_score_to_publish": 5,
     "target_industries": ["不動産"],
     "weekly": {
-      "max_industry_topics": 5,
-      "max_common_topics": 6,
+      "max_topics": 12,
       "point_of_week_required": true
     },
     "monthly": {

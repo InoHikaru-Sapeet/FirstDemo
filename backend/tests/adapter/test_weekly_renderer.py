@@ -3,9 +3,10 @@
 重点（§7.3 のマッピング表の各行）:
 
 - **採用条件**（`採用区分 ≠ 不採用` かつ `合計スコア ≥ min_total_score_to_publish`）
-- **業界振り分け**（`業界` に描画対象の業界を含む → 業界関連／それ以外 → 共通）
-- **上限件数**（`max_industry_topics` / `max_common_topics`）と**合計スコア降順**
-- カード5要素（カテゴリラベルの色／タイトル `<a>`／一言要約／示唆ボックス／出典行）
+- **点数順の単一リスト**（T-52 Step 1。業界振り分けと2セクション構成は廃止）
+- **掲載件数の上限**（`weekly.max_topics`）と**合計スコア降順**
+- **点数は描かない**（順序を決めるためだけに読む。値は中間xlsx に残る）
+- カード5要素（カテゴリバッジ／プレーン見出し／一言要約／示唆ボックス／出典行）
 - **§7.1 の禁止事項が出力に混ざらない**（T-23 の lint を通す）
 - **生成テキスト**（今週のポイント・示唆）は渡された分だけ出す。
   `point_of_week_required=true` で空なら落とす
@@ -26,10 +27,7 @@ from adapter.html.weekly_renderer import (
     BADGE_TEXT,
     BRAND_TITLE,
     CARD_TITLE_FONT_SIZE,
-    COMMON_SECTION_HEADING,
     ELLIPSIS,
-    FOOTER_NOTE,
-    INDUSTRY_SECTION_FORMAT,
     INSIGHTS_PER_SECTION,
     NOT_ADOPTED,
     POINT_OF_WEEK_HEADING,
@@ -37,10 +35,10 @@ from adapter.html.weekly_renderer import (
     REFERENCED_COLUMNS,
     SOURCE_LINE_FORMAT,
     SUMMARY_MAX_FULLWIDTH_CHARS,
+    TOPICS_SECTION_HEADING,
     WeeklyNarrative,
     WeeklyRenderer,
     WeeklyRenderError,
-    industries_of,
     is_adopted,
     one_line_summary,
     render_weekly_html,
@@ -50,7 +48,6 @@ from adapter.storage.artifact_store import ArtifactStore
 from enterprise.entities.config import IntelligenceConfig
 from enterprise.entities.diagram import FlowDiagram
 from enterprise.entities.report_columns import (
-    MULTI_VALUE_SEPARATOR,
     WEEKLY_ARTICLE_COLUMNS,
     WEEKLY_ARTICLE_COLUMNS_BY_NAME,
 )
@@ -59,9 +56,7 @@ INITIAL_CONFIG_PATH = (
     Path(__file__).parents[1] / "enterprise" / "data" / "config_initial.json"
 )
 GOLDEN_PATH = (
-    Path(__file__).parent
-    / "golden"
-    / "weekly_ai_intelligence_newsletter_不動産_2026-W31.html"
+    Path(__file__).parent / "golden" / "weekly_ai_intelligence_newsletter_2026-W31.html"
 )
 
 PERIOD = "2026-W31"
@@ -187,56 +182,45 @@ def test_only_adopted_articles_become_cards(config: IntelligenceConfig) -> None:
     assert "不採用区分" not in markup
 
 
-# --- 業界振り分けと上限・並び順（§7.3・§9.3）--------------------------------
+# --- 掲載件数と並び順（§7.3・§9.3）------------------------------------------
 
 
-def test_articles_tagged_with_the_target_industry_go_to_the_industry_section(
-    config: IntelligenceConfig,
-) -> None:
+def test_every_adopted_article_goes_into_one_list(config: IntelligenceConfig) -> None:
+    """T-52 Step 1：**業界で振り分けない**（点数順の1列）。
+
+    かつては列19「業界」を見て業界関連／業界共通の2セクションへ分けていた
+    （§9.2-3・§9.2-4）。業界版を廃止したので、業界タグは掲載の判断に使わない。
+    """
     selection = select_articles(
         [
-            article(title="不動産の記事", industries=("不動産", "業界横断")),
-            article(title="横断の記事", industries=("業界横断",)),
-            article(title="他業界の記事", industries=("金融",)),
+            article(title="不動産の記事", industries=("不動産",), total=90),
+            article(title="横断の記事", industries=("業界横断",), total=85),
+            article(title="他業界の記事", industries=("金融",), total=80),
         ],
         config,
     )
 
-    assert [r["タイトル"] for r in selection.industry_topics] == ["不動産の記事"]
-    assert [r["タイトル"] for r in selection.common_topics] == [
+    assert [r["タイトル"] for r in selection.topics] == [
+        "不動産の記事",
         "横断の記事",
         "他業界の記事",
     ]
 
 
-def test_the_industry_column_is_read_whether_it_is_a_list_or_a_joined_string() -> None:
-    joined = MULTI_VALUE_SEPARATOR.join(["不動産", "業界横断"])
-
-    assert industries_of({"業界": ["不動産", "業界横断"]}) == ("不動産", "業界横断")
-    assert industries_of({"業界": joined}) == ("不動産", "業界横断")
-    assert industries_of({}) == ()
-
-
-def test_each_section_is_capped_by_its_own_limit(config: IntelligenceConfig) -> None:
+def test_the_list_is_capped_by_a_single_limit(config: IntelligenceConfig) -> None:
+    """T-52 Step 1：上限は `max_topics` の1本（2セクションぶんの2キーを統合）。"""
     weekly = config.tunable_thresholds.weekly
     articles = [
-        article(title=f"業界{i}", url=f"https://example.com/i/{i}", total=90 - i)
-        for i in range(weekly.max_industry_topics + 3)
-    ] + [
-        article(
-            title=f"共通{i}",
-            url=f"https://example.com/c/{i}",
-            total=80 - i,
-            industries=("業界横断",),
-        )
-        for i in range(weekly.max_common_topics + 3)
+        article(title=f"記事{i}", url=f"https://example.com/a/{i}", total=90 - i)
+        for i in range(weekly.max_topics + 3)
     ]
 
     selection = select_articles(articles, config)
 
-    assert len(selection.industry_topics) == weekly.max_industry_topics
-    assert len(selection.common_topics) == weekly.max_common_topics
+    assert len(selection.topics) == weekly.max_topics
     assert selection.adopted == len(articles)
+    # ⚠️ 上限で落ちた件数は黙って捨てない（ログに出す材料）。
+    assert selection.held_back == 3
 
 
 def test_cards_are_ordered_by_total_score_descending(
@@ -252,7 +236,7 @@ def test_cards_are_ordered_by_total_score_descending(
         config,
     )
 
-    assert [r["タイトル"] for r in selection.industry_topics] == ["高", "中", "低"]
+    assert [r["タイトル"] for r in selection.topics] == ["高", "中", "低"]
 
 
 def test_articles_of_equal_score_keep_the_order_they_arrived_in(
@@ -262,7 +246,7 @@ def test_articles_of_equal_score_keep_the_order_they_arrived_in(
         [article(title="先", total=80), article(title="後", total=80)], config
     )
 
-    assert [r["タイトル"] for r in selection.industry_topics] == ["先", "後"]
+    assert [r["タイトル"] for r in selection.topics] == ["先", "後"]
 
 
 def test_an_article_without_a_title_is_not_turned_into_a_card(
@@ -273,53 +257,78 @@ def test_an_article_without_a_title_is_not_turned_into_a_card(
         [article(title="", total=90), article(title="あり", total=85)], config
     )
 
-    assert [r["タイトル"] for r in selection.industry_topics] == ["あり"]
+    assert [r["タイトル"] for r in selection.topics] == ["あり"]
     assert selection.untitled == 1
     assert selection.adopted == 2
 
 
-def test_a_section_with_no_article_is_omitted(config: IntelligenceConfig) -> None:
-    markup = render([article(industries=("不動産",))], config)
+def test_the_topics_section_appears_once(config: IntelligenceConfig) -> None:
+    """⚠️ 見出しは1つ（業界関連／業界共通の2本立てを廃止した）。"""
+    markup = render(
+        [
+            article(industries=("不動産",)),
+            article(
+                title="横断の記事",
+                url="https://example.com/news/2",
+                industries=("業界横断",),
+            ),
+        ],
+        config,
+    )
 
-    assert INDUSTRY_SECTION_FORMAT.format(industry="不動産") in markup
-    assert COMMON_SECTION_HEADING not in markup
+    assert markup.count(TOPICS_SECTION_HEADING) == 1
+    assert "関連トピック" not in markup
+    assert "業界共通" not in markup
+
+
+def test_no_article_means_no_section_heading(config: IntelligenceConfig) -> None:
+    markup = render([], config)
+
+    assert TOPICS_SECTION_HEADING not in markup
+
+
+def test_the_total_score_is_never_printed(config: IntelligenceConfig) -> None:
+    """T-52 Step 1：**点数は出さない**（順序を決めるためだけに読む）。
+
+    ⚠️ 中間xlsx の列5 はそのまま（値が消えたのではなく、読み手に見せないだけ）。
+    """
+    markup = render([article(title="ある記事", total=88)], config)
+
+    assert "ある記事" in markup
+    assert "88" not in markup
 
 
 # --- ヘッダ・フッタ（§9.2-1・§9.2-5）----------------------------------------
 
 
-def test_the_header_carries_the_brand_industry_and_week(
+def test_the_header_carries_the_brand_and_the_week(
     config: IntelligenceConfig,
 ) -> None:
     markup = render([article()], config)
 
     assert BRAND_TITLE in markup
-    assert "不動産 版" in markup
     assert "対象週：2026-W31" in markup
     assert "linear-gradient(135deg,#4f46e5,#7c3aed)" in markup
 
 
-def test_the_industry_name_comes_from_config_not_a_literal(
-    config: IntelligenceConfig,
-) -> None:
+def test_the_header_no_longer_names_an_industry(config: IntelligenceConfig) -> None:
+    """T-52 Step 1：業界版の廃止で「〈業界〉版」の行が消えた。
+
+    ⚠️ **config の対象業界が何であっても**ヘッダに出ない（週刊はこの値を
+    もう見ない）。
+    """
     config.tunable_thresholds.target_industries = ["金融"]
 
     markup = render([article(title="地銀のAI活用", industries=("金融",))], config)
 
-    assert "金融 版" in markup
-    assert "金融関連トピック" in markup
-    assert "不動産" not in markup
+    assert " 版" not in markup
+    assert "金融 版" not in markup
 
 
-def test_each_target_industry_gets_its_own_edition(
+def test_the_same_html_comes_out_whatever_the_target_industries_are(
     config: IntelligenceConfig,
 ) -> None:
-    """T-46 Step 3：週刊は**業界ごとに1通**（どの業界版かは呼び出し側が決める）。
-
-    同じ当週シートから、業界の指定だけを変えて別の号が出る。振り分けもその業界で
-    行う（他方の業界の記事は「業界共通トピック」へ回る）。
-    """
-    config.tunable_thresholds.target_industries = ["不動産", "金融"]
+    """⚠️ 対象業界を変えても週刊の出力は変わらない（1本のダイジェスト）。"""
     articles = [
         article(title="大手不動産のAI活用", industries=("不動産",)),
         article(
@@ -327,61 +336,11 @@ def test_each_target_industry_gets_its_own_edition(
         ),
     ]
 
-    for industry, other in (("不動産", "金融"), ("金融", "不動産")):
-        markup = render_weekly_html(
-            period=PERIOD,
-            articles=articles,
-            config=config,
-            narrative=WeeklyNarrative(point_of_week="今週の総括。"),
-            industry=industry,
-        )
+    first = render(articles, config)
+    config.tunable_thresholds.target_industries = ["金融", "製造"]
+    second = render(articles, config)
 
-        assert f"{industry} 版" in markup
-        assert INDUSTRY_SECTION_FORMAT.format(industry=industry) in markup
-        assert INDUSTRY_SECTION_FORMAT.format(industry=other) not in markup
-        assert COMMON_SECTION_HEADING in markup  # もう一方の業界の記事はこちら
-
-
-def test_an_industry_outside_the_config_is_rejected(
-    config: IntelligenceConfig,
-) -> None:
-    """⚠️ 誰も選んでいない業界版を出さない（正規名に業界が入る）。"""
-    with pytest.raises(WeeklyRenderError, match="対象業界"):
-        render_weekly_html(
-            period=PERIOD,
-            articles=[article()],
-            config=config,
-            narrative=WeeklyNarrative(point_of_week="今週の総括。"),
-            industry="金融",
-        )
-
-
-def test_rendering_without_an_industry_warns_when_several_are_configured(
-    config: IntelligenceConfig, caplog: pytest.LogCaptureFixture
-) -> None:
-    """指定が無ければ先頭を描くが、**黙って**残りを落とさない。"""
-    config.tunable_thresholds.target_industries = ["不動産", "金融"]
-
-    with caplog.at_level("WARNING"):
-        markup = render([article()], config)
-
-    assert "不動産 版" in markup
-    assert any("先頭" in record.getMessage() for record in caplog.records)
-
-
-def test_the_footer_states_it_is_not_advice(config: IntelligenceConfig) -> None:
-    markup = render([article()], config)
-
-    assert mail_html.escape(FOOTER_NOTE) in markup
-    assert "助言ではありません" in markup
-
-
-def test_the_outer_frame_is_centered_at_680px(config: IntelligenceConfig) -> None:
-    markup = render([article()], config)
-
-    assert "max-width:680px" in markup
-    assert "margin:0 auto" in markup
-    assert "background-color:#f3f4f6" in markup
+    assert first == second
 
 
 # --- カード5要素（§9.2-4）----------------------------------------------------
@@ -650,42 +609,35 @@ def test_only_the_first_card_of_a_section_shows_its_insight_box(
     assert markup.count("background-color:#eef2ff") == INSIGHTS_PER_SECTION
 
 
-def test_each_section_gets_its_own_first_insight(
+def test_only_one_insight_is_shown_for_the_whole_issue(
     config: IntelligenceConfig,
 ) -> None:
-    """「先頭1件」はセクション単位（業界関連と業界共通で別々に数える）。"""
+    """T-52 Step 1：セクションが1つになったので、フル表示も号に1件。
+
+    ⚠️ かつては「各セクションの先頭1件」で、2セクションぶん2件出ていた。
+    `INSIGHTS_PER_SECTION` の値は変えていない（数える単位が変わっただけ）。
+    """
     articles = [
-        article(title="業界1", url="https://example.com/i1", total=90),
-        article(title="業界2", url="https://example.com/i2", total=89),
         article(
-            title="共通1",
-            url="https://example.com/c1",
-            total=88,
-            industries=("業界横断",),
-        ),
-        article(
-            title="共通2",
-            url="https://example.com/c2",
-            total=87,
-            industries=("業界横断",),
-        ),
+            title=f"記事{index}",
+            url=f"https://example.com/{index}",
+            total=90 - index,
+        )
+        for index in range(4)
     ]
     narrative = WeeklyNarrative(
         point_of_week="総括。",
         insights={
-            "https://example.com/i1": "業界の示唆。",
-            "https://example.com/i2": "出ない示唆。",
-            "https://example.com/c1": "共通の示唆。",
-            "https://example.com/c2": "これも出ない。",
+            f"https://example.com/{index}": f"示唆{index}。" for index in range(4)
         },
     )
 
     markup = render(articles, config, narrative)
 
-    assert "業界の示唆。" in markup
-    assert "共通の示唆。" in markup
-    assert "出ない示唆。" not in markup
-    assert "これも出ない。" not in markup
+    assert markup.count("background-color:#eef2ff") == INSIGHTS_PER_SECTION
+    assert "示唆0。" in markup
+    for index in range(1, 4):
+        assert f"示唆{index}。" not in markup
 
 
 def test_holding_back_an_insight_does_not_change_the_narrative(
@@ -798,10 +750,9 @@ def test_the_output_file_name_follows_the_canonical_resolution(
         run_id=RUN_ID,
     )
 
-    assert result.path == store.weekly_html_path("不動産", PERIOD)
-    assert result.path.name == (
-        "weekly_ai_intelligence_newsletter_不動産_2026-W31.html"
-    )
+    assert result.path == store.weekly_html_path(PERIOD)
+    # ⚠️ **正規名から業界が消えた**（T-52 Step 1。1つの週につき1通）。
+    assert result.path.name == "weekly_ai_intelligence_newsletter_2026-W31.html"
     assert result.path.read_text(encoding="utf-8") == result.markup
     assert result.cards == 1
     assert result.archived is None
@@ -885,8 +836,8 @@ def golden_articles() -> list[dict[str, Any]]:
     """ゴールデンファイル用の当週シート（体裁の各要素が1度は出る形）。
 
     ⚠️ **圧縮（T-48 Step 1）の3要素がそれぞれ1度は出るようにしてある**：
-    2件目は要約が全角60字を超えて `…` で切れ、示唆はセクション先頭でないので
-    出ない（生成テキスト側には持たせてある。`golden_narrative()`）。
+    2件目は要約が全角60字を超えて `…` で切れ、示唆は先頭カードでないので出ない
+    （生成テキスト側には持たせてある。`golden_narrative()`）。
     """
     return [
         article(
@@ -950,9 +901,8 @@ def golden_narrative() -> WeeklyNarrative:
             "https://example.com/news/1": (
                 "自社では契約書のひな型が揃っている領域から試すのが早い。"
             ),
-            # ⚠️ **業界関連セクションの2件目**なので、メール HTML には出ない
-            # （T-48 Step 1）。生成テキストとしては残り、Web の閲覧ページ
-            # （T-36）ではトグルで開ける。
+            # ⚠️ **先頭カードではない**ので HTML には出ない（T-48 Step 1）。
+            # 生成テキストとしては残り、Web の閲覧ページ（T-36）では開ける。
             "https://example.com/news/2": (
                 "一次受けの範囲をどこで切るかは自社の応対品質基準と揃えて決める。"
             ),
@@ -979,7 +929,8 @@ def test_the_golden_file_holds_back_an_insight_it_was_given(
     )
 
     assert "一次受けの範囲をどこで切るか" not in markup
-    assert markup.count("background-color:#eef2ff") == INSIGHTS_PER_SECTION * 2
+    # ⚠️ セクションが1つになったので、フル表示の示唆も号に1件（T-52 Step 1）。
+    assert markup.count("background-color:#eef2ff") == INSIGHTS_PER_SECTION
 
 
 def test_the_rendered_html_matches_the_golden_file(

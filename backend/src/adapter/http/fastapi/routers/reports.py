@@ -1,6 +1,6 @@
 """レポート一覧 API（T-27。設計書 §3.2・§3.3 ／ 仕様書 §6.2）。
 
-- `GET /reports` → `{reports: [{period, type, industries}]}`（一覧。T-36）
+- `GET /reports` → `{reports: [{period, type}]}`（一覧。T-36）
 - `GET /reports/{period}` → `{period, type, html_urls, xlsx_url, summary}`
 - `GET /reports/{period}/articles` → 閲覧ページ用の記事データ（T-36）
 
@@ -42,21 +42,18 @@ Web の閲覧ページは記事ごとのトグル開閉で要約・示唆を出�
 
 ---
 
-⚠️ **`html_url`（単数）→ `html_urls`（複数）に変えた。**
+⚠️ **`html_urls` は週刊でも常に1件**（2026-08-18 の T-52 Step 1）。
 
-設計書 §3.3 は `"html_url": "/files/weekly_..._不動産_2026-W31.html"` と単数で
-書いているが、**週刊は対象業界ごとに1通出る**（T-46 Step 4 で複数化済み）。
-単数のままだと、業界が2つ以上あるときに「どれか1通」を返すことになり、
-残りへ到達する手段が API から消える。→ **§3.3 の改訂が必要（T-38 に記録済み）**。
-
-月刊は1通なので `html_urls` の要素は常に1件（`industry` は `null`）。
-**形を2つに割らない**のは、フロントが種別で分岐せずに一覧を描けるようにするため。
+T-46 Step 4 で週刊が業界ごとに1通になり `html_url`（単数）→ `html_urls`（複数）へ
+広げたが、**業界版を廃止した**ので週刊も月刊も要素は1件・`industry` は常に `null`。
+⚠️ **形は複数のまま残す**——`industry` 付きのリストという形は、将来また出力の
+単位が増えたときに壊さず足せる（フロントも種別で分岐せずに描ける）。
+→ **§3.3 の改訂が必要（T-38 に記録済み）**。
 
 ---
 
 ⚠️ **一覧は config ではなく「置いてあるファイル」から作る。**
 
-対象業界は `config.tunable_thresholds.target_industries` に書いてあるが、
 このエンドポイントは**全ロールが叩ける**のに対し config は admin 以外に
 **存在も中身も返さない**（仕様書 §2・§6.1）。config を読んで一覧を組み立てると、
 設定値が非 admin へ漏れる経路になる。`ArtifactStore.weekly_html_paths()` が
@@ -73,7 +70,7 @@ import logging
 from collections.abc import Mapping
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,19 +83,13 @@ from adapter.html.weekly_renderer import (
     COLUMN_SUMMARY,
     COLUMN_TITLE,
     COLUMN_URL,
-    COMMON_SECTION_HEADING,
-    INDUSTRY_SECTION_FORMAT,
     WeeklyNarrative,
     category_labels,
     select_articles,
 )
 from adapter.http.fastapi.auth.dependencies import get_db_session, require_permission
 from adapter.http.fastapi.routers.files import file_url
-from adapter.storage.artifact_store import (
-    WEEKLY_HTML_NAME,
-    ArtifactStore,
-    ArtifactStoreError,
-)
+from adapter.storage.artifact_store import ArtifactStore, ArtifactStoreError
 from adapter.xlsx.report_writer import ReportStore
 from application.usecases.narrative import to_weekly_narrative
 from config import Settings, get_settings
@@ -125,7 +116,8 @@ class ReportHtml(BaseModel):
     """生成 HTML 1通。
 
     Attributes:
-        industry: 週刊の対象業界。**月刊は `None`**（業界別ではない）
+        industry: **常に `None`**（T-52 Step 1 で業界版を廃止した）。欄ごと消さない
+            のは、出力の単位が増えたときに形を壊さず足せるようにするため
         url: `GET /files/{filename}` の URL
     """
 
@@ -156,12 +148,14 @@ class ReportListEntry(BaseModel):
     Attributes:
         period: `2026-W31` / `2026-07`
         type: period の表記から決まる種別
-        industries: 週刊の業界（出ている HTML のぶんだけ）。**月刊は空**
+
+    ⚠️ **`industries` は廃止**（T-52 Step 1）。週刊が業界ごとに1通だった頃の
+    「この週はどの業界版が出ているか」を返す欄で、業界版が無くなった以上
+    常に空になる（空の配列を返し続けるより、欄ごと消すほうが誤解が無い）。
     """
 
     period: str
     type: RunType
-    industries: list[str]
 
 
 class ReportListResponse(BaseModel):
@@ -201,34 +195,40 @@ class ArticleCard(BaseModel):
     source: str
 
 
-class ArticleSection(BaseModel):
-    """閲覧ページのセクション（業界関連／業界共通）。
+class PointOfWeekPoint(BaseModel):
+    """今週のポイント1項目（T-52 Step 1）。
 
     Attributes:
-        heading: §9.2-3・§9.2-4 の見出し（`〈業界〉関連トピック` ほか）
-        articles: そのセクションのカード（合計スコア降順・上限適用後）
+        heading: 箇条書きの1行になる見出し（1文）
+        detail: 展開したときに出る詳細1段落。**無ければ `None`**（開く口を
+            出さないのは表示側の判断）
     """
 
     heading: str
-    articles: list[ArticleCard]
+    detail: str | None
 
 
 class ArticlesResponse(BaseModel):
     """`GET /reports/{period}/articles` → 200（**週刊のみ**）。
 
+    ⚠️ **業界版の廃止（T-52 Step 1）で3つ変わった**:
+
+    1. `industry` / `industries`（どの業界版か・切り替えの候補）を**廃止**
+    2. `sections`（業界関連／業界共通の2セクション）→ **`articles` の1列**
+    3. `point_of_week_points`（見出し＋詳細）を追加。`point_of_week`（連結した
+       文章）は**残す**——HTML が描いているのと同じものを返す欄なので
+
     Attributes:
         period: 対象週
-        industry: どの業界版か
-        industries: その週に HTML が出ている業界（閲覧ページの切り替え用）
-        point_of_week: 今週のポイント（§9.2-2）。無ければ `None`
-        sections: 業界関連トピック → 業界共通トピックの順
+        point_of_week: 今週のポイント（§9.2-2。見出しの連結）。無ければ `None`
+        point_of_week_points: 箇条書き＋クリック展開の材料
+        articles: 掲載記事（合計スコア降順・上限適用後）
     """
 
     period: str
-    industry: str
-    industries: list[str]
     point_of_week: str | None
-    sections: list[ArticleSection]
+    point_of_week_points: list[PointOfWeekPoint]
+    articles: list[ArticleCard]
 
 
 def _not_found(period: str) -> HTTPException:
@@ -251,18 +251,14 @@ async def list_reports(
 ) -> ReportListResponse:
     """読めるレポートの一覧を返す（**全ロール可**。T-36）。
 
-    - **200** `{reports: [{period, type, industries}]}`（**新しい号が先**）
+    - **200** `{reports: [{period, type}]}`（**新しい号が先**）
 
     ⚠️ **件数サマリは入れない**（period ごとに中間xlsx を開くことになる）。
     件数が要るときは `GET /reports/{period}` を引く。
     """
     store = ArtifactStore.from_settings(settings)
     entries = [
-        ReportListEntry(
-            period=period,
-            type=run_type_of(period),
-            industries=_industries_in(store, period),
-        )
+        ReportListEntry(period=period, type=run_type_of(period))
         for period in store.rendered_periods()
     ]
     logger.info("reports listed (count=%d)", len(entries))
@@ -275,21 +271,20 @@ async def get_report_articles(
     _caller: Annotated[Principal, Depends(require_permission)],
     settings: Annotated[Settings, Depends(get_settings)],
     db: Annotated[AsyncSession, Depends(get_db_session)],
-    industry: Annotated[
-        str | None, Query(description="どの業界版か（既定はその週の先頭）")
-    ] = None,
 ) -> ArticlesResponse:
     """閲覧ページ用に、その号の記事を構造化して返す（**全ロール可**。T-36）。
 
-    ⚠️ **週刊だけ**（月刊は章立ての読み物なので HTML をそのまま見せる）。
+    ⚠️ **週刊だけ**（月刊は `GET /reports/{period}/cases`）。
 
-    - **200** `{period, industry, industries, point_of_week, sections}`
-    - **404** その週の HTML がまだ無い／指定した業界版が出ていない
+    - **200** `{period, point_of_week, point_of_week_points, articles}`
+    - **404** その週の HTML がまだ無い
     - **422** period が週次表記でない・実在しない週
 
-    ⚠️ **採否・並び順・上限はメール版と同じ判定を通す**（`select_articles()`）。
-    Web 用に別の選び方をすると「メールに載っていない記事が Web にある」状態に
+    ⚠️ **採否・並び順・上限は HTML と同じ判定を通す**（`select_articles()`）。
+    Web 用に別の選び方をすると「HTML に載っていない記事が Web にある」状態に
     なり、どちらが号の内容なのか決まらなくなる。
+
+    ⚠️ **業界の指定は無くなった**（T-52 Step 1。業界版の廃止）。
     """
     parsed = _parse(period)
     if not parsed.is_weekly:
@@ -305,60 +300,33 @@ async def get_report_articles(
         )
 
     store = ArtifactStore.from_settings(settings)
-    industries = _industries_in(store, parsed.text)
-    if not industries:
+    if not store.weekly_html_paths(parsed.text):
         raise _not_found(parsed.text)
-
-    target = industry if industry is not None else industries[0]
-    if target not in industries:
-        # ⚠️ 出していない業界版は 404（存在しない号を作って見せない）。
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={
-                "error": "industry_not_published",
-                "message": f"{parsed.text} に {target} 版はありません。",
-            },
-        )
 
     # ⚠️ **config を読むのは選別のため**だけ（返す項目には出さない。
     # モジュール docstring）。
     config = _load_config_for_selection(db, settings, parsed)
     narrative = _weekly_narrative(store, parsed)
-    selection = select_articles(
-        ReportStore(store).read_weekly(parsed.text), config, industry=target
-    )
+    selection = select_articles(ReportStore(store).read_weekly(parsed.text), config)
     labels = category_labels(config)
 
-    sections = [
-        ArticleSection(
-            heading=heading,
-            articles=[
-                _card(record, labels=labels, narrative=narrative) for record in records
-            ],
-        )
-        for heading, records in (
-            (
-                INDUSTRY_SECTION_FORMAT.format(industry=target),
-                selection.industry_topics,
-            ),
-            (COMMON_SECTION_HEADING, selection.common_topics),
-        )
-        if records
+    articles = [
+        _card(record, labels=labels, narrative=narrative) for record in selection.topics
     ]
 
     logger.info(
-        "report articles served (period=%s, industry=%s, sections=%d, articles=%d)",
+        "report articles served (period=%s, articles=%d)",
         parsed.text,
-        target,
-        len(sections),
-        sum(len(section.articles) for section in sections),
+        len(articles),
     )
     return ArticlesResponse(
         period=parsed.text,
-        industry=target,
-        industries=industries,
         point_of_week=narrative.point_of_week,
-        sections=sections,
+        point_of_week_points=[
+            PointOfWeekPoint(heading=heading, detail=detail)
+            for heading, detail in narrative.points
+        ],
+        articles=articles,
     )
 
 
@@ -381,17 +349,6 @@ def _load_config_for_selection(
     except ConfigNotFoundError as exc:
         logger.warning("config.json が無いので記事一覧を返せません: %s", exc)
         raise _not_found(period.text) from exc
-
-
-def _industries_in(store: ArtifactStore, period: str) -> list[str]:
-    """その period に HTML が出ている業界（月次は空）。"""
-    if not run_type_of(period) == RunType.WEEKLY:
-        return []
-    return [
-        industry
-        for path in store.weekly_html_paths(period)
-        if (industry := _industry_of(path.name)) is not None
-    ]
 
 
 def _weekly_narrative(store: ArtifactStore, period: Period) -> WeeklyNarrative:
@@ -460,8 +417,9 @@ async def get_report(
 
     if parsed.is_weekly:
         rows = reports.read_weekly(parsed.text)
+        # ⚠️ **週刊も要素は1件**（T-52 Step 1。`industry` は常に `None`）。
         htmls = [
-            ReportHtml(industry=_industry_of(path.name), url=file_url(path.name))
+            ReportHtml(industry=None, url=file_url(path.name))
             for path in store.weekly_html_paths(parsed.text)
         ]
         xlsx_name = store.weekly_report_path().name
@@ -511,20 +469,10 @@ def _parse(period: str) -> Period:
         ) from exc
 
 
-def _industry_of(filename: str) -> str | None:
-    """週刊 HTML の正規名から業界名を取り出す（一覧の表示用）。
-
-    ⚠️ 解析も生成も `WEEKLY_HTML_NAME`（T-02）の1つの書式から導かれる。
-    ここで正規表現を書き直さないこと。
-    """
-    fields = WEEKLY_HTML_NAME.parse(filename)
-    return fields["industry"] if fields else None
-
-
 __all__ = [
     "ArticleCard",
-    "ArticleSection",
     "ArticlesResponse",
+    "PointOfWeekPoint",
     "ReportHtml",
     "ReportListEntry",
     "ReportListResponse",

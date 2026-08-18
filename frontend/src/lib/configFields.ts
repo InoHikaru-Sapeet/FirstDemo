@@ -91,14 +91,11 @@ export const FIELD_GROUPS: FieldGroup[] = [
 		title: "週刊メルマガ",
 		fields: [
 			{
-				path: "tunable_thresholds.weekly.max_industry_topics",
-				label: "業界関連トピックの上限",
-				kind: "int"
-			},
-			{
-				path: "tunable_thresholds.weekly.max_common_topics",
-				label: "業界共通トピックの上限",
-				kind: "int"
+				// ⚠️ 業界関連／業界共通の2セクション構成を廃止して1本にした（T-52）。
+				path: "tunable_thresholds.weekly.max_topics",
+				label: "掲載記事数の上限",
+				kind: "int",
+				hint: "点数順に並べたうえで、この件数までを号に載せる。"
 			},
 			{
 				path: "tunable_thresholds.weekly.point_of_week_required",

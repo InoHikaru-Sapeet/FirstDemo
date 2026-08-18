@@ -34,18 +34,19 @@ const MONTHLY = "2026-07";
 
 const LIST = {
 	reports: [
-		{ period: WEEKLY, type: "weekly", industries: ["不動産", "金融"] },
-		{ period: MONTHLY, type: "monthly", industries: [] }
+		{ period: WEEKLY, type: "weekly" },
+		{ period: MONTHLY, type: "monthly" }
 	]
 };
 
 const WEEKLY_REPORT = {
 	period: WEEKLY,
 	type: "weekly",
+	// ⚠️ 週刊も1通・`industry` は `null`（T-52 Step 1 で業界版を廃止）。
 	html_urls: [
 		{
-			industry: "不動産",
-			url: `/files/weekly_ai_intelligence_newsletter_不動産_${WEEKLY}.html`
+			industry: null,
+			url: `/files/weekly_ai_intelligence_newsletter_${WEEKLY}.html`
 		}
 	],
 	xlsx_url: `/files/weekly_ai_intelligence_report.xlsx#sheet=${WEEKLY}`,
@@ -100,13 +101,13 @@ const METRICS_DIAGRAM = {
 
 const ARTICLES = {
 	period: WEEKLY,
-	industry: "不動産",
-	industries: ["不動産", "金融"],
 	point_of_week: "今週の総括。",
-	sections: [
-		{ heading: "不動産関連トピック", articles: [card(0), card(1)] },
-		{ heading: "業界共通トピック", articles: [card(2)] }
-	]
+	point_of_week_points: [
+		{ heading: "実務投入が相次いだ。", detail: "詳細の段落。" },
+		{ heading: "定型業務から広がっている。", detail: null }
+	],
+	// ⚠️ **点数順の1列**（T-52 Step 1。業界関連／業界共通の2セクションは廃止）。
+	articles: [card(0), card(1), card(2)]
 };
 
 /** 週刊が既定で開く状態の一式（記事まで揃った形）。 */
@@ -269,12 +270,7 @@ describe("ReportsPage 週刊の記事トグル", () => {
 
 	it("示唆が無い記事は要約だけを開く", async () => {
 		stubWeekly({
-			sections: [
-				{
-					heading: "不動産関連トピック",
-					articles: [card(0, { insight: null })]
-				}
-			]
+			articles: [card(0, { insight: null })]
 		});
 
 		renderWithProviders(<ReportsPage />);
@@ -289,18 +285,18 @@ describe("ReportsPage 週刊の記事トグル", () => {
 		expect(screen.queryByText("示唆0。")).not.toBeInTheDocument();
 	});
 
-	it("今週のポイントとセクション見出しを出す", async () => {
+	it("今週のポイントと1つの見出しを出す", async () => {
 		stubWeekly();
 
 		renderWithProviders(<ReportsPage />);
 
 		expect(await screen.findByText("今週の総括。")).toBeVisible();
+		// ⚠️ **セクションは1つ**（T-52 Step 1。業界関連／業界共通の廃止）。
 		expect(
-			screen.getByRole("heading", { name: "不動産関連トピック" })
+			screen.getByRole("heading", { name: "今週のトピック" })
 		).toBeVisible();
-		expect(
-			screen.getByRole("heading", { name: "業界共通トピック" })
-		).toBeVisible();
+		expect(screen.queryByText(/関連トピック/)).not.toBeInTheDocument();
+		expect(screen.queryByText(/業界共通/)).not.toBeInTheDocument();
 	});
 
 	it("⚠️ 合計スコアやしきい値を画面に出さない", async () => {
@@ -314,40 +310,31 @@ describe("ReportsPage 週刊の記事トグル", () => {
 		expect(screen.queryByText(/しきい値/)).not.toBeInTheDocument();
 	});
 
-	it("業界版を切り替えると、その版の記事を取り直す", async () => {
+	it("⚠️ 業界版の切り替えは無い（記事は業界を問わず1列）", async () => {
 		const { requests } = stubFetch({
 			"/api/auth/me": () => jsonResponse(ADMIN),
 			"/api/reports": () => jsonResponse(LIST),
 			[`/api/reports/${WEEKLY}`]: () => jsonResponse(WEEKLY_REPORT),
-			[`/api/reports/${WEEKLY}/articles`]: () => jsonResponse(ARTICLES),
-			[`/api/reports/${WEEKLY}/articles?industry=%E9%87%91%E8%9E%8D`]: () =>
-				jsonResponse({
-					...ARTICLES,
-					industry: "金融",
-					sections: [{ heading: "業界共通トピック", articles: [card(9)] }]
-				})
+			[`/api/reports/${WEEKLY}/articles`]: () => jsonResponse(ARTICLES)
 		});
 
 		renderWithProviders(<ReportsPage />);
 
-		fireEvent.click(await screen.findByRole("button", { name: "金融 版" }));
-
-		expect(await screen.findByText("記事9")).toBeVisible();
+		await screen.findByText("記事0");
+		// 業界チップも `industry` クエリも無い（T-52 Step 1）。
+		expect(
+			screen.queryByRole("button", { name: /版$/ })
+		).not.toBeInTheDocument();
 		await waitFor(() => {
 			expect(
 				requests.some((request) => request.url.includes("industry="))
-			).toBe(true);
+			).toBe(false);
 		});
 	});
 
 	it("記事の URL が使えない場合はリンクにしない", async () => {
 		stubWeekly({
-			sections: [
-				{
-					heading: "不動産関連トピック",
-					articles: [card(0, { url: null, title: "リンク無しの記事" })]
-				}
-			]
+			articles: [card(0, { url: null, title: "リンク無しの記事" })]
 		});
 
 		renderWithProviders(<ReportsPage />);
@@ -362,12 +349,7 @@ describe("ReportsPage 週刊の記事トグル", () => {
 
 	it("⚠️ 記事タイトルはプレーン見出しでリンクにしない", async () => {
 		stubWeekly({
-			sections: [
-				{
-					heading: "不動産関連トピック",
-					articles: [card(0, { title: "見出し" })]
-				}
-			]
+			articles: [card(0, { title: "見出し" })]
 		});
 
 		renderWithProviders(<ReportsPage />);
@@ -382,16 +364,11 @@ describe("ReportsPage 週刊の記事トグル", () => {
 
 	it("記事へのリンクは出典行に置く（出典：〈ソース〉（記事を読む））", async () => {
 		stubWeekly({
-			sections: [
-				{
-					heading: "不動産関連トピック",
-					articles: [
-						card(0, {
-							source: "日経クロステック",
-							url: "https://example.com/42"
-						})
-					]
-				}
+			articles: [
+				card(0, {
+					source: "日経クロステック",
+					url: "https://example.com/42"
+				})
 			]
 		});
 
@@ -408,12 +385,7 @@ describe("ReportsPage 週刊の記事トグル", () => {
 
 	it("図解はトグルを開いたときだけ出る", async () => {
 		stubWeekly({
-			sections: [
-				{
-					heading: "不動産関連トピック",
-					articles: [card(0, { diagram: FLOW_DIAGRAM })]
-				}
-			]
+			articles: [card(0, { diagram: FLOW_DIAGRAM })]
 		});
 
 		renderWithProviders(<ReportsPage />);
@@ -429,12 +401,7 @@ describe("ReportsPage 週刊の記事トグル", () => {
 
 	it("flow は3〜5ステップを順に出す", async () => {
 		stubWeekly({
-			sections: [
-				{
-					heading: "不動産関連トピック",
-					articles: [card(0, { diagram: FLOW_DIAGRAM })]
-				}
-			]
+			articles: [card(0, { diagram: FLOW_DIAGRAM })]
 		});
 
 		renderWithProviders(<ReportsPage />);
@@ -449,12 +416,7 @@ describe("ReportsPage 週刊の記事トグル", () => {
 
 	it("compare は左右の見出しと要点を出す", async () => {
 		stubWeekly({
-			sections: [
-				{
-					heading: "不動産関連トピック",
-					articles: [card(0, { diagram: COMPARE_DIAGRAM })]
-				}
-			]
+			articles: [card(0, { diagram: COMPARE_DIAGRAM })]
 		});
 
 		renderWithProviders(<ReportsPage />);
@@ -470,12 +432,7 @@ describe("ReportsPage 週刊の記事トグル", () => {
 
 	it("metrics は値とラベルを対で出す", async () => {
 		stubWeekly({
-			sections: [
-				{
-					heading: "不動産関連トピック",
-					articles: [card(0, { diagram: METRICS_DIAGRAM })]
-				}
-			]
+			articles: [card(0, { diagram: METRICS_DIAGRAM })]
 		});
 
 		renderWithProviders(<ReportsPage />);
@@ -504,14 +461,7 @@ describe("ReportsPage 週刊の記事トグル", () => {
 
 	it("要約も示唆も無くても、図解があればトグルを出す", async () => {
 		stubWeekly({
-			sections: [
-				{
-					heading: "不動産関連トピック",
-					articles: [
-						card(0, { summary: "", insight: null, diagram: FLOW_DIAGRAM })
-					]
-				}
-			]
+			articles: [card(0, { summary: "", insight: null, diagram: FLOW_DIAGRAM })]
 		});
 
 		renderWithProviders(<ReportsPage />);
@@ -524,12 +474,7 @@ describe("ReportsPage 週刊の記事トグル", () => {
 
 	it("URL が使えない記事では出典行の括弧ごと出さない", async () => {
 		stubWeekly({
-			sections: [
-				{
-					heading: "不動産関連トピック",
-					articles: [card(0, { url: null, source: "個人ブログ" })]
-				}
-			]
+			articles: [card(0, { url: null, source: "個人ブログ" })]
 		});
 
 		renderWithProviders(<ReportsPage />);
@@ -548,7 +493,7 @@ describe("ReportsPage 生成物へのリンク", () => {
 		renderWithProviders(<ReportsPage />);
 
 		const html = await screen.findByRole("link", {
-			name: "メール版 HTML を開く（不動産 版）"
+			name: "メール版 HTML を開く"
 		});
 		expect(html).toHaveAttribute(
 			"href",

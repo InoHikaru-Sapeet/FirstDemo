@@ -218,9 +218,7 @@ async def test_the_audit_log_records_the_diff_against_the_previous_revision(
     """
     hand_edit(
         repo,
-        lambda data: data["tunable_thresholds"]["weekly"].__setitem__(
-            "max_common_topics", 3
-        ),
+        lambda data: data["tunable_thresholds"]["weekly"].__setitem__("max_topics", 3),
     )
 
     await run(repo, usecase, apply=True, out=out)
@@ -232,7 +230,7 @@ async def test_the_audit_log_records_the_diff_against_the_previous_revision(
     assert logs[0].revision == 2
     assert logs[0].target == CONFIG_FILENAME
     assert logs[0].diff == {
-        "tunable_thresholds.weekly.max_common_topics": {"before": 6, "after": 3}
+        "tunable_thresholds.weekly.max_topics": {"before": 12, "after": 3}
     }
 
 

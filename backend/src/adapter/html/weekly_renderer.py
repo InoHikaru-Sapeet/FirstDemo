@@ -12,11 +12,10 @@
 
 | HTML | 中間xlsx / config |
 |---|---|
-| ヘッダ「〈業界〉版」 | 描画する業界（`config.target_industries` のどれか） |
+| ヘッダ | ブランド名（**業界名は入らない**＝T-52） |
 | ヘッダ「対象週」 | シート名（`YYYY-Www`） |
 | 今週のポイント | （生成テキスト → `WeeklyNarrative`） |
-| 業界関連トピック | 列19「業界」に**その業界**を含む記事 |
-| 業界共通トピック | それ以外（「業界横断」等） |
+| 今週のトピック | 採用記事を**合計スコア降順に1列**（上限 `weekly.max_topics`） |
 | ├ カテゴリラベル | 列2「情報カテゴリ」→ §7.2 の色 ＋ config のラベル |
 | ├ タイトル | 列3「タイトル」＋列22「URL」 |
 | ├ 本文要約 | 列4「一言要約」 |
@@ -24,6 +23,22 @@
 | └ 出典行 | 列21「ソース」＋列22「URL」 |
 | 並び順 | 列5「合計スコア」降順 |
 | 採用条件 | 列12 `≠ 不採用` かつ 列5 `≥ min_total_score_to_publish` |
+
+⚠️ **合計スコアそのものは描かない**（順序を決めるためだけに読む）。点数は
+中間xlsx（列5）に残り、読み手には出さない。
+
+---
+
+**⚠️ 業界版の廃止（2026-08-18 の T-52 Step 1）**
+
+週刊は**業界を問わない週次ダイジェスト1本**になった。この層から消えたのは3つ:
+
+1. **どの業界版か**（`resolve_industry()`・ヘッダの「〈業界〉版」・正規名の業界）
+2. **業界振り分け**（列19「業界」で業界関連／業界共通に分けていた＝§9.2-3・§9.2-4）
+3. **2つの上限**（`max_industry_topics` / `max_common_topics` → **`max_topics` 1本**）
+
+⚠️ **列19「業界」を読まなくなっただけで、xlsx の22列は変えていない**（§8.1 の
+確定値）。業界タグは月刊の閲覧ページ（T-52 Step 2）が使う。
 
 ---
 
@@ -66,6 +81,9 @@
 filter が作ったまま全件持っており、**この層が描画時に間引いているだけ**（Web の
 閲覧ページ＝T-36 は全件をトグルで開ける）。
 
+⚠️ **示唆をフルで出すのは先頭の1件**（`INSIGHTS_PER_SECTION`）。セクションが1つに
+なったので「各セクションの先頭」＝「号の先頭」の1件になった（T-52 Step 1）。
+
 ---
 
 **⚠️ 見出しとリンクの分離（2026-08-18 の T-50）**
@@ -84,13 +102,13 @@ filter が作ったまま全件持っており、**この層が描画時に間�
 
 ---
 
-**⚠️ 週刊のメール版に図解は出さない**（2026-08-18 の T-49）
+**⚠️ 週刊の HTML に図解・今週のポイントの詳細は出さない**（T-49 ／ T-52）
 
-filter 段の AI は**週刊でも記事ごとに図解を申告する**（`WeeklyNarrative.
-diagrams`）が、**この層は描かない**。1通あたりの縦を伸ばすと T-48 Step 1 の
-圧縮（1行要約・示唆はセクション先頭1件）が無意味になるため。図解を読めるのは
-**Web の閲覧ページ（T-36）のトグル展開内だけ**——示唆の間引きと同じ扱いで、
-`narrative_{period}.json` には全件残る。
+filter 段の AI は**週刊でも記事ごとに図解を申告し**（`WeeklyNarrative.diagrams`）、
+**今週のポイントの項目ごとに詳細1段落を書く**（`WeeklyNarrative.points`）が、
+**この層はどちらも描かない**。縦を伸ばすと T-48 Step 1 の圧縮（1行要約・示唆は
+先頭1件）が無意味になるため。読めるのは**閲覧ページ（T-36）の展開内だけ**——
+示唆の間引きと同じ扱いで、`narrative_{period}.json` には全件残る。
 """
 
 import logging
@@ -106,7 +124,6 @@ from enterprise.entities.config import IntelligenceConfig
 from enterprise.entities.diagram import Diagram
 from enterprise.entities.period import Period, PeriodError, parse_period
 from enterprise.entities.report_columns import (
-    MULTI_VALUE_SEPARATOR,
     WEEKLY_ARTICLE_COLUMNS_BY_NAME,
 )
 from enterprise.services.exclusion import ADOPTION_CLASS_DESCENDING
@@ -120,7 +137,6 @@ COLUMN_TITLE = "タイトル"
 COLUMN_SUMMARY = "一言要約"
 COLUMN_TOTAL_SCORE = "合計スコア"
 COLUMN_ADOPTION_CLASS = "レポート採用区分"
-COLUMN_INDUSTRY = "業界"
 COLUMN_SOURCE = "ソース"
 COLUMN_URL = "URL"
 
@@ -130,7 +146,6 @@ REFERENCED_COLUMNS: tuple[str, ...] = (
     COLUMN_SUMMARY,
     COLUMN_TOTAL_SCORE,
     COLUMN_ADOPTION_CLASS,
-    COLUMN_INDUSTRY,
     COLUMN_SOURCE,
     COLUMN_URL,
 )
@@ -142,16 +157,17 @@ NOT_ADOPTED = ADOPTION_CLASS_DESCENDING[-1]
 # --- 確定文言（仕様書 §9.2。逐語）--------------------------------------------
 
 BRAND_TITLE = "Weekly AI Intelligence by Sapeet"
-INDUSTRY_BADGE_FORMAT = "{industry} 版"
 PERIOD_LABEL_FORMAT = "対象週：{period}"
 POINT_OF_WEEK_HEADING = "今週のポイント"
-INDUSTRY_SECTION_FORMAT = "{industry}関連トピック"
-COMMON_SECTION_HEADING = "業界共通トピック"
+TOPICS_SECTION_HEADING = "今週のトピック"
+"""⚠️ **§9.2-3・§9.2-4 の2セクション（業界関連／業界共通）を置き換えた見出し**
+（T-52 Step 1。業界で分けなくなったので「関連／共通」という対比が成り立たない）。
+→ §9.2 の改訂は T-38。"""
 SOURCE_LINE_FORMAT = "出典：{source}"
 READ_MORE_LABEL = "記事を読む"
 SOURCE_LINK_WRAPPER = "（{link}）"
 """出典行に続く記事リンクの囲み（T-50）。**リンクにできない URL では出さない。**"""
-DOCUMENT_TITLE_FORMAT = "{brand}｜{badge}（{period}）"
+DOCUMENT_TITLE_FORMAT = "{brand}（{period}）"
 
 # --- 圧縮の確定値（T-48 Step 1）-----------------------------------------------
 
@@ -162,7 +178,11 @@ ELLIPSIS = "…"
 """切り詰めた要約の末尾（1文字。三点リーダ）。"""
 
 INSIGHTS_PER_SECTION = 1
-"""示唆ボックスをフル表示するカード数（**各セクションの先頭から**）。"""
+"""示唆ボックスをフル表示するカード数（**先頭から**）。
+
+⚠️ セクションが1つになったので（T-52 Step 1）、「各セクションの先頭1件」は
+**号の先頭1件**になった。名前は T-48 Step 1 のまま（値の意味は変わっていない）。
+"""
 
 # --- 見出しの体裁（T-50）------------------------------------------------------
 
@@ -273,72 +293,35 @@ class WeeklyNarrative:
         return "" if url is None else str(url).strip()
 
 
-# --- 描画する業界（§9.2-1・§9.2-3）-------------------------------------------
-
-
-def resolve_industry(config: IntelligenceConfig, industry: str | None = None) -> str:
-    """この HTML が「どの業界版」かを1つ決める（T-46 Step 3）。
-
-    週刊は**業界ごとに1通**（`weekly_..._{industry}_{period}.html`）なので、
-    1回の描画で扱う業界は必ず1つ。config が複数業界を持つときに**どれを描くか
-    決めるのは呼び出し側**（業界数ぶん回すのは run_pipeline / T-26 の仕事）。
-
-    Args:
-        config: 実行時 config（固定参照済み）
-        industry: 描画する業界。`None` なら config の**先頭**
-
-    Returns:
-        描画する業界名
-
-    Raises:
-        WeeklyRenderError: config の対象業界に無い業界を指定された場合
-            （誰も選んでいない業界版を出さない）
-    """
-    industries = config.tunable_thresholds.industries
-    if industry is None:
-        if len(industries) > 1:
-            # ⚠️ 黙って先頭だけを描かない（残りの業界版が出ていないことに
-            # 気づけるように）。業界数ぶん回すのは呼び出し側の責務。
-            logger.warning(
-                "対象業界が %d 件ありますが、業界の指定が無いので先頭（%s）だけを"
-                "描画します: %s",
-                len(industries),
-                industries[0],
-                " / ".join(industries),
-            )
-        return industries[0]
-
-    if industry not in industries:
-        raise WeeklyRenderError(
-            f"config の対象業界に無い業界です: {industry!r}"
-            f"（対象業界: {' / '.join(industries)}）"
-        )
-    return industry
-
-
-# --- 採用条件と業界振り分け（§9.3）-------------------------------------------
+# --- 採用条件と掲載件数（§9.3）-----------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class WeeklySelection:
     """当週シートから何をカードにするか決めた結果。
 
+    ⚠️ **業界振り分けは廃止**（T-52 Step 1）。2セクション（業界関連／業界共通）を
+    やめて**点数順の1列**にしたので、持つのも1本。
+
     Attributes:
-        industry_topics: 業界関連トピック（上限適用後・合計スコア降順）
-        common_topics: 業界共通トピック（同上）
+        topics: 掲載するカード（合計スコア降順・上限 `weekly.max_topics` 適用後）
         adopted: 採用条件を通った件数（**上限を適用する前**）
         untitled: タイトルが空で落とした件数（T-07 申し送りのガード）
     """
 
-    industry_topics: tuple[Mapping[str, Any], ...]
-    common_topics: tuple[Mapping[str, Any], ...]
+    topics: tuple[Mapping[str, Any], ...]
     adopted: int
     untitled: int
 
     @property
     def rendered(self) -> int:
         """実際にカードにした件数。"""
-        return len(self.industry_topics) + len(self.common_topics)
+        return len(self.topics)
+
+    @property
+    def held_back(self) -> int:
+        """採用条件は通ったが上限で載らなかった件数（**黙って落とさない**ため）。"""
+        return max(0, self.adopted - self.untitled - len(self.topics))
 
 
 def is_adopted(record: Mapping[str, Any], config: IntelligenceConfig) -> bool:
@@ -355,7 +338,11 @@ def is_adopted(record: Mapping[str, Any], config: IntelligenceConfig) -> bool:
 
 
 def total_score_of(record: Mapping[str, Any]) -> int:
-    """列5「合計スコア」。読めない値は 0（採用条件で落ちる）。"""
+    """列5「合計スコア」。読めない値は 0（採用条件で落ちる）。
+
+    ⚠️ **並び順を決めるためだけに読む**。点数そのものは HTML に出さない
+    （T-52 Step 1。読み手に見せるのは順序だけで、値は中間xlsx に残る）。
+    """
     value = record.get(COLUMN_TOTAL_SCORE)
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return 0
@@ -366,39 +353,21 @@ def total_score_of(record: Mapping[str, Any]) -> int:
         return 0
 
 
-def industries_of(record: Mapping[str, Any]) -> tuple[str, ...]:
-    """列19「業界」（multi）。リーダは `list[str]` を返すが、文字列でも受ける。"""
-    value = record.get(COLUMN_INDUSTRY)
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        parts = value.split(MULTI_VALUE_SEPARATOR)
-    elif isinstance(value, Sequence):
-        parts = [str(part) for part in value]
-    else:
-        parts = [str(value)]
-    return tuple(part.strip() for part in parts if part.strip())
-
-
 def select_articles(
-    articles: Sequence[Mapping[str, Any]],
-    config: IntelligenceConfig,
-    *,
-    industry: str | None = None,
+    articles: Sequence[Mapping[str, Any]], config: IntelligenceConfig
 ) -> WeeklySelection:
-    """採用条件・業界振り分け・上限・並び順を決める（§9.3・§7.3）。
+    """採用条件・上限・並び順を決める（§9.3・§7.3）。
+
+    ⚠️ **業界の引数は無くなった**（T-52 Step 1）。列19「業界」も読まない。
 
     Args:
         articles: 当週シートの行（列名 → 値）
         config: 実行時 config（固定参照済み）
-        industry: どの業界版として振り分けるか。`None` なら `resolve_industry()`
-            が config から決める
 
     Returns:
-        業界関連／業界共通に振り分けた結果
+        点数順に並べ、上限まで切った掲載記事
     """
     weekly = config.tunable_thresholds.weekly
-    target = resolve_industry(config, industry)
 
     adopted = [record for record in articles if is_adopted(record, config)]
     untitled = 0
@@ -407,8 +376,7 @@ def select_articles(
     # 依存させない。同点は渡された順のまま（安定ソート）。
     adopted.sort(key=total_score_of, reverse=True)
 
-    industry_topics: list[Mapping[str, Any]] = []
-    common_topics: list[Mapping[str, Any]] = []
+    topics: list[Mapping[str, Any]] = []
     for record in adopted:
         title = str(record.get(COLUMN_TITLE) or "").strip()
         if not title:
@@ -419,14 +387,10 @@ def select_articles(
                 record.get(COLUMN_URL),
             )
             continue
-        if target in industries_of(record):
-            industry_topics.append(record)
-        else:
-            common_topics.append(record)
+        topics.append(record)
 
     return WeeklySelection(
-        industry_topics=tuple(industry_topics[: weekly.max_industry_topics]),
-        common_topics=tuple(common_topics[: weekly.max_common_topics]),
+        topics=tuple(topics[: weekly.max_topics]),
         adopted=len(adopted),
         untitled=untitled,
     )
@@ -457,8 +421,11 @@ def category_labels(config: IntelligenceConfig) -> dict[str, str]:
     return {category.id: category.label for category in config.information_categories}
 
 
-def _header(*, industry: str, period: str) -> str:
-    """§9.2-1 ヘッダ（グラデ背景）。"""
+def _header(*, period: str) -> str:
+    """§9.2-1 ヘッダ（グラデ背景）。
+
+    ⚠️ **「〈業界〉版」の行は無くなった**（T-52 Step 1。業界版の廃止）。
+    """
     return m.row(
         [
             m.cell(
@@ -477,19 +444,9 @@ def _header(*, industry: str, period: str) -> str:
                         ),
                         m.element(
                             "p",
-                            m.escape(INDUSTRY_BADGE_FORMAT.format(industry=industry)),
-                            style=m.styles(
-                                "margin:10px 0 0 0",
-                                "font-size:14px",
-                                "font-weight:bold",
-                                "color:#e0e7ff",
-                            ),
-                        ),
-                        m.element(
-                            "p",
                             m.escape(PERIOD_LABEL_FORMAT.format(period=period)),
                             style=m.styles(
-                                "margin:6px 0 0 0",
+                                "margin:10px 0 0 0",
                                 "font-size:12px",
                                 "color:#c7d2fe",
                             ),
@@ -727,7 +684,6 @@ def render_weekly_html(
     articles: Sequence[Mapping[str, Any]],
     config: IntelligenceConfig,
     narrative: WeeklyNarrative | None = None,
-    industry: str | None = None,
 ) -> str:
     """当週シートから週刊メルマガ HTML を組み立てる（**AI を呼ばない**）。
 
@@ -736,7 +692,6 @@ def render_weekly_html(
         articles: 当週シートの行（列名 → 値。T-22 の `read_weekly()`）
         config: 実行時 config（固定参照済み）
         narrative: 生成テキスト。`None` なら空（生成テキスト無しで描画）
-        industry: **どの業界版か**（`None` なら config の先頭。`resolve_industry()`）
 
     Returns:
         HTML 文字列（UTF-8 で書き出す前提）
@@ -746,11 +701,7 @@ def render_weekly_html(
             なのに今週のポイントが空／生成物が §7.1 の制約に反する
     """
     markup, _ = _render(
-        period=period,
-        articles=articles,
-        config=config,
-        narrative=narrative,
-        industry=industry,
+        period=period, articles=articles, config=config, narrative=narrative
     )
     return markup
 
@@ -761,13 +712,11 @@ def _render(
     articles: Sequence[Mapping[str, Any]],
     config: IntelligenceConfig,
     narrative: WeeklyNarrative | None,
-    industry: str | None,
 ) -> tuple[str, WeeklySelection]:
     """組み立て本体。**選別を2度走らせない**ため書き出し側もこれを使う。"""
     parsed = _parse_weekly(period)
     narrative = narrative or WeeklyNarrative()
     weekly = config.tunable_thresholds.weekly
-    industry = resolve_industry(config, industry)
 
     point_of_week = (narrative.point_of_week or "").strip()
     if weekly.point_of_week_required and not point_of_week:
@@ -776,7 +725,7 @@ def _render(
             "生成テキストは filter 側が作って `WeeklyNarrative` で渡してください"
         )
 
-    selection = select_articles(articles, config, industry=industry)
+    selection = select_articles(articles, config)
     if selection.rendered == 0:
         logger.warning(
             "カードになる記事がありません（period=%s・採用 %d 件）",
@@ -785,40 +734,35 @@ def _render(
         )
 
     labels = category_labels(config)
-    rows: list[str] = [_header(industry=industry, period=parsed.text)]
+    rows: list[str] = [_header(period=parsed.text)]
     if point_of_week:
         rows.append(_point_of_week(point_of_week))
 
     shown_insights = 0
     held_insights = 0
-    for heading, records in (
-        (INDUSTRY_SECTION_FORMAT.format(industry=industry), selection.industry_topics),
-        (COMMON_SECTION_HEADING, selection.common_topics),
-    ):
-        if not records:
-            continue
-        rows.append(_section_heading(heading))
-        for index, record in enumerate(records):
-            # 示唆ボックスは**セクション先頭の1件だけ**（T-48 Step 1）。
-            show_insight = index < INSIGHTS_PER_SECTION
-            if narrative.insight_for(record.get(COLUMN_URL)):
-                if show_insight:
-                    shown_insights += 1
-                else:
-                    held_insights += 1
-            rows.append(
-                _card(
-                    record,
-                    labels=labels,
-                    narrative=narrative,
-                    show_insight=show_insight,
-                )
+    if selection.topics:
+        # ⚠️ **セクションは1つ**（T-52 Step 1。業界振り分けの廃止）。
+        rows.append(_section_heading(TOPICS_SECTION_HEADING))
+    for index, record in enumerate(selection.topics):
+        # 示唆ボックスは**先頭の1件だけ**（T-48 Step 1）。
+        show_insight = index < INSIGHTS_PER_SECTION
+        if narrative.insight_for(record.get(COLUMN_URL)):
+            if show_insight:
+                shown_insights += 1
+            else:
+                held_insights += 1
+        rows.append(
+            _card(
+                record,
+                labels=labels,
+                narrative=narrative,
+                show_insight=show_insight,
             )
+        )
 
     rows.append(m.spacer_row("26px"))
     rows.append(_footer())
 
-    badge = INDUSTRY_BADGE_FORMAT.format(industry=industry)
     inner = m.table(
         rows,
         style=m.styles(
@@ -842,23 +786,21 @@ def _render(
         style=f"background-color:{PAGE_BACKGROUND}",
     )
     markup = m.document(
-        title=DOCUMENT_TITLE_FORMAT.format(
-            brand=BRAND_TITLE, badge=badge, period=parsed.text
-        ),
+        title=DOCUMENT_TITLE_FORMAT.format(brand=BRAND_TITLE, period=parsed.text),
         body=outer,
         background=PAGE_BACKGROUND,
     )
 
     logger.info(
-        "weekly html rendered (period=%s, industry=%s, industry_topics=%d,"
-        " common_topics=%d, adopted=%d, untitled=%d, insights_shown=%d,"
-        " insights_held=%d)",
+        "weekly html rendered (period=%s, topics=%d, adopted=%d, untitled=%d,"
+        " held_back=%d, insights_shown=%d, insights_held=%d)",
         parsed.text,
-        industry,
-        len(selection.industry_topics),
-        len(selection.common_topics),
+        len(selection.topics),
         selection.adopted,
         selection.untitled,
+        # ⚠️ **上限で載らなかった件数**（T-52 Step 1）。2セクションぶんの上限を
+        # 1本にまとめたので、絞りが効いていることをログから読めるようにする。
+        selection.held_back,
         shown_insights,
         # ⚠️ **生成されているのに出していない示唆の件数**（T-48 Step 1）。
         # 黙って間引くと「示唆が生成されていない」と読まれるので残す。
@@ -914,7 +856,6 @@ class WeeklyRenderer:
         articles=ReportStore(store).read_weekly("2026-W31"),
         config=pinned_config,
         narrative=narrative,
-        industry="不動産",          # ← 対象業界が複数なら業界ごとに1回ずつ
         revision=pinned_config.meta.revision,
         run_id=run_id,
     )
@@ -934,32 +875,25 @@ class WeeklyRenderer:
         articles: Sequence[Mapping[str, Any]],
         config: IntelligenceConfig,
         narrative: WeeklyNarrative | None = None,
-        industry: str | None = None,
         revision: int,
         run_id: str,
     ) -> RenderedHtml:
-        """組み立てて `weekly_ai_intelligence_newsletter_{industry}_{period}.html` へ。
+        """組み立てて `weekly_ai_intelligence_newsletter_{period}.html` へ。
 
-        ⚠️ **1回の呼び出しで書くのは1業界ぶん**（正規名に業界が入る）。対象業界が
-        複数ある config では**業界ごとに呼ぶ**（回すのは呼び出し側＝run_pipeline /
-        T-26。`resolve_industry()`）。
+        ⚠️ **1つの週につき1通**（T-52 Step 1。業界版を廃止したので正規名から
+        業界が消え、呼び出し側の業界ループも無くなった）。
 
         ⚠️ **退避が先**（設計判断B。T-22 の `_save()` と同じ順序）。上書き後に
         退避すると、退避されるのは新しい内容になる。
 
         Raises:
-            WeeklyRenderError: 組み立てられない入力／config に無い業界の指定
-            ArtifactStoreError: industry / period をファイル名へ埋め込めない
+            WeeklyRenderError: 組み立てられない入力
+            ArtifactStoreError: period をファイル名へ埋め込めない
         """
-        industry = resolve_industry(config, industry)
         markup, selection = _render(
-            period=period,
-            articles=articles,
-            config=config,
-            narrative=narrative,
-            industry=industry,
+            period=period, articles=articles, config=config, narrative=narrative
         )
-        path = self._store.weekly_html_path(industry, period)
+        path = self._store.weekly_html_path(period)
         archived = self._store.archive(
             path, period=period, revision=revision, run_id=run_id
         )
@@ -975,10 +909,8 @@ __all__ = [
     "BADGE_TEXT",
     "BRAND_TITLE",
     "CARD_TITLE_FONT_SIZE",
-    "COMMON_SECTION_HEADING",
     "ELLIPSIS",
     "FOOTER_NOTE",
-    "INDUSTRY_SECTION_FORMAT",
     "INSIGHTS_PER_SECTION",
     "NOT_ADOPTED",
     "POINT_OF_WEEK_HEADING",
@@ -987,15 +919,14 @@ __all__ = [
     "SOURCE_LINE_FORMAT",
     "SOURCE_LINK_WRAPPER",
     "SUMMARY_MAX_FULLWIDTH_CHARS",
+    "TOPICS_SECTION_HEADING",
     "RenderedHtml",
     "WeeklyNarrative",
     "WeeklyRenderError",
     "WeeklyRenderer",
     "WeeklySelection",
     "category_labels",
-    "industries_of",
     "one_line_summary",
-    "resolve_industry",
     "is_adopted",
     "render_weekly_html",
     "select_articles",

@@ -639,14 +639,9 @@
       "additionalProperties": false,
       "description": "週刊（週次ダイジェスト）の可変パラメータ（仕様書 §7.2）。\n\n⚠️ **対象業界（`target_industries`）はここには無い**（2026-08-18 の T-52）。\n週刊は業界版を廃止して**業界を問わない週次ダイジェスト1本**になったので、\n対象業界は週刊のパラメータではなくなった（置き場は\n`TunableThresholds.target_industries`）。",
       "properties": {
-        "max_industry_topics": {
+        "max_topics": {
           "minimum": 0,
-          "title": "Max Industry Topics",
-          "type": "integer"
-        },
-        "max_common_topics": {
-          "minimum": 0,
-          "title": "Max Common Topics",
+          "title": "Max Topics",
           "type": "integer"
         },
         "point_of_week_required": {
@@ -655,8 +650,7 @@
         }
       },
       "required": [
-        "max_industry_topics",
-        "max_common_topics",
+        "max_topics",
         "point_of_week_required"
       ],
       "title": "WeeklyThresholds",

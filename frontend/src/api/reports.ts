@@ -7,15 +7,19 @@
  *
  * ---
  *
- * ⚠️ **メール版 HTML と Web 版で「同じ号」を指していること。**
+ * ⚠️ **生成 HTML と Web 版で「同じ号」を指していること。**
  *
- * `GET /reports/{period}/articles` はメール版と**同じ選別**（`select_articles()`）を
+ * `GET /reports/{period}/articles` は HTML と**同じ選別**（`select_articles()`）を
  * 通した結果を返す。フロントで並べ替えたり件数を絞ったりしないこと——そうすると
- * 「メールに載っていない記事が Web にある」状態になり、どちらが号の内容なのかが
- * 決まらなくなる。
+ * 「HTML に載っていない記事が Web にある」状態になり、どちらが号の内容なのかが
+ * 決まらなくなる（**表示の件数を段階的に増やすのは可**＝T-52 Step 2 の「続きを見る」。
+ * 順序と集合は変えない）。
  *
- * ⚠️ **示唆はメール版より多く返る**（メール版はセクション先頭1件だけ＝T-48 Step 1）。
+ * ⚠️ **示唆は HTML より多く返る**（HTML は先頭1件だけ＝T-48 Step 1）。
  * 全件をトグルで開けるのが Web 版の役割。
+ *
+ * ⚠️ **業界版は廃止**（T-52 Step 1）。`industry` / `industries` / `sections` は
+ * 無くなり、記事は `articles` の1列で返る。
  */
 
 import { z } from "zod";
@@ -25,11 +29,10 @@ import { API_BASE_PATH, apiJson } from "@/api/client";
 export const runTypeSchema = z.enum(["weekly", "monthly"]);
 export type RunType = z.infer<typeof runTypeSchema>;
 
-/** `ReportListEntry`。`industries` は**出ている HTML のぶんだけ**（月刊は空）。 */
+/** `ReportListEntry`。⚠️ `industries` は廃止（T-52 Step 1。業界版が無い）。 */
 export const reportListEntrySchema = z.object({
 	period: z.string(),
-	type: runTypeSchema,
-	industries: z.array(z.string())
+	type: runTypeSchema
 });
 export type ReportListEntry = z.infer<typeof reportListEntrySchema>;
 
@@ -37,7 +40,7 @@ export const reportListSchema = z.object({
 	reports: z.array(reportListEntrySchema)
 });
 
-/** `ReportHtml`。`industry` は月刊で `null`（業界別ではない）。 */
+/** `ReportHtml`。⚠️ `industry` は**常に `null`**（T-52 Step 1 で業界版を廃止）。 */
 export const reportHtmlSchema = z.object({
 	industry: z.string().nullable(),
 	url: z.string()
@@ -103,18 +106,23 @@ export const articleCardSchema = z.object({
 });
 export type ArticleCard = z.infer<typeof articleCardSchema>;
 
-export const articleSectionSchema = z.object({
+/**
+ * 今週のポイント1項目（T-52 Step 1）。
+ *
+ * 箇条書きの1行になる `heading` と、開いたときに出る `detail`。⚠️ **詳細が無い
+ * 項目もある**（`null`）——そのときは開く口を出さない。
+ */
+export const pointOfWeekPointSchema = z.object({
 	heading: z.string(),
-	articles: z.array(articleCardSchema)
+	detail: z.string().nullable()
 });
-export type ArticleSection = z.infer<typeof articleSectionSchema>;
+export type PointOfWeekPoint = z.infer<typeof pointOfWeekPointSchema>;
 
 export const articlesSchema = z.object({
 	period: z.string(),
-	industry: z.string(),
-	industries: z.array(z.string()),
 	point_of_week: z.string().nullable(),
-	sections: z.array(articleSectionSchema)
+	point_of_week_points: z.array(pointOfWeekPointSchema),
+	articles: z.array(articleCardSchema)
 });
 export type Articles = z.infer<typeof articlesSchema>;
 
@@ -129,19 +137,10 @@ export async function fetchReport(period: string): Promise<Report> {
 	return apiJson(`/reports/${encodeURIComponent(period)}`, reportSchema);
 }
 
-/**
- * `GET /reports/{period}/articles`。**週刊のみ**（月刊は 404）。
- *
- * @param industry 省略するとその週の先頭の業界版
- */
-export async function fetchArticles(
-	period: string,
-	industry?: string
-): Promise<Articles> {
-	const query =
-		industry === undefined ? "" : `?industry=${encodeURIComponent(industry)}`;
+/** `GET /reports/{period}/articles`。**週刊のみ**（月刊は 404）。 */
+export async function fetchArticles(period: string): Promise<Articles> {
 	return apiJson(
-		`/reports/${encodeURIComponent(period)}/articles${query}`,
+		`/reports/${encodeURIComponent(period)}/articles`,
 		articlesSchema
 	);
 }

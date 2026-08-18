@@ -270,8 +270,9 @@ SPEC_TUNABLE_THRESHOLDS: dict[str, Any] = {
     # 業界版を廃止したので週刊のパラメータではない）。→ §5.2 の改訂は T-38。
     "target_industries": ["不動産"],
     "weekly": {
-        "max_industry_topics": 5,
-        "max_common_topics": 6,
+        # ⚠️ §5.2 は `max_industry_topics`(5) と `max_common_topics`(6) の2本。
+        # 2セクション構成の廃止に伴い1本へ統合した（T-52 Step 1）。→ T-38。
+        "max_topics": 12,
         "point_of_week_required": True,
     },
     "monthly": {

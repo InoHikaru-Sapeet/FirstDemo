@@ -153,8 +153,9 @@ def test_confirmed_initial_thresholds(raw: dict[str, Any]) -> None:
     assert tunable.target_industries == ["不動産"]
     # 参照側（月次 crawl / 採点 / 月刊の業界チップ）はこの読み出し口だけを見る。
     assert tunable.industries == ("不動産",)
-    assert tunable.weekly.max_industry_topics == 5
-    assert tunable.weekly.max_common_topics == 6
+    # ⚠️ §5.2 は `max_industry_topics`(5) / `max_common_topics`(6) の2本。
+    # 2セクション構成の廃止に伴い1本へ統合した（T-52 Step 1。→ §5.2 の改訂は T-38）。
+    assert tunable.weekly.max_topics == 12
     assert tunable.weekly.point_of_week_required is True
     assert tunable.monthly.target_case_count == 15
     assert tunable.monthly.chapter_count_hint == 5
@@ -377,8 +378,7 @@ def test_industry_and_business_area_accept_new_values(raw: dict[str, Any]) -> No
         # 信頼性は6軸中 0-10 点なので上限 10（仕様書 §5.2 scoring_axes.reliability）
         ("tunable_thresholds.min_reliability_score_to_publish", 11),
         ("tunable_thresholds.min_reliability_score_to_publish", -1),
-        ("tunable_thresholds.weekly.max_industry_topics", -1),
-        ("tunable_thresholds.weekly.max_common_topics", -1),
+        ("tunable_thresholds.weekly.max_topics", -1),
         ("tunable_thresholds.monthly.target_case_count", -1),
         ("tunable_thresholds.monthly.chapter_count_hint", -1),
         ("tunable_thresholds.monthly.min_score_for_case", 101),
@@ -417,7 +417,7 @@ def test_out_of_range_values_are_rejected(
         ("tunable_thresholds.adoption_class_score_map.propose_next_meeting", 90),
         ("tunable_thresholds.min_reliability_score_to_publish", 7),
         ("tunable_thresholds.target_industries", ["金融", "不動産"]),
-        ("tunable_thresholds.weekly.max_industry_topics", 8),
+        ("tunable_thresholds.weekly.max_topics", 8),
         ("tunable_thresholds.weekly.point_of_week_required", False),
         ("tunable_thresholds.monthly.target_case_count", 12),
         ("tunable_thresholds.monthly.require_editorial_and_closing", False),

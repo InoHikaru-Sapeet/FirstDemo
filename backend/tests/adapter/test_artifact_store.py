@@ -37,9 +37,10 @@ def test_canonical_paths_use_the_names_the_spec_fixes(store: ArtifactStore) -> N
     assert store.raw_articles_path("2026-W31").name == "raw_articles_2026-W31.json"
     assert store.validation_path("2026-W31").name == "validation_2026-W31.json"
     assert store.narrative_path("2026-W31").name == "narrative_2026-W31.json"
+    # ⚠️ **業界は名前に入らない**（T-52 Step 1。週刊は1つの週につき1通）。
     assert (
-        store.weekly_html_path("不動産", "2026-W31").name
-        == "weekly_ai_intelligence_newsletter_不動産_2026-W31.html"
+        store.weekly_html_path("2026-W31").name
+        == "weekly_ai_intelligence_newsletter_2026-W31.html"
     )
     assert store.monthly_html_path("2026-07").name == "monthly_belief_2026-07.html"
 
@@ -51,7 +52,7 @@ def test_every_artifact_stays_under_the_root(store: ArtifactStore) -> None:
         store.raw_articles_path("2026-W31"),
         store.validation_path("2026-07"),
         store.narrative_path("2026-07"),
-        store.weekly_html_path("不動産", "2026-W31"),
+        store.weekly_html_path("2026-W31"),
         store.monthly_html_path("2026-07"),
         store.dry_run_dir("dry_abc"),
     ]
@@ -73,12 +74,13 @@ def test_invalid_periods_are_rejected(period: str) -> None:
         validate_period(period)
 
 
-@pytest.mark.parametrize("industry", ["../secrets", "a/b", "a\\b", "", "."])
-def test_path_traversal_via_industry_is_rejected(
-    store: ArtifactStore, industry: str
+@pytest.mark.parametrize("period", ["../secrets", "a/b", "a\\b", "", "."])
+def test_path_traversal_via_the_weekly_period_is_rejected(
+    store: ArtifactStore, period: str
 ) -> None:
+    """⚠️ 業界の欄が消えても（T-52 Step 1）、名前へ埋める値の検証は残る。"""
     with pytest.raises(ArtifactStoreError):
-        store.weekly_html_path(industry, "2026-W31")
+        store.weekly_html_path(period)
 
 
 def test_path_traversal_via_dry_run_id_is_rejected(store: ArtifactStore) -> None:
@@ -93,18 +95,15 @@ def test_path_traversal_via_dry_run_id_is_rejected(store: ArtifactStore) -> None
 # 落ちる**（＝片方だけ変えることが構造的にできない）ことを確かめる。
 
 
-@pytest.mark.parametrize(
-    ("industry", "period"),
-    [("不動産", "2026-W31"), ("製造", "2026-W01"), ("a b", "2025-W52")],
-)
+@pytest.mark.parametrize("period", ["2026-W31", "2026-W01", "2025-W52"])
 def test_generated_weekly_html_names_are_recognised_by_the_same_format(
-    store: ArtifactStore, industry: str, period: str
+    store: ArtifactStore, period: str
 ) -> None:
     """出した名前を自分で認識できること（配信の許可リストが 404 を出さない）。"""
-    name = store.weekly_html_path(industry, period).name
+    name = store.weekly_html_path(period).name
 
     assert store.is_servable(name)
-    assert WEEKLY_HTML_NAME.parse(name) == {"industry": industry, "period": period}
+    assert WEEKLY_HTML_NAME.parse(name) == {"period": period}
 
 
 def test_generated_monthly_html_names_are_recognised_by_the_same_format(
@@ -124,18 +123,14 @@ def test_the_weekly_glob_finds_exactly_the_names_the_format_generates(
     ⚠️ ここが生成とずれると、`GET /reports/{period}` の一覧から HTML が消える
     （ファイルは在るのに見つからない）。
     """
-    for industry in ("不動産", "製造"):
-        store.write_text(store.weekly_html_path(industry, "2026-W31"), "<html></html>")
+    store.write_text(store.weekly_html_path("2026-W31"), "<html></html>")
     # 別の週・別の種類は拾わないこと
-    store.write_text(store.weekly_html_path("不動産", "2026-W30"), "<html></html>")
+    store.write_text(store.weekly_html_path("2026-W30"), "<html></html>")
     store.write_text(store.monthly_html_path("2026-07"), "<html></html>")
 
     found = store.weekly_html_paths("2026-W31")
 
-    assert [path.name for path in found] == [
-        store.weekly_html_path("不動産", "2026-W31").name,
-        store.weekly_html_path("製造", "2026-W31").name,
-    ]
+    assert [path.name for path in found] == [store.weekly_html_path("2026-W31").name]
 
 
 # --- 一覧の材料（T-36）--------------------------------------------------------
@@ -150,10 +145,9 @@ def test_rendered_periods_are_empty_before_anything_is_written(
 def test_rendered_periods_come_from_the_html_that_is_actually_there(
     store: ArtifactStore,
 ) -> None:
-    """⚠️ **新しい号が先**。週刊は業界ごとに何通あっても period は1つ。"""
-    store.write_text(store.weekly_html_path("不動産", "2026-W30"), "<html></html>")
-    store.write_text(store.weekly_html_path("不動産", "2026-W31"), "<html></html>")
-    store.write_text(store.weekly_html_path("製造", "2026-W31"), "<html></html>")
+    """⚠️ **新しい号が先**（週次と月次が混ざる）。"""
+    store.write_text(store.weekly_html_path("2026-W30"), "<html></html>")
+    store.write_text(store.weekly_html_path("2026-W31"), "<html></html>")
     store.write_text(store.monthly_html_path("2026-07"), "<html></html>")
 
     assert store.rendered_periods() == ["2026-W31", "2026-W30", "2026-07"]
@@ -176,12 +170,14 @@ def test_rendered_periods_ignore_artifacts_that_are_not_generated_html(
     "filename",
     [
         # 週次の period 表記でない（月次の表記・桁不足・接頭辞違い）
-        "weekly_ai_intelligence_newsletter_不動産_2026-07.html",
-        "weekly_ai_intelligence_newsletter_不動産_2026-W3.html",
-        "weekly_ai_intelligence_newsletter_2026-W31.html",  # industry が無い
+        "weekly_ai_intelligence_newsletter_2026-07.html",
+        "weekly_ai_intelligence_newsletter_2026-W3.html",
+        # ⚠️ **業界が入った古い名前**（T-46 Step 4 の頃の成果物）。T-52 Step 1 で
+        # 書式が変わったので配れない——成果物は移行しない、という割り切りの表れ。
+        "weekly_ai_intelligence_newsletter_不動産_2026-W31.html",
         "monthly_belief_2026-W31.html",
         "monthly_belief_2026-7.html",
-        "weekly_ai_intelligence_newsletter_不動産_2026-W31.htm",
+        "weekly_ai_intelligence_newsletter_2026-W31.htm",
     ],
 )
 def test_names_outside_the_format_are_not_servable(
@@ -196,10 +192,9 @@ def test_the_period_pattern_comes_from_the_period_entity() -> None:
     `enterprise.entities.period` が表記の定義を持つ（モジュール冒頭の⚠️）。
     ここに写しがあると、表記を変えたときに片方だけ古いまま残る。
     """
-    assert WEEKLY_HTML_NAME.parse("weekly_ai_intelligence_newsletter_x_2026-W31.html")
+    assert WEEKLY_HTML_NAME.parse("weekly_ai_intelligence_newsletter_2026-W31.html")
     assert (
-        WEEKLY_HTML_NAME.parse("weekly_ai_intelligence_newsletter_x_2026-31.html")
-        is None
+        WEEKLY_HTML_NAME.parse("weekly_ai_intelligence_newsletter_2026-31.html") is None
     )
 
 
@@ -214,11 +209,11 @@ def test_a_format_rejects_fields_without_a_pattern() -> None:
 
 
 def test_a_format_rejects_incomplete_values() -> None:
-    """フィールドを渡し忘れた生成を通さない（`_2026-W31.html` を作らせない）。"""
+    """フィールドを渡し忘れた生成・知らないフィールドを通さない。"""
     with pytest.raises(ArtifactStoreError):
-        WEEKLY_HTML_NAME.format(period="2026-W31")
+        MONTHLY_HTML_NAME.format()
     with pytest.raises(ArtifactStoreError):
-        WEEKLY_HTML_NAME.glob(industry="不動産", nope="x")
+        WEEKLY_HTML_NAME.glob(nope="x")
 
 
 # --- 原子的書き込み -------------------------------------------------------

@@ -416,10 +416,7 @@ def test_the_status_does_not_leak_server_paths(harness: Harness) -> None:
                 str(root / "raw_articles_2026-W31.json"),
                 str(root / "narrative_2026-W31.json"),
                 str(root / "weekly_ai_intelligence_report.xlsx"),
-                str(
-                    root
-                    / f"weekly_ai_intelligence_newsletter_不動産_{WEEKLY_PERIOD}.html"
-                ),
+                str(root / f"weekly_ai_intelligence_newsletter_{WEEKLY_PERIOD}.html"),
             ],
             at=NOW,
         )
@@ -430,8 +427,7 @@ def test_the_status_does_not_leak_server_paths(harness: Harness) -> None:
     assert body["artifact_count"] == 4
     assert body["artifact_urls"] == [
         "/files/weekly_ai_intelligence_report.xlsx",
-        "/files/weekly_ai_intelligence_newsletter_"
-        "%E4%B8%8D%E5%8B%95%E7%94%A3_2026-W31.html",
+        "/files/weekly_ai_intelligence_newsletter_2026-W31.html",
     ]
     assert str(root) not in response_text(body)
     assert "raw_articles" not in response_text(body)

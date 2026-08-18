@@ -247,8 +247,17 @@ class WeeklyThresholds(_StrictModel):
     `TunableThresholds.target_industries`）。
     """
 
-    max_industry_topics: int = Field(ge=0)
-    max_common_topics: int = Field(ge=0)
+    # ⚠️ **`max_industry_topics` / `max_common_topics` の2本を1本へ統合した**
+    # （T-52 Step 1）。業界関連トピック／業界共通トピックの2セクション構成
+    # （§9.2-3・§9.2-4）を廃止して**点数順の単一リスト**にしたので、上限も1つ。
+    # → §5.2・§7.2・§9.2 の改訂は T-38。
+    #
+    # **既定値は置かない。** 鍵が無い config を黙って読むと、移行し忘れた環境が
+    # 「なぜか掲載件数が変わった」状態で動き続ける（`monthly_lookback_months` に
+    # 既定を置いたのとは事情が違う——あちらは**新しい鍵**で、既存ファイルをそのまま
+    # 読ませる必要があった。こちらは**鍵の入れ替え**なので、古い鍵2つは
+    # `extra="forbid"` が必ず落とす＝移行漏れが起動時に分かる）。
+    max_topics: int = Field(ge=0)
     point_of_week_required: bool
 
 

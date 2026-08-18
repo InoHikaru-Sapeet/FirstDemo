@@ -161,8 +161,11 @@ INITIAL_TUNABLE_THRESHOLDS: dict[str, Any] = {
     # PM 要件で複数形へ（T-46 Step 3）、2026-08-18 の T-52 で**週刊の外**へ出した
     # （週刊は業界版を廃止したので週刊のパラメータではない）。→ §5.2 の改訂は T-38。
     "tunable_thresholds.target_industries": ["不動産"],
-    "tunable_thresholds.weekly.max_industry_topics": 5,
-    "tunable_thresholds.weekly.max_common_topics": 6,
+    # ⚠️ **§5.2 は `max_industry_topics`(5) と `max_common_topics`(6) の2本**。
+    # 2セクション構成の廃止に伴い1本へ統合した（T-52 Step 1）。初期値は **12**
+    # ——2本の合計（11）ではなく、1本のダイジェストに載せる件数として PM が
+    # 示した数を採った（→ §5.2 の改訂は T-38。合計との差1件は報告済み）。
+    "tunable_thresholds.weekly.max_topics": 12,
     "tunable_thresholds.weekly.point_of_week_required": True,
     "tunable_thresholds.monthly.target_case_count": 15,
     "tunable_thresholds.monthly.chapter_count_hint": 5,

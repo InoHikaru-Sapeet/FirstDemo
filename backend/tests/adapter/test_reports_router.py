@@ -179,8 +179,9 @@ def write_exclusions(harness: Harness, rows: int, *, collected: str) -> None:
     )
 
 
-def write_weekly_html(harness: Harness, industry: str) -> Path:
-    path = harness.store.weekly_html_path(industry, WEEKLY_PERIOD)
+def write_weekly_html(harness: Harness) -> Path:
+    """その週の週刊 HTML（**1通**。T-52 Step 1 で業界版を廃止した）。"""
+    path = harness.store.weekly_html_path(WEEKLY_PERIOD)
     harness.store.write_text(path, "<html>週刊</html>")
     return path
 
@@ -234,7 +235,7 @@ def write_narrative(
 def test_a_weekly_report_has_the_shape_of_design_3_3(harness: Harness) -> None:
     write_weekly_sheet(harness, rows=11)
     write_exclusions(harness, rows=3, collected="2026-07-28")
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
 
     response = harness.client.get(f"/reports/{WEEKLY_PERIOD}")
 
@@ -242,12 +243,12 @@ def test_a_weekly_report_has_the_shape_of_design_3_3(harness: Harness) -> None:
     assert response.json() == {
         "period": WEEKLY_PERIOD,
         "type": "weekly",
+        # ⚠️ **週刊も要素は1件・`industry` は `None`**（T-52 Step 1）。
         "html_urls": [
             {
-                "industry": "不動産",
+                "industry": None,
                 "url": (
-                    f"/files/weekly_ai_intelligence_newsletter_"
-                    f"{INDUSTRY_ENCODED}_{WEEKLY_PERIOD}.html"
+                    f"/files/weekly_ai_intelligence_newsletter_{WEEKLY_PERIOD}.html"
                 ),
             }
         ],
@@ -258,19 +259,20 @@ def test_a_weekly_report_has_the_shape_of_design_3_3(harness: Harness) -> None:
     }
 
 
-def test_every_industry_html_is_listed(harness: Harness) -> None:
-    """⚠️ **§3.3 の `html_url`（単数）との差分**（T-46 で週刊は業界ごとに1通）。
+def test_the_weekly_html_list_holds_exactly_one_entry(harness: Harness) -> None:
+    """T-52 Step 1：週刊も1通（`html_urls` の形は複数のまま残してある）。
 
-    単数のままだと「どれか1通」しか返せず、残りへ到達する手段が API から消える。
+    ⚠️ 形を単数へ戻さないのは、出力の単位が増えたときに壊さず足せるため
+    （T-46 で単数 → 複数へ広げた経緯があるので、行き来させない）。
     → §3.3 の改訂は T-38。
     """
     write_weekly_sheet(harness, rows=5)
-    write_weekly_html(harness, "不動産")
-    write_weekly_html(harness, "金融")
+    write_weekly_html(harness)
 
     body = harness.client.get(f"/reports/{WEEKLY_PERIOD}").json()
 
-    assert sorted(item["industry"] for item in body["html_urls"]) == ["不動産", "金融"]
+    assert len(body["html_urls"]) == 1
+    assert body["html_urls"][0]["industry"] is None
 
 
 def test_the_listing_comes_from_the_files_not_from_the_config(
@@ -283,19 +285,19 @@ def test_the_listing_comes_from_the_files_not_from_the_config(
     一覧が増えることはない。
     """
     write_weekly_sheet(harness, rows=1)
-    write_weekly_html(harness, "不動産")
-    # config 側にしか存在しない業界（HTML は出していない）。
+    write_weekly_html(harness)
+
     body = harness.client.get(f"/reports/{WEEKLY_PERIOD}").json()
 
-    assert [item["industry"] for item in body["html_urls"]] == ["不動産"]
+    assert len(body["html_urls"]) == 1
 
 
 def test_another_period_html_is_not_listed(harness: Harness) -> None:
     """先週の HTML が今週の一覧に混ざらない。"""
     write_weekly_sheet(harness, rows=1)
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
     harness.store.write_text(
-        harness.store.weekly_html_path("不動産", "2026-W30"), "<html>先週</html>"
+        harness.store.weekly_html_path("2026-W30"), "<html>先週</html>"
     )
 
     body = harness.client.get(f"/reports/{WEEKLY_PERIOD}").json()
@@ -356,7 +358,7 @@ def test_a_report_that_does_not_exist_yet_is_404(harness: Harness) -> None:
 
 def test_a_report_with_only_html_is_still_found(harness: Harness) -> None:
     """xlsx を消してしまっても、出した HTML へは到達できるようにする。"""
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
 
     assert harness.client.get(f"/reports/{WEEKLY_PERIOD}").status_code == 200
 
@@ -395,9 +397,9 @@ def test_the_list_is_empty_before_anything_is_rendered(harness: Harness) -> None
     assert response.json() == {"reports": []}
 
 
-def test_the_list_carries_the_period_type_and_industries(harness: Harness) -> None:
-    write_weekly_html(harness, "不動産")
-    write_weekly_html(harness, "金融")
+def test_the_list_carries_the_period_and_type(harness: Harness) -> None:
+    """⚠️ **`industries` の欄は廃止**（T-52 Step 1。業界版が無い）。"""
+    write_weekly_html(harness)
     write_monthly_html(harness)
 
     response = harness.client.get("/reports")
@@ -405,13 +407,9 @@ def test_the_list_carries_the_period_type_and_industries(harness: Harness) -> No
     assert response.status_code == 200
     assert response.json() == {
         "reports": [
-            # ⚠️ **新しい号が先**（period の文字列の降順）。業界はファイル名順。
-            {
-                "period": WEEKLY_PERIOD,
-                "type": "weekly",
-                "industries": ["不動産", "金融"],
-            },
-            {"period": MONTHLY_PERIOD, "type": "monthly", "industries": []},
+            # ⚠️ **新しい号が先**（period の文字列の降順）。
+            {"period": WEEKLY_PERIOD, "type": "weekly"},
+            {"period": MONTHLY_PERIOD, "type": "monthly"},
         ]
     }
 
@@ -435,12 +433,12 @@ def test_the_list_does_not_read_the_config(harness: Harness) -> None:
     ことを示す（config を読んでいたら 404 か 500 になる）。
     """
     assert not harness.store.exists(harness.store.config_path())
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
 
     response = harness.client.get("/reports")
 
     assert response.status_code == 200
-    assert response.json()["reports"][0]["industries"] == ["不動産"]
+    assert response.json()["reports"][0]["period"] == WEEKLY_PERIOD
 
 
 # =============================================================================
@@ -451,7 +449,7 @@ def test_the_list_does_not_read_the_config(harness: Harness) -> None:
 def test_the_articles_carry_what_the_mail_html_shows(harness: Harness) -> None:
     seed_config(harness)
     write_weekly_sheet(harness, rows=2)
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
     write_narrative(
         harness, insights={"https://example.com/news/0": "自社では試せる。"}
     )
@@ -461,13 +459,9 @@ def test_the_articles_carry_what_the_mail_html_shows(harness: Harness) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["period"] == WEEKLY_PERIOD
-    assert body["industry"] == "不動産"
-    assert body["industries"] == ["不動産"]
     assert body["point_of_week"] == "今週の総括。"
 
-    section = body["sections"][0]
-    assert section["heading"] == "不動産関連トピック"
-    first = section["articles"][0]
+    first = body["articles"][0]
     assert first == {
         "category_id": "enterprise_ai_case",
         "category_label": "企業AI活用事例",
@@ -489,7 +483,7 @@ def test_a_declared_diagram_is_returned_for_the_web_page(harness: Harness) -> No
     """
     seed_config(harness)
     write_weekly_sheet(harness, rows=1)
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
     write_narrative(
         harness,
         diagrams={
@@ -503,7 +497,7 @@ def test_a_declared_diagram_is_returned_for_the_web_page(harness: Harness) -> No
 
     response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
 
-    diagram = response.json()["sections"][0]["articles"][0]["diagram"]
+    diagram = response.json()["articles"][0]["diagram"]
     assert diagram == {
         "type": "flow",
         "title": "契約業務の流れ",
@@ -516,12 +510,12 @@ def test_an_article_without_a_diagram_returns_null(harness: Harness) -> None:
     """⚠️ **図解なしが正常**（無い記事は `null`）。"""
     seed_config(harness)
     write_weekly_sheet(harness, rows=1)
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
     write_narrative(harness)
 
     response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
 
-    assert response.json()["sections"][0]["articles"][0]["diagram"] is None
+    assert response.json()["articles"][0]["diagram"] is None
 
 
 def test_the_articles_never_expose_scores_or_thresholds(harness: Harness) -> None:
@@ -532,12 +526,12 @@ def test_the_articles_never_expose_scores_or_thresholds(harness: Harness) -> Non
     """
     seed_config(harness)
     write_weekly_sheet(harness, rows=1)
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
     write_narrative(harness)
 
     response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
 
-    card = response.json()["sections"][0]["articles"][0]
+    card = response.json()["articles"][0]
     assert set(card) == {
         "category_id",
         "category_label",
@@ -555,10 +549,10 @@ def test_the_articles_never_expose_scores_or_thresholds(harness: Harness) -> Non
 def test_every_insight_is_returned_even_the_ones_the_mail_holds_back(
     harness: Harness,
 ) -> None:
-    """⚠️ メール版はセクション先頭1件だけ（T-48 Step 1）。Web は全件返す。"""
+    """⚠️ HTML は先頭1件だけ（T-48 Step 1）。Web は全件返す。"""
     seed_config(harness)
     write_weekly_sheet(harness, rows=3)
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
     write_narrative(
         harness,
         insights={
@@ -568,11 +562,7 @@ def test_every_insight_is_returned_even_the_ones_the_mail_holds_back(
 
     response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
 
-    insights = [
-        card["insight"]
-        for section in response.json()["sections"]
-        for card in section["articles"]
-    ]
+    insights = [card["insight"] for card in response.json()["articles"]]
     assert insights == ["示唆0。", "示唆1。", "示唆2。"]
 
 
@@ -586,12 +576,12 @@ def test_the_summary_is_not_truncated_for_the_web(harness: Harness) -> None:
         revision=1,
         run_id="job_test",
     )
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
     write_narrative(harness)
 
     response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
 
-    card = response.json()["sections"][0]["articles"][0]
+    card = response.json()["articles"][0]
     assert card["summary"] == long_summary
     assert "…" not in card["summary"]
 
@@ -605,43 +595,36 @@ def test_a_url_that_is_not_http_is_returned_as_null(harness: Harness) -> None:
         revision=1,
         run_id="job_test",
     )
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
     write_narrative(harness)
 
     response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
 
-    assert response.json()["sections"][0]["articles"][0]["url"] is None
+    assert response.json()["articles"][0]["url"] is None
 
 
-def test_the_industry_edition_can_be_chosen(harness: Harness) -> None:
+def test_the_articles_do_not_depend_on_the_target_industries(
+    harness: Harness,
+) -> None:
+    """T-52 Step 1：業界版が無くなったので、業界の指定も切り替えも無い。
+
+    ⚠️ **`industry` クエリを送っても無視される**（FastAPI は未知のクエリを
+    落とす）。対象業界を変えても同じ記事が同じ順で返る。
+    """
     seed_config(harness, industries=["不動産", "金融"])
-    write_weekly_sheet(harness, rows=1)
-    write_weekly_html(harness, "不動産")
-    write_weekly_html(harness, "金融")
+    write_weekly_sheet(harness, rows=2)
+    write_weekly_html(harness)
     write_narrative(harness)
 
-    response = harness.client.get(
+    plain = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles").json()
+    with_query = harness.client.get(
         f"/reports/{WEEKLY_PERIOD}/articles", params={"industry": "金融"}
-    )
+    ).json()
 
-    assert response.status_code == 200
-    assert response.json()["industry"] == "金融"
-    # 記事の「業界」は不動産だけなので、金融版では業界共通トピックへ落ちる。
-    assert response.json()["sections"][0]["heading"] == "業界共通トピック"
-
-
-def test_an_industry_edition_that_was_not_published_is_404(harness: Harness) -> None:
-    seed_config(harness, industries=["不動産", "金融"])
-    write_weekly_sheet(harness, rows=1)
-    write_weekly_html(harness, "不動産")
-    write_narrative(harness)
-
-    response = harness.client.get(
-        f"/reports/{WEEKLY_PERIOD}/articles", params={"industry": "金融"}
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"]["error"] == "industry_not_published"
+    assert plain == with_query
+    assert "industry" not in plain
+    assert "industries" not in plain
+    assert "sections" not in plain
 
 
 def test_articles_are_not_available_for_a_monthly_period(harness: Harness) -> None:
@@ -673,7 +656,7 @@ def test_a_missing_config_is_reported_as_a_missing_report(harness: Harness) -> N
     """
     assert not harness.store.exists(harness.store.config_path())
     write_weekly_sheet(harness, rows=1)
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
 
     response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
 
@@ -688,13 +671,13 @@ def test_a_week_without_a_narrative_still_lists_its_articles(
     """⚠️ render は生成テキストが無いと落とすが、閲覧は落とさない。"""
     seed_config(harness)
     write_weekly_sheet(harness, rows=1)
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
 
     response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
 
     assert response.status_code == 200
     assert response.json()["point_of_week"] is None
-    assert response.json()["sections"][0]["articles"][0]["insight"] is None
+    assert response.json()["articles"][0]["insight"] is None
 
 
 def test_the_articles_use_the_same_selection_as_the_mail_html(
@@ -713,16 +696,12 @@ def test_the_articles_use_the_same_selection_as_the_mail_html(
         revision=1,
         run_id="job_test",
     )
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
     write_narrative(harness)
 
     response = harness.client.get(f"/reports/{WEEKLY_PERIOD}/articles")
 
-    titles = [
-        card["title"]
-        for section in response.json()["sections"]
-        for card in section["articles"]
-    ]
+    titles = [card["title"] for card in response.json()["articles"]]
     assert titles == ["記事0"]
 
 
@@ -732,11 +711,10 @@ def test_the_articles_use_the_same_selection_as_the_mail_html(
 
 
 def test_a_generated_html_is_served(harness: Harness) -> None:
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
 
     response = harness.client.get(
-        f"/files/weekly_ai_intelligence_newsletter_{INDUSTRY_ENCODED}_"
-        f"{WEEKLY_PERIOD}.html"
+        f"/files/weekly_ai_intelligence_newsletter_{WEEKLY_PERIOD}.html"
     )
 
     assert response.status_code == 200
@@ -761,7 +739,7 @@ def test_the_intermediate_xlsx_is_served_with_its_own_content_type(
 def test_a_url_from_the_reports_listing_can_be_fetched(harness: Harness) -> None:
     """一覧が返す URL がそのまま使えること（エンコードの取り違えを検出する）。"""
     write_weekly_sheet(harness, rows=1)
-    write_weekly_html(harness, "不動産")
+    write_weekly_html(harness)
     url = harness.client.get(f"/reports/{WEEKLY_PERIOD}").json()["html_urls"][0]["url"]
 
     assert harness.client.get(url).status_code == 200
@@ -881,9 +859,7 @@ def test_only_the_expected_names_are_servable(harness: Harness) -> None:
     assert store.is_servable("weekly_ai_intelligence_report.xlsx")
     assert store.is_servable("monthly_ai_leading_cases.xlsx")
     assert store.is_servable(f"monthly_belief_{MONTHLY_PERIOD}.html")
-    assert store.is_servable(
-        f"weekly_ai_intelligence_newsletter_不動産_{WEEKLY_PERIOD}.html"
-    )
+    assert store.is_servable(f"weekly_ai_intelligence_newsletter_{WEEKLY_PERIOD}.html")
 
     for denied in (
         "config.json",
@@ -893,7 +869,9 @@ def test_only_the_expected_names_are_servable(harness: Harness) -> None:
         "weekly_ai_intelligence_report.xlsx.bak",
         "monthly_belief_2026-07.html.html",
         "monthly_belief_20260707.html",
-        "weekly_ai_intelligence_newsletter_2026-W31.html",  # 業界が無い
+        # ⚠️ **業界が入った古い名前**（T-46 Step 4 の頃の成果物）。T-52 Step 1 で
+        # 書式が変わったので配れない（成果物は移行しない）。
+        "weekly_ai_intelligence_newsletter_不動産_2026-W31.html",
         "../weekly_ai_intelligence_report.xlsx",
     ):
         assert not store.is_servable(denied), denied

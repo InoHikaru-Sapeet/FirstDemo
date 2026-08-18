@@ -28,8 +28,7 @@ const CONFIG = {
 		},
 		target_industries: ["不動産"],
 		weekly: {
-			max_industry_topics: 6,
-			max_common_topics: 8,
+			max_topics: 12,
 			point_of_week_required: true
 		},
 		monthly: {
@@ -154,14 +153,14 @@ describe("buildPatch", () => {
 			CONFIG,
 			withChange({
 				"tunable_thresholds.min_total_score_to_publish": "50",
-				"tunable_thresholds.weekly.max_common_topics": "10"
+				"tunable_thresholds.weekly.max_topics": "10"
 			})
 		);
 
 		expect(buildPatch(changes)).toEqual({
 			tunable_thresholds: {
 				min_total_score_to_publish: 50,
-				weekly: { max_common_topics: 10 }
+				weekly: { max_topics: 10 }
 			}
 		});
 	});

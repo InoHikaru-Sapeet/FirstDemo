@@ -75,7 +75,7 @@ class ArtifactNameFormat:
 
     Args:
         template: `{field}` を含む書式（例
-            `weekly_ai_intelligence_newsletter_{industry}_{period}.html`）
+            `weekly_ai_intelligence_newsletter_{period}.html`）
         field_patterns: 各フィールドが取りうる値の正規表現。**書式の
             フィールドと過不足なく対応していること**（import 時に検査する）
 
@@ -156,12 +156,17 @@ class ArtifactNameFormat:
         return self.pattern.match(filename) is not None
 
 
-# 生成 HTML の正規名（週刊は業界ごとに1通＝T-46 Step 4）。
+# 生成 HTML の正規名。
+# ⚠️ **週刊の名前から業界が消えた**（2026-08-18 の T-52 Step 1）。T-46 Step 4 は
+# 業界ごとに1通だったので `..._{industry}_{period}.html` だったが、業界版を廃止して
+# 週次ダイジェスト1本になったため。→ 仕様書 §1.2「体裁の正」の改訂は T-38。
+#
+# ⚠️ **古い名前のファイルはこの書式に当たらない**（`weekly_..._不動産_2026-W33.html`）。
+# 成果物は移行しないので、過去の号は `GET /reports` の一覧から消え、
+# `GET /files` でも配れなくなる（`is_servable()` が同じ書式から導かれるため）。
+# 実ファイルは `artifact_root` に残るので、必要なら手で開く。
 WEEKLY_HTML_NAME = ArtifactNameFormat(
-    "weekly_ai_intelligence_newsletter_{industry}_{period}.html",
-    # 業界名は config の値（日本語）。パス区切りが混じらないことは
-    # `_validate_segment()` が見るので、ここは「1文字以上」でよい。
-    industry=r".+",
+    "weekly_ai_intelligence_newsletter_{period}.html",
     period=_unanchored(WEEKLY_PERIOD_RE),
 )
 MONTHLY_HTML_NAME = ArtifactNameFormat(
@@ -292,25 +297,21 @@ class ArtifactStore:
         """
         return self.root / f"narrative_{validate_period(period)}.json"
 
-    def weekly_html_path(self, industry: str, period: str) -> Path:
-        _validate_segment(industry, label="industry")
-        validate_period(period)
-        return self.root / WEEKLY_HTML_NAME.format(industry=industry, period=period)
+    def weekly_html_path(self, period: str) -> Path:
+        """その週の週刊 HTML（**1通**。T-52 Step 1 で業界が名前から消えた）。"""
+        return self.root / WEEKLY_HTML_NAME.format(period=validate_period(period))
 
     def monthly_html_path(self, period: str) -> Path:
         return self.root / MONTHLY_HTML_NAME.format(period=validate_period(period))
 
     def weekly_html_paths(self, period: str) -> list[Path]:
-        """その週に**実際に出力された**週刊 HTML（業界ごとに1通。T-46 Step 4）。
+        """その週に**実際に出力された**週刊 HTML（0件か1件）。
 
-        ⚠️ **config の `target_industries` からではなく、置いてあるファイルから
-        数える。** 理由は2つ:
-
-        1. `GET /reports/{period}`（T-27）は**全ロールが叩ける**が、config は
-           admin 以外に**存在も中身も返さない**（仕様書 §2・§6.1）。config を
-           見て一覧を作ると、対象業界の設定値を非 admin へ露出する経路になる。
-        2. 過去の period を引いたときに、**その時点で出したもの**が並ぶ
-           （設定を変えた後でも、出していない業界のリンクを並べない）。
+        ⚠️ **返すのは常に0件か1件**（T-52 Step 1 で業界版を廃止した）。リストの
+        ままにしてあるのは、呼び出し側（`GET /reports` / `GET /reports/{period}`）が
+        「置いてあるファイルを数える」形で書かれているため——**config を見て一覧を
+        作らない**という性質（全ロールが叩ける口なので設定値を露出できない。
+        仕様書 §2・§6.1）を保つ。
         """
         validate_period(period)
         return sorted(self.root.glob(WEEKLY_HTML_NAME.glob(period=period)))
@@ -354,7 +355,7 @@ class ArtifactStore:
 
         通すのは §3.3 が `html_url` / `xlsx_url` として挙げているものだけ:
 
-        - 週刊 HTML `weekly_ai_intelligence_newsletter_{industry}_{period}.html`
+        - 週刊 HTML `weekly_ai_intelligence_newsletter_{period}.html`
         - 月刊 HTML `monthly_belief_{period}.html`
         - 中間xlsx（週次・月次の固定名2つ）
         """

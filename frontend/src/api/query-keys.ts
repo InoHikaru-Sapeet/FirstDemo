@@ -21,11 +21,10 @@ export const reportKeys = {
 	/**
 	 * `GET /reports/{period}/articles`。
 	 *
-	 * ⚠️ **業界をキーに含める**（業界版ごとに別の内容＝今週のポイントも示唆も
-	 * 変わる）。含めないと業界を切り替えても前の版が表示され続ける。
+	 * ⚠️ **業界はキーに含めない**（T-52 Step 1 で業界版を廃止した。週刊は
+	 * 業界を問わない1本なので、号を決めるのは period だけ）。
 	 */
-	articles: (period: string, industry: string | null) =>
-		["reports", period, "articles", industry] as const
+	articles: (period: string) => ["reports", period, "articles"] as const
 };
 
 /** 判断基準（T-33・T-34・T-35）。 */

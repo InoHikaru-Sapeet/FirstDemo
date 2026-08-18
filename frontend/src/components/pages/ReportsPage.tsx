@@ -35,7 +35,6 @@ import {
 	type ReportListEntry
 } from "@/api/reports";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 
 const TYPE_LABELS = {
@@ -125,8 +124,6 @@ function PeriodList({ reports, selected, onSelect }: PeriodListProps) {
 							<span className="block">{report.period}</span>
 							<span className="block text-xs text-muted-foreground">
 								{TYPE_LABELS[report.type]}
-								{report.industries.length > 0 &&
-									`（${report.industries.join("・")}）`}
 							</span>
 						</button>
 					</li>
@@ -203,11 +200,9 @@ function ReportDetail({ period }: { period: string }) {
 }
 
 function WeeklyArticles({ period }: { period: string }) {
-	const [industry, setIndustry] = useState<string | null>(null);
-
 	const articles = useQuery({
-		queryKey: reportKeys.articles(period, industry),
-		queryFn: () => fetchArticles(period, industry ?? undefined)
+		queryKey: reportKeys.articles(period),
+		queryFn: () => fetchArticles(period)
 	});
 
 	if (articles.isPending) {
@@ -224,24 +219,6 @@ function WeeklyArticles({ period }: { period: string }) {
 	const data = articles.data;
 	return (
 		<div className="mt-6">
-			{data.industries.length > 1 && (
-				<fieldset className="mb-4 flex flex-wrap gap-2">
-					<legend className="sr-only">業界版</legend>
-					{data.industries.map((name) => (
-						<Button
-							key={name}
-							type="button"
-							size="sm"
-							variant={name === data.industry ? "default" : "outline"}
-							aria-pressed={name === data.industry}
-							onClick={() => setIndustry(name)}
-						>
-							{name} 版
-						</Button>
-					))}
-				</fieldset>
-			)}
-
 			{data.point_of_week !== null && (
 				<div className="rounded border p-4">
 					<h3 className="text-sm font-semibold">今週のポイント</h3>
@@ -251,20 +228,19 @@ function WeeklyArticles({ period }: { period: string }) {
 				</div>
 			)}
 
-			{data.sections.map((section) => (
-				<div key={section.heading} className="mt-6">
-					<h3 className="text-base font-semibold">{section.heading}</h3>
-					<ul className="mt-2 space-y-2">
-						{/* 鍵は URL（示唆を引く鍵でもあり、号の中で一意。§12.1 の
-						    非空必須項目）。使えない URL の記事は見出しで代用する。 */}
-						{section.articles.map((article) => (
-							<li key={article.url ?? article.title}>
-								<ArticleRow article={article} />
-							</li>
-						))}
-					</ul>
-				</div>
-			))}
+			{/* ⚠️ **セクションは1つ**（T-52 Step 1。業界振り分けの廃止）。 */}
+			<div className="mt-6">
+				<h3 className="text-base font-semibold">今週のトピック</h3>
+				<ul className="mt-2 space-y-2">
+					{/* 鍵は URL（示唆を引く鍵でもあり、号の中で一意。§12.1 の
+					    非空必須項目）。使えない URL の記事は見出しで代用する。 */}
+					{data.articles.map((article) => (
+						<li key={article.url ?? article.title}>
+							<ArticleRow article={article} />
+						</li>
+					))}
+				</ul>
+			</div>
 		</div>
 	);
 }

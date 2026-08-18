@@ -435,8 +435,8 @@ def test_the_total_is_recomputed_from_the_axis_scores(
             ConfigIssueCode.NOT_PREVIEWABLE,
         ),
         (
-            {"tunable_thresholds": {"weekly": {"max_common_topics": 2}}},
-            "tunable_thresholds.weekly.max_common_topics",
+            {"tunable_thresholds": {"weekly": {"max_topics": 2}}},
+            "tunable_thresholds.weekly.max_topics",
             ConfigIssueCode.NOT_PREVIEWABLE,
         ),
     ],

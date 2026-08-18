@@ -46,8 +46,8 @@ const adoptionClassScoreMapSchema = z.object({
 });
 
 const weeklyThresholdsSchema = z.object({
-	max_industry_topics: z.number().int(),
-	max_common_topics: z.number().int(),
+	// ⚠️ 2セクションぶんの2キーを1本へ統合した（T-52 Step 1）。
+	max_topics: z.number().int(),
 	point_of_week_required: z.boolean()
 });
 

@@ -79,9 +79,8 @@ EDITABLE_PATHS: frozenset[str] = frozenset(
         # ⚠️ **`weekly` の下から出た**（T-52 Step 1）。週刊は業界版を廃止したので、
         # この値を使うのは月次の収集の重点・顧客関連度の採点・月刊の業界チップ。
         "tunable_thresholds.target_industries",
-        # 週刊：トピック上限
-        "tunable_thresholds.weekly.max_industry_topics",
-        "tunable_thresholds.weekly.max_common_topics",
+        # 週刊：掲載件数の上限（2セクションぶんの2キーを1本へ統合。T-52 Step 1）
+        "tunable_thresholds.weekly.max_topics",
         # 月刊：目標事例数・章数
         "tunable_thresholds.monthly.target_case_count",
         "tunable_thresholds.monthly.chapter_count_hint",

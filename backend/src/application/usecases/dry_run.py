@@ -174,9 +174,8 @@ NOT_PREVIEWABLE_PATHS: Final[frozenset[str]] = frozenset(
         "tunable_thresholds.dedup.treat_same_url_as_duplicate",
         "tunable_thresholds.dedup.monthly_lookback_months",
         # --- 採否より後（描画・生成）の段で効く --------------------------------
-        # トピック上限は週刊 HTML の描画時の絞り（T-24）で、採否の件数は動かない。
-        "tunable_thresholds.weekly.max_industry_topics",
-        "tunable_thresholds.weekly.max_common_topics",
+        # 掲載件数の上限は週刊 HTML の描画時の絞り（T-24）で、採否の件数は動かない。
+        "tunable_thresholds.weekly.max_topics",
         # 生成テキスト（T-44）は AI が書く。件数の試算では扱えない。
         "tunable_thresholds.weekly.point_of_week_required",
         "tunable_thresholds.monthly.require_editorial_and_closing",

@@ -1072,7 +1072,7 @@ def test_a_dry_run_does_not_change_what_the_reports_endpoint_lists(
     login_as(client, Role.ADMIN)
     seed_weekly_sheet(client, [83, 75])
     store = ArtifactStore.from_settings(get_settings())
-    store.write_text(store.weekly_html_path("不動産", DRY_RUN_PERIOD), "<html></html>")
+    store.write_text(store.weekly_html_path(DRY_RUN_PERIOD), "<html></html>")
     before = client.get(f"/reports/{DRY_RUN_PERIOD}").json()
 
     post_dry_run(client, {"tunable_thresholds": {"min_total_score_to_publish": 80}})

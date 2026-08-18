@@ -39,8 +39,7 @@ const CONFIG = {
 			},
 			target_industries: ["不動産"],
 			weekly: {
-				max_industry_topics: 6,
-				max_common_topics: 8,
+				max_topics: 12,
 				point_of_week_required: true
 			},
 			monthly: {
@@ -103,7 +102,7 @@ describe("AdminConfigPage 到達と権限（T-32）", () => {
 
 		expect(await screen.findByLabelText("掲載最低スコア")).toHaveValue(55);
 		expect(screen.getByText(/現在の revision/)).toHaveTextContent("3");
-		expect(screen.getByLabelText("業界共通トピックの上限")).toHaveValue(8);
+		expect(screen.getByLabelText("掲載記事数の上限")).toHaveValue(12);
 		expect(screen.getByLabelText("同一 URL を重複として扱う")).toBeChecked();
 	});
 
