@@ -9,11 +9,27 @@
 | 巻頭言（サブ見出し＋総論3段落） | §10.2-2 | `MonthlyNarrative.editorial*` |
 | 章ごとの導入文 | §10.2-4 | `MonthlyNarrative.chapter_intros` |
 | むすび（今月の総括＋来月の視点の2段落） | §10.2-5 | `MonthlyNarrative.closing` |
+| **図解の内容**（記事／事例ごとに0〜1個） | T-49 | `…diagrams` / `…case_diagrams` |
 
 ⚠️ **これは filter ステップの内部**（`FilterWorker` から呼ぶ）。パイプラインは
 crawl → filter → render の3段構成のままで、narrate の段は足していない
 （§3.1 の3プロンプトとの1:1 対応・T-26 の状態機械 §8.4）。render 側は
 `narrative_{period}.json` を読んで渡すだけで、**AI を呼ばない**（§1.1）。
+
+---
+
+**⚠️ 図解も「内容」だけをここで作る**（2026-08-18 の T-49）
+
+図解は**この段の AI が構造化データとして申告**し（`Diagram`＝3タイプ固定。
+`enterprise.entities.diagram`）、**描画は決定的 Python**（レンダラ）が行う。
+render に AI は足していない。
+
+⚠️ **往復は増やさない。** 図解は今週のポイント・示唆・章導入文と**同じ1往復**の
+出力に相乗りさせる（CLI は1往復に数分かかる＝T-15 備考）。
+
+⚠️ **`None`（図解なし）が正常な経路。** 3タイプのどれにも当てはまらない記事・
+事例に無理やり図を作らせると、内容の薄い図が並ぶだけになる。出力スキーマは
+`Diagram | None` で受け、`diagram_by_key()` が `None` を落とす。
 
 ---
 
@@ -69,10 +85,21 @@ from adapter.llm import AIClient
 from adapter.llm.ai_client import AICallMeta
 from application.usecases.monthly_cases import MonthlyCase
 from enterprise.entities.config import IntelligenceConfig
+from enterprise.entities.diagram import (
+    COMPARE_MAX_POINTS,
+    COMPARE_MIN_POINTS,
+    FLOW_MAX_STEPS,
+    FLOW_MIN_STEPS,
+    METRICS_MAX_ITEMS,
+    METRICS_MIN_ITEMS,
+    Diagram,
+)
 from enterprise.entities.narrative import (
     MonthlyNarrativeDocument,
     WeeklyIndustryNarrative,
     WeeklyNarrativeDocument,
+    case_diagram_key,
+    diagram_by_key,
     text_by_key,
 )
 from enterprise.entities.period import Period
@@ -85,9 +112,11 @@ logger = logging.getLogger(__name__)
 # ⚠️ **本文を変えたら版も上げ、`make prompts` で生成し直すこと**（§9.2 の再現性要件）。
 WEEKLY_NARRATIVE_PROMPT_NAME = "PROMPT-2/weekly_narrative"
 # 0.2.0: 読み手を1業界に固定した（業界ごとの生成。T-46 Step 4）。
-WEEKLY_NARRATIVE_PROMPT_VERSION = "0.2.0"
+# 0.3.0: 図解の申告を足した（T-49）。
+WEEKLY_NARRATIVE_PROMPT_VERSION = "0.3.0"
 MONTHLY_NARRATIVE_PROMPT_NAME = "PROMPT-2/monthly_narrative"
-MONTHLY_NARRATIVE_PROMPT_VERSION = "0.1.0"
+# 0.2.0: 図解の申告を足した（T-49）。
+MONTHLY_NARRATIVE_PROMPT_VERSION = "0.2.0"
 
 # 今週のポイントの文の数（仕様書 §9.2-2「当週の総括3〜4文」）。
 POINT_OF_WEEK_MIN_SENTENCES = 3
@@ -105,6 +134,29 @@ COLUMN_URL = "URL"
 _NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 _STRICT_OUTPUT = ConfigDict(extra="forbid")
+
+# --- 図解（T-49）--------------------------------------------------------------
+
+DIAGRAM_FIELD_HINT = (
+    "図解（0〜1個）。3タイプのどれにも当てはまらなければ null にする（無理に作らない）"
+)
+"""図解の欄の説明（JSON Schema に載る。プロンプト本文と重ねて伝える）。"""
+
+DIAGRAM_PROMPT_LINES: tuple[str, ...] = (
+    "■ 図解（任意・0〜1個）",
+    "- 文章では伝わりにくい構造がある場合だけ、下の3タイプから1つ選んで書く。",
+    f"  - flow: {FLOW_MIN_STEPS}〜{FLOW_MAX_STEPS}ステップの流れ"
+    "（例: 受領 → AIが下書き → 担当者が確認 → 締結）。",
+    f"  - compare: 2項目の対比（左右それぞれ見出し＋{COMPARE_MIN_POINTS}〜"
+    f"{COMPARE_MAX_POINTS}点。例: 従来 / 導入後）。",
+    f"  - metrics: 数値ハイライト{METRICS_MIN_ITEMS}〜{METRICS_MAX_ITEMS}個"
+    "（値＋その値が何を指すか）。",
+    "- **どれにも当てはまらなければ null にする。**"
+    "当てはまらない図を無理に作らない（図解が無いのは正常）。",
+    "- **本文に書かれている事実だけ**を使う。数字・固有名詞を創作しない。",
+    "- 語は短く。マスに収まらない長さは受け付けられない。",
+)
+"""図解の書き方（週次・月次で同じ本文を使う。**写しを作らない**）。"""
 
 
 class NarrativeError(Exception):
@@ -216,11 +268,23 @@ class NarrativeBuilder:
         insights = text_by_key((item.url, item.insight) for item in draft.insights)
         _warn_about_missing(f"{industry}版の示唆", expected=urls, produced=insights)
 
+        # ⚠️ **図解は足りなくても警告しない**（`_warn_about_missing` を通さない）。
+        # 「該当するタイプが無ければ作らない」が正しい振る舞いなので、欠けている
+        # ことは異常ではない。代わりに**作られた件数**をログに出す。
+        diagrams = diagram_by_key((item.url, item.diagram) for item in draft.insights)
+        logger.info(
+            "weekly diagrams declared (industry=%s, articles=%d, diagrams=%d)",
+            industry,
+            len(urls),
+            len(diagrams),
+        )
+
         return WeeklyIndustryNarrative(
             point_of_week_sentences=[
                 sentence.strip() for sentence in draft.point_of_week_sentences
             ],
             insights=insights,
+            diagrams=diagrams,
         )
 
     async def build_monthly(
@@ -249,7 +313,9 @@ class NarrativeBuilder:
 
         result = await self._client.complete(
             prompt=build_monthly_narrative_prompt(cases, self._config, period=period),
-            output_schema=build_monthly_narrative_schema(chapters),
+            output_schema=build_monthly_narrative_schema(
+                chapters, [case.no for case in cases]
+            ),
             prompt_version=MONTHLY_NARRATIVE_PROMPT_VERSION,
             timeout=self._timeout,
         )
@@ -260,6 +326,17 @@ class NarrativeBuilder:
             (item.chapter, item.intro) for item in draft.chapter_intros
         )
         _warn_about_missing("章導入文", expected=chapters, produced=intros)
+
+        # ⚠️ 図解は欠けていて当たり前（T-49）。件数だけログへ。
+        diagrams = diagram_by_key(
+            (case_diagram_key(item.no), item.diagram) for item in draft.case_diagrams
+        )
+        logger.info(
+            "monthly diagrams declared (period=%s, cases=%d, diagrams=%d)",
+            period.text,
+            len(cases),
+            len(diagrams),
+        )
 
         return MonthlyNarrativeDocument(
             period=period.text,
@@ -274,6 +351,7 @@ class NarrativeBuilder:
                 draft.closing_summary.strip(),
                 draft.closing_outlook.strip(),
             ],
+            case_diagrams=diagrams,
         )
 
 
@@ -340,6 +418,9 @@ def build_weekly_narrative_schema(urls: Sequence[str]) -> type[BaseModel]:
             _NonEmptyText,
             Field(description="その記事を「自社ではどう捉えるか」の1段落"),
         ),
+        # ⚠️ **図解は示唆と同じ要素に相乗りさせる**（往復を増やさないため。T-49）。
+        # `None` を既定にしてあるので、**該当するタイプが無ければ書かなくてよい**。
+        diagram=(Diagram | None, Field(default=None, description=DIAGRAM_FIELD_HINT)),
     )
     return create_model(
         "WeeklyNarrativeDraft",
@@ -365,11 +446,22 @@ def build_weekly_narrative_schema(urls: Sequence[str]) -> type[BaseModel]:
     )
 
 
-def build_monthly_narrative_schema(chapters: Sequence[str]) -> type[BaseModel]:
+def build_monthly_narrative_schema(
+    chapters: Sequence[str], case_numbers: Sequence[int] = ()
+) -> type[BaseModel]:
     """月次の出力スキーマ（巻頭言3段落・むすび2段落は**別フィールド**）。
 
     ⚠️ **章導入文の宛先（`chapter`）は `Literal`**（渡した章ラベルそのもの）。
     T-25 は列2 の値で導入文を引くので、言い換えられると当たらない。
+
+    ⚠️ **図解の宛先（`no`）も `Literal`**（月次8列の列1「No」。T-49）。事例ごとに
+    1要素を返させ、**図解が無ければ `diagram` を `null`** にする形にしてある
+    （要素ごと省かせると「書き忘れ」と「該当なし」の区別が付かない）。
+
+    Args:
+        chapters: 章ラベル（`第N章 …`）
+        case_numbers: 事例の `No`。**空なら図解の欄そのものを作らない**
+            （プロンプトだけを組み立てるときの経路）
 
     Raises:
         NarrativeError: 章が1つも無い場合
@@ -389,6 +481,31 @@ def build_monthly_narrative_schema(chapters: Sequence[str]) -> type[BaseModel]:
             Field(description="その章に何を集めたのかを述べる導入文（1段落）"),
         ),
     )
+    numbers = _unique_numbers(case_numbers)
+    case_diagram_fields: dict[str, Any] = {}
+    if numbers:
+        case_diagram_model = create_model(
+            "CaseDiagram",
+            __config__=_STRICT_OUTPUT,
+            no=(
+                Literal[tuple(numbers)],  # ty: ignore[invalid-type-form]
+                Field(description="事例の No（提示したものをそのまま使う）"),
+            ),
+            diagram=(
+                Diagram | None,
+                Field(default=None, description=DIAGRAM_FIELD_HINT),
+            ),
+        )
+        case_diagram_fields["case_diagrams"] = (
+            list[case_diagram_model],  # ty: ignore[invalid-type-form]
+            Field(
+                min_length=len(numbers),
+                description=(
+                    "提示した事例すべてに1件ずつ（図解が無ければ diagram は null）"
+                ),
+            ),
+        )
+
     return create_model(
         "MonthlyNarrativeDraft",
         __config__=_STRICT_OUTPUT,
@@ -420,6 +537,9 @@ def build_monthly_narrative_schema(chapters: Sequence[str]) -> type[BaseModel]:
             _NonEmptyText,
             Field(description="むすび②：来月への視点"),
         ),
+        # ⚠️ 図解の欄は**最後**（本文の欄より先に置くと、図から書き始めさせる形に
+        # なる）。事例が渡されていなければ欄ごと作らない。
+        **case_diagram_fields,
     )
 
 
@@ -471,6 +591,10 @@ def build_weekly_narrative_prompt(
             "- 事実の繰り返しではなく、読み手が自社に引き寄せて"
             "考えるための視点を書く。",
             "- 断定できないことは断定しない（「〜の可能性がある」等）。",
+            "",
+            *DIAGRAM_PROMPT_LINES,
+            "- 週刊の図解は**メール本文には載らず、Web の閲覧ページで開いたときだけ**"
+            "出る（メールは要旨だけの体裁を保つため）。",
             "",
             "■ 対象記事（掲載順）",
             *_weekly_article_lines(records, labels),
@@ -546,6 +670,9 @@ def build_monthly_narrative_prompt(
             "- closing_summary: 今月の総括。",
             "- closing_outlook: 来月への視点。",
             "",
+            *DIAGRAM_PROMPT_LINES,
+            "- 月刊の図解は**事例カードの中**に描かれる（解説の後・出典の前）。",
+            "",
             f"■ 収録事例（全{len(cases)}件・目安 {monthly.target_case_count} 件）",
             *_monthly_case_lines(cases),
         ]
@@ -579,6 +706,14 @@ def _unique(values: Any) -> list[str]:
     return list(seen)
 
 
+def _unique_numbers(values: Sequence[int]) -> list[int]:
+    """順序を保った重複除去（`No` は整数なので文字列版と分けてある）。"""
+    seen: dict[int, None] = {}
+    for value in values:
+        seen.setdefault(int(value), None)
+    return list(seen)
+
+
 def _joined(value: Any) -> str:
     """multi 値（`list`）を読める形へ（xlsx の区切りには依存しない）。"""
     if isinstance(value, (list, tuple)):
@@ -603,6 +738,8 @@ def _warn_about_missing(
 
 
 __all__ = [
+    "DIAGRAM_FIELD_HINT",
+    "DIAGRAM_PROMPT_LINES",
     "MONTHLY_NARRATIVE_PROMPT_NAME",
     "MONTHLY_NARRATIVE_PROMPT_VERSION",
     "POINT_OF_WEEK_MAX_SENTENCES",

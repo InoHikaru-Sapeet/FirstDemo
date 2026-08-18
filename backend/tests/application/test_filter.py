@@ -209,8 +209,13 @@ def weekly_narrative_draft(urls: list[str]) -> dict[str, Any]:
     }
 
 
-def monthly_narrative_draft(chapters: list[str]) -> dict[str, Any]:
-    """巻頭言・章導入文・むすび（T-44）。"""
+def monthly_narrative_draft(
+    chapters: list[str], case_numbers: list[int]
+) -> dict[str, Any]:
+    """巻頭言・章導入文・むすび・図解（T-44 ／ T-49）。
+
+    ⚠️ 図解は**全事例で `null`**（「該当するタイプが無ければ作らない」＝正常経路）。
+    """
     return {
         "editorial_subtitle": "『導入したか』ではなく『作り直したか』が問われた月",
         "editorial_overview": "俯瞰の段落。",
@@ -222,6 +227,7 @@ def monthly_narrative_draft(chapters: list[str]) -> dict[str, Any]:
         ],
         "closing_summary": "今月の総括。",
         "closing_outlook": "来月への視点。",
+        "case_diagrams": [{"no": no, "diagram": None} for no in case_numbers],
     }
 
 
@@ -318,7 +324,9 @@ class ScriptedAIClient:
         if "point_of_week_sentences" in fields:
             return weekly_narrative_draft(_urls_in(prompt))
         if "editorial_subtitle" in fields:
-            return monthly_narrative_draft(_chapters_in(prompt))
+            return monthly_narrative_draft(
+                _chapters_in(prompt), _case_numbers_in(prompt)
+            )
         return self._by_title(prompt, self.cases) or self.default_case
 
     @staticmethod
@@ -357,6 +365,11 @@ def _urls_in(prompt: str) -> list[str]:
 def _chapters_in(prompt: str) -> list[str]:
     """プロンプトに載っている章ラベル（章導入文の宛先）。"""
     return list(dict.fromkeys(re.findall(r"^\[(.+?)\] CASE ", prompt, re.MULTILINE)))
+
+
+def _case_numbers_in(prompt: str) -> list[int]:
+    """プロンプトに載っている事例の `No`（図解の宛先。T-49）。"""
+    return [int(no) for no in re.findall(r"\] CASE (\d+) ／", prompt)]
 
 
 class RecordingHistoryReader:

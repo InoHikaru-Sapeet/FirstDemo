@@ -9,6 +9,7 @@
 - **宛先は `Literal` で閉じる**（示唆の URL・導入文の章ラベルを言い換えられない）
 - **段落数・文の数は構造で固定**（別フィールド／要素数の下限・上限）
 - **T-24 / T-25 のレンダラへ無変更で渡せる**（実際に HTML を組み立てて確かめる）
+- **図解は示唆・章導入文と同じ往復に相乗りし、無いのが正常**（T-49）
 """
 
 import copy
@@ -34,12 +35,15 @@ from application.usecases.narrative import (
     WEEKLY_NARRATIVE_PROMPT_VERSION,
     NarrativeBuilder,
     NarrativeError,
+    build_monthly_narrative_prompt,
     build_monthly_narrative_schema,
+    build_weekly_narrative_prompt,
     build_weekly_narrative_schema,
     to_monthly_narrative,
     to_weekly_narrative,
 )
 from enterprise.entities.config import IntelligenceConfig
+from enterprise.entities.diagram import DIAGRAM_TYPES
 from enterprise.entities.json_document import (
     DocumentParseError,
     parse_json_document,
@@ -140,7 +144,19 @@ def weekly_payload(
     }
 
 
-def monthly_payload(*, chapters: list[str] | None = None) -> dict[str, Any]:
+def monthly_payload(
+    *,
+    chapters: list[str] | None = None,
+    case_numbers: list[int] | None = None,
+    diagrams: dict[int, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """月次の AI 出力。
+
+    ⚠️ **`case_diagrams` は事例ごとに1要素**（図解が無ければ `diagram` は `null`）。
+    既定は「全事例が図解なし」＝T-49 の正常経路。
+    """
+    numbers = case_numbers if case_numbers is not None else [1]
+    declared = diagrams or {}
     return {
         "editorial_subtitle": "『導入したか』ではなく『作り直したか』が問われた月",
         "editorial_overview": "俯瞰の段落。",
@@ -152,6 +168,7 @@ def monthly_payload(*, chapters: list[str] | None = None) -> dict[str, Any]:
         ],
         "closing_summary": "今月の総括。",
         "closing_outlook": "来月への視点。",
+        "case_diagrams": [{"no": no, "diagram": declared.get(no)} for no in numbers],
     }
 
 
@@ -390,7 +407,9 @@ async def test_every_chapter_gets_an_intro_keyed_by_its_label(
     config: IntelligenceConfig,
 ) -> None:
     """鍵は月次8列の列2 の値そのもの（T-25 の `intro_for()` が引く形）。"""
-    client = ScriptedAIClient(monthly_payload(chapters=[CHAPTER_1, CHAPTER_2]))
+    client = ScriptedAIClient(
+        monthly_payload(chapters=[CHAPTER_1, CHAPTER_2], case_numbers=[1, 2])
+    )
 
     document = await builder(config, client).build_monthly(
         [case(no=1), case(no=2, chapter=CHAPTER_2, url=URL_B)], period=MONTHLY_PERIOD
@@ -403,7 +422,9 @@ async def test_the_monthly_prompt_carries_every_case_and_chapter(
     config: IntelligenceConfig,
 ) -> None:
     """§10.2-2 は「当月**全事例を俯瞰する**総論」なので全件を渡す。"""
-    client = ScriptedAIClient(monthly_payload(chapters=[CHAPTER_1, CHAPTER_2]))
+    client = ScriptedAIClient(
+        monthly_payload(chapters=[CHAPTER_1, CHAPTER_2], case_numbers=[1, 2])
+    )
 
     await builder(config, client).build_monthly(
         [case(no=1), case(no=2, chapter=CHAPTER_2, url=URL_B)], period=MONTHLY_PERIOD
@@ -506,3 +527,124 @@ def test_the_sentence_bounds_match_the_spec() -> None:
 def test_the_period_type_is_what_the_worker_passes() -> None:
     """入口は `Period`（表記の解釈をこの層で二重に持たない）。"""
     assert isinstance(WEEKLY_PERIOD, Period)
+
+
+# --- 図解の申告（T-49）--------------------------------------------------------
+
+FLOW_PAYLOAD: dict[str, Any] = {
+    "type": "flow",
+    "title": "契約業務の自動化",
+    "steps": ["契約書を受領", "AIが下書き", "担当者が確認"],
+}
+
+
+async def test_a_weekly_diagram_rides_along_with_the_insight(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ 図解のために往復を増やさない（示唆と同じ1往復に相乗り）。"""
+    payload = weekly_payload()
+    payload["insights"][0]["diagram"] = FLOW_PAYLOAD
+    client = ScriptedAIClient(payload)
+
+    document = await builder(config, client).build_weekly(
+        [record()], period=WEEKLY_PERIOD
+    )
+
+    assert client.calls == 1
+    assert document.for_industry(INDUSTRY).diagrams[URL_A].type == "flow"
+
+
+async def test_no_weekly_diagram_is_a_normal_result(
+    config: IntelligenceConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    """⚠️ **図解なしは異常ではない**（示唆と違って警告も出さない）。"""
+    client = ScriptedAIClient(weekly_payload())
+
+    with caplog.at_level("WARNING"):
+        document = await builder(config, client).build_weekly(
+            [record()], period=WEEKLY_PERIOD
+        )
+
+    assert document.for_industry(INDUSTRY).diagrams == {}
+    assert not [r for r in caplog.records if "図解" in r.message]
+
+
+async def test_a_weekly_diagram_outside_the_schema_never_reaches_the_narrative(
+    config: IntelligenceConfig,
+) -> None:
+    """スキーマ外の図解は**出力の読み込みで**落ちる（レンダラまで届かない）。"""
+    payload = weekly_payload()
+    payload["insights"][0]["diagram"] = {"type": "timeline", "title": "年表"}
+    client = ScriptedAIClient(payload)
+
+    with pytest.raises(DocumentParseError):
+        await builder(config, client).build_weekly([record()], period=WEEKLY_PERIOD)
+
+
+async def test_a_monthly_diagram_is_keyed_by_the_case_number(
+    config: IntelligenceConfig,
+) -> None:
+    client = ScriptedAIClient(
+        monthly_payload(
+            chapters=[CHAPTER_1, CHAPTER_2],
+            case_numbers=[1, 2],
+            diagrams={2: FLOW_PAYLOAD},
+        )
+    )
+
+    document = await builder(config, client).build_monthly(
+        [case(no=1), case(no=2, chapter=CHAPTER_2, url=URL_B)], period=MONTHLY_PERIOD
+    )
+
+    # ⚠️ 図解を申告しなかった事例（No=1）は鍵ごと入らない。
+    assert list(document.case_diagrams) == ["2"]
+    assert document.case_diagrams["2"].title == "契約業務の自動化"
+
+
+async def test_no_monthly_diagram_is_a_normal_result(
+    config: IntelligenceConfig,
+) -> None:
+    client = ScriptedAIClient(monthly_payload())
+
+    document = await builder(config, client).build_monthly(
+        [case()], period=MONTHLY_PERIOD
+    )
+
+    assert document.case_diagrams == {}
+
+
+async def test_a_diagram_for_an_unknown_case_is_rejected(
+    config: IntelligenceConfig,
+) -> None:
+    """宛先は `Literal`（提示していない `No` へは図解を付けられない）。"""
+    client = ScriptedAIClient(
+        monthly_payload(case_numbers=[99], diagrams={99: FLOW_PAYLOAD})
+    )
+
+    with pytest.raises(DocumentParseError):
+        await builder(config, client).build_monthly([case()], period=MONTHLY_PERIOD)
+
+
+def test_both_prompts_explain_the_three_diagram_types(
+    config: IntelligenceConfig,
+) -> None:
+    """プロンプトが案内する種類とスキーマの種類が同じであること。"""
+    weekly_prompt = build_weekly_narrative_prompt([record()], config)
+    monthly_prompt = build_monthly_narrative_prompt(
+        [case()], config, period=MONTHLY_PERIOD
+    )
+
+    for prompt in (weekly_prompt, monthly_prompt):
+        for name in DIAGRAM_TYPES:
+            assert name in prompt
+        assert "null にする" in prompt
+
+
+def test_the_monthly_schema_without_cases_has_no_diagram_field() -> None:
+    """事例を渡さずにスキーマだけ組むとき（プロンプト検査など）は欄を作らない。"""
+    assert (
+        "case_diagrams" not in build_monthly_narrative_schema([CHAPTER_1]).model_fields
+    )
+    assert (
+        "case_diagrams" in build_monthly_narrative_schema([CHAPTER_1], [1]).model_fields
+    )
