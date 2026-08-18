@@ -700,9 +700,8 @@ class RunOrchestrator:
     def _render(self, prepared: PreparedRun) -> list[Path]:
         """render（T-24 / T-25）。**入力は中間xlsx と narrative ファイル**（§8.2）。
 
-        ⚠️ **週刊は対象業界ごとに1通**（T-46 Step 4。`weekly_..._{industry}_
-        {period}.html`）。回すのは呼び出し側の責務で、レンダラは1回1業界のまま
-        （T-46 Step 4 備考の申し送り「T-26 でも同じ形にすること」）。
+        ⚠️ **週刊も1通**（T-52 Step 1。業界版を廃止した）。T-46 Step 4 で入れた
+        「対象業界の数だけ回す」ループはここから消えている。
         """
         pipeline = prepared.pipeline
         period = prepared.period
@@ -722,19 +721,15 @@ class RunOrchestrator:
         )
 
         if period.is_weekly and isinstance(document, WeeklyNarrativeDocument):
-            articles = pipeline.reports.read_weekly(period.text)
-            industries = pipeline.config.tunable_thresholds.industries
             return [
                 pipeline.weekly_renderer.render(
                     period=period.text,
-                    articles=articles,
+                    articles=pipeline.reports.read_weekly(period.text),
                     config=pipeline.config,
-                    narrative=to_weekly_narrative(document, industry),
-                    industry=industry,
+                    narrative=to_weekly_narrative(document),
                     revision=pipeline.revision,
                     run_id=job_id,
                 ).path
-                for industry in industries
             ]
 
         if isinstance(document, MonthlyNarrativeDocument):

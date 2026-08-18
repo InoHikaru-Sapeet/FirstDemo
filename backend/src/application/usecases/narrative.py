@@ -4,7 +4,7 @@
 
 | 作るもの | 根拠 | 渡す先 |
 |---|---|---|
-| 今週のポイント（3〜4文・**業界ごと**） | §9.2-2 | `WeeklyNarrative.point_of_week` |
+| 今週のポイント（3〜4項目＝見出し＋詳細1段落） | §9.2-2 | `…point_of_week` |
 | 記事ごとの示唆（「自社ではどう捉えるか」1段落） | §9.2-4 | `…insights` |
 | 巻頭言（サブ見出し＋総論3段落） | §10.2-2 | `MonthlyNarrative.editorial*` |
 | 章ごとの導入文 | §10.2-4 | `MonthlyNarrative.chapter_intros` |
@@ -38,13 +38,13 @@ render に AI は足していない。
 CLI は些細なプロンプトでも起動・初期化に約131秒かかる（T-15 備考の実測）。
 示唆を1件ずつ聞くと、採用11件の週で **20分超がまるごと増える**。そこで:
 
-- 週次 = **業界ごとに1往復**（その業界版の今週のポイント ＋ 全記事ぶんの示唆）
+- 週次 = **1往復**（今週のポイント ＋ 全記事ぶんの示唆）
 - 月次 = **1往復**（巻頭言 ＋ 全章の導入文 ＋ むすび）
 
-⚠️ **週次が「業界ごと」なのは、週刊が業界ごとに1通出るから**（T-46 Step 4。
-`weekly_..._{industry}_{period}.html`）。今週のポイントも示唆も読み手の業界が
-変われば別の文章になるので、ここだけは業界の数だけ往復が増える（1回数分）。
-**記事ごとの往復は作らない**という方針は変わっていない。
+⚠️ **週次の往復が業界の数だけ増えることは無くなった**（2026-08-18 の T-52）。
+T-46 Step 4 では週刊が業界ごとに1通だったので業界数ぶん往復していたが、業界版を
+廃止して1本になったので **period につき1往復**に戻った（対象業界を増やしても
+週次の実行時間は伸びない）。
 
 どちらも「当週／当月の全体を見て書くもの」なので、まとめて渡すほうが内容の
 面でも素直（§9.2-2 の「当週の総括」・§10.2-2 の「当月全事例を俯瞰する総論」）。
@@ -62,8 +62,9 @@ CLI は些細なプロンプトでも起動・初期化に約131秒かかる（T
 - 巻頭言3段落・むすび2段落 → **別フィールド**で受ける（`editorial_overview` /
   `editorial_analysis` / `editorial_takeaway`、`closing_summary` /
   `closing_outlook`）
-- 今週のポイントは **3〜4文**（§9.2-2）＝範囲なので別フィールドにできない。
-  **要素数の下限・上限を持つ配列**で固定する
+- 今週のポイントは **3〜4項目**（§9.2-2）＝範囲なので別フィールドにできない。
+  **要素数の下限・上限を持つ配列**で固定する。1要素は**見出し（1文）＋詳細
+  （1段落）**の組（T-52 Step 1。閲覧ページの箇条書き＋クリック展開の材料）
 
 連結（`\\n\\n` ／ 文の連結）は書き出し側が行う（`enterprise.entities.narrative`）。
 
@@ -96,7 +97,6 @@ from enterprise.entities.diagram import (
 )
 from enterprise.entities.narrative import (
     MonthlyNarrativeDocument,
-    WeeklyIndustryNarrative,
     WeeklyNarrativeDocument,
     case_diagram_key,
     diagram_by_key,
@@ -113,12 +113,13 @@ logger = logging.getLogger(__name__)
 WEEKLY_NARRATIVE_PROMPT_NAME = "PROMPT-2/weekly_narrative"
 # 0.2.0: 読み手を1業界に固定した（業界ごとの生成。T-46 Step 4）。
 # 0.3.0: 図解の申告を足した（T-49）。
-WEEKLY_NARRATIVE_PROMPT_VERSION = "0.3.0"
+# 0.4.0: 業界版を廃止し、今週のポイントを「見出し＋詳細1段落」にした（T-52 Step 1）。
+WEEKLY_NARRATIVE_PROMPT_VERSION = "0.4.0"
 MONTHLY_NARRATIVE_PROMPT_NAME = "PROMPT-2/monthly_narrative"
 # 0.2.0: 図解の申告を足した（T-49）。
 MONTHLY_NARRATIVE_PROMPT_VERSION = "0.2.0"
 
-# 今週のポイントの文の数（仕様書 §9.2-2「当週の総括3〜4文」）。
+# 今週のポイントの項目数（仕様書 §9.2-2「当週の総括3〜4文」＝1文が1項目の見出し）。
 POINT_OF_WEEK_MIN_SENTENCES = 3
 POINT_OF_WEEK_MAX_SENTENCES = 4
 
@@ -193,22 +194,21 @@ class NarrativeBuilder:
     async def build_weekly(
         self, records: Sequence[Mapping[str, Any]], *, period: Period
     ) -> WeeklyNarrativeDocument:
-        """今週のポイントと記事ごとの示唆を作る（**業界ごとに1往復**）。
+        """今週のポイントと記事ごとの示唆を作る（**1往復**）。
 
-        ⚠️ **週刊は対象業界ごとに1通**（`weekly_..._{industry}_{period}.html`）で、
-        今週のポイントも示唆も**読み手の業界が変われば別の文章**になる。だから
-        往復は業界の数だけ増える（T-46 Step 4。1回あたり数分＝T-15 備考なので、
-        対象業界を増やすとその分だけ実行時間が伸びる）。
+        ⚠️ **業界ごとの生成は廃止した**（T-52 Step 1）。週刊は業界を問わない
+        週次ダイジェスト1本になったので、読み手を業界で分ける理由が無い。
+        T-46 Step 4 で業界数ぶんに増えていた往復は period につき1回へ戻った。
 
-        ⚠️ **記事ごとの往復は相変わらず作らない**（1業界につき、全記事ぶんの示唆を
-        1回でまとめて書かせる）。
+        ⚠️ **記事ごとの往復は相変わらず作らない**（全記事ぶんの示唆を1回で
+        まとめて書かせる）。
 
         Args:
             records: 週次22列の行（採用済み・合計スコア降順。T-21 の出力）
             period: 対象週
 
         Returns:
-            `narrative_{period}.json` に書ける形（業界名 → 生成テキスト）
+            `narrative_{period}.json` に書ける形
 
         Raises:
             AIClientError: AI 呼び出しの失敗（握り潰さない）
@@ -226,36 +226,9 @@ class NarrativeBuilder:
             )
             return WeeklyNarrativeDocument(period=period.text)
 
-        industries = self._config.tunable_thresholds.industries
-        return WeeklyNarrativeDocument(
-            period=period.text,
-            industries={
-                industry: await self._build_weekly_industry(
-                    records, urls, industry=industry, period=period
-                )
-                for industry in industries
-            },
-        )
-
-    async def _build_weekly_industry(
-        self,
-        records: Sequence[Mapping[str, Any]],
-        urls: Sequence[str],
-        *,
-        industry: str,
-        period: Period,
-    ) -> WeeklyIndustryNarrative:
-        """1業界ぶんの今週のポイントと示唆（**1往復**）。"""
-        logger.info(
-            "weekly narrative (period=%s, industry=%s, articles=%d)",
-            period.text,
-            industry,
-            len(urls),
-        )
+        logger.info("weekly narrative (period=%s, articles=%d)", period.text, len(urls))
         result = await self._client.complete(
-            prompt=build_weekly_narrative_prompt(
-                records, self._config, industry=industry
-            ),
+            prompt=build_weekly_narrative_prompt(records, self._config),
             output_schema=build_weekly_narrative_schema(urls),
             prompt_version=WEEKLY_NARRATIVE_PROMPT_VERSION,
             timeout=self._timeout,
@@ -266,23 +239,31 @@ class NarrativeBuilder:
         # （型注釈は `BaseModel` までしか付かない）。
         draft: Any = result.value
         insights = text_by_key((item.url, item.insight) for item in draft.insights)
-        _warn_about_missing(f"{industry}版の示唆", expected=urls, produced=insights)
+        _warn_about_missing("示唆", expected=urls, produced=insights)
+
+        # ⚠️ **見出しと詳細は同じ要素から取る**（T-52 Step 1）。索引で対応づけると、
+        # 片方が欠けたときに別の見出しへ詳細がずれて付く（内容が入れ替わっても
+        # 誰も気づけない）。鍵は見出しの文そのもの。
+        headings = [item.heading.strip() for item in draft.point_of_week]
+        details = text_by_key(
+            (item.heading, item.detail) for item in draft.point_of_week
+        )
 
         # ⚠️ **図解は足りなくても警告しない**（`_warn_about_missing` を通さない）。
         # 「該当するタイプが無ければ作らない」が正しい振る舞いなので、欠けている
         # ことは異常ではない。代わりに**作られた件数**をログに出す。
         diagrams = diagram_by_key((item.url, item.diagram) for item in draft.insights)
         logger.info(
-            "weekly diagrams declared (industry=%s, articles=%d, diagrams=%d)",
-            industry,
+            "weekly diagrams declared (period=%s, articles=%d, diagrams=%d)",
+            period.text,
             len(urls),
             len(diagrams),
         )
 
-        return WeeklyIndustryNarrative(
-            point_of_week_sentences=[
-                sentence.strip() for sentence in draft.point_of_week_sentences
-            ],
+        return WeeklyNarrativeDocument(
+            period=period.text,
+            point_of_week_sentences=headings,
+            point_of_week_details=details,
             insights=insights,
             diagrams=diagrams,
         )
@@ -358,10 +339,10 @@ class NarrativeBuilder:
 # --- レンダラへの受け渡し（T-24 / T-25 は無変更）------------------------------
 
 
-def to_weekly_narrative(
-    document: WeeklyNarrativeDocument, industry: str
-) -> WeeklyNarrative:
-    """`narrative_{period}.json` の**その業界ぶん**を T-24 の入力へ写す。
+def to_weekly_narrative(document: WeeklyNarrativeDocument) -> WeeklyNarrative:
+    """`narrative_{period}.json` を T-24 の入力へ写す。
+
+    ⚠️ **業界の引数は無くなった**（T-52 Step 1。週刊は業界版を廃止して1本）。
 
     ⚠️ **フィールドの対応は1:1**（項目を足したり畳んだりしない）。変換が要るのは
     次の2つの事情だけで、どちらもレンダラ側の都合ではない:
@@ -372,11 +353,16 @@ def to_weekly_narrative(
     2. ファイルは文・段落を**要素の列**で持ち、レンダラは連結済みの文字列を取る
        （連結は `WeeklyNarrativeDocument.point_of_week` が行う）。
     """
-    weekly = document.for_industry(industry)
     return WeeklyNarrative(
-        point_of_week=weekly.point_of_week,
-        insights=dict(weekly.insights),
-        diagrams=dict(weekly.diagrams),
+        point_of_week=document.point_of_week,
+        # ⚠️ **箇条書きの材料も一緒に渡す**（T-52 Step 1）。HTML は連結した
+        # `point_of_week` を描き、閲覧ページ（Step 2）は項目ごとに開く。
+        # **写す場所をここ1つにする**ので、2つの見え方がずれない。
+        points=tuple(
+            (item.heading, item.detail) for item in document.point_of_week_items
+        ),
+        insights=dict(document.insights),
+        diagrams=dict(document.diagrams),
     )
 
 
@@ -404,11 +390,34 @@ def build_weekly_narrative_schema(urls: Sequence[str]) -> type[BaseModel]:
     返しただけで**やり直し（1回数分）**になるので、過不足は受け取ってから
     警告に出す（`_warn_about_missing`）。
 
+    ⚠️ **今週のポイントは「見出し＋詳細」を1要素で受ける**（T-52 Step 1）。見出しの
+    配列と詳細の配列を別々に返させると、**片方が1件少ないだけで全部がずれる**
+    （しかも文章としては読めてしまうので気づけない）。組にしておけば、欠けるのは
+    その項目の詳細だけで済む。
+
     Raises:
         NarrativeError: 宛先が1つも無い場合（`Literal` を作れない）
     """
     if not urls:
         raise NarrativeError("示唆の宛先になる記事がありません")
+
+    point_model = create_model(
+        "PointOfWeek",
+        __config__=_STRICT_OUTPUT,
+        heading=(
+            _NonEmptyText,
+            Field(description="今週のポイント1件の見出し（**1文**。句点で終える）"),
+        ),
+        detail=(
+            _NonEmptyText,
+            Field(
+                description=(
+                    "その見出しを補う詳細（1段落）。"
+                    "見出しの言い換えではなく、何が起きたか・なぜ要点なのかを述べる"
+                )
+            ),
+        ),
+    )
 
     insight_model = create_model(
         "ArticleInsight",
@@ -428,14 +437,15 @@ def build_weekly_narrative_schema(urls: Sequence[str]) -> type[BaseModel]:
     return create_model(
         "WeeklyNarrativeDraft",
         __config__=_STRICT_OUTPUT,
-        point_of_week_sentences=(
-            list[_NonEmptyText],
+        point_of_week=(
+            list[point_model],  # ty: ignore[invalid-type-form]
             Field(
                 min_length=POINT_OF_WEEK_MIN_SENTENCES,
                 max_length=POINT_OF_WEEK_MAX_SENTENCES,
                 description=(
                     f"今週のポイント。{POINT_OF_WEEK_MIN_SENTENCES}〜"
-                    f"{POINT_OF_WEEK_MAX_SENTENCES}文。**1要素＝1文**"
+                    f"{POINT_OF_WEEK_MAX_SENTENCES}件。"
+                    "**1要素＝見出し1文＋詳細1段落**"
                 ),
             ),
         ),
@@ -552,19 +562,17 @@ def build_monthly_narrative_schema(
 def build_weekly_narrative_prompt(
     records: Sequence[Mapping[str, Any]],
     config: IntelligenceConfig,
-    *,
-    industry: str | None = None,
 ) -> str:
     """週次の生成テキストのプロンプト（仕様書 §9.2-2・§9.2-4）。
 
-    ⚠️ **読み手は1業界**（T-46 Step 4）。`industry` を渡すとその業界版として
-    書かせる（週刊は業界ごとに1通なので、読み手の立場を混ぜない）。`None` の
-    ときは config の対象業界を並べる。
+    ⚠️ **読み手を業界で分けない**（T-52 Step 1）。週刊は業界を問わない週次
+    ダイジェスト1本になったので、T-46 Step 4 で入れていた「読み手の立場＝1業界」の
+    指定を外した。**対象業界（`tunable_thresholds.target_industries`）はここでは
+    使わない**——使うと、業界版を廃止したはずの号に特定業界向けの文章が混ざる。
 
     ⚠️ **出力形式（JSON だけを出せ・JSON Schema）の指示は含めない。**
     `AIClient` の実装が付ける（他のプロンプトと同じ）。
     """
-    reader = industry or _industry_label(config.tunable_thresholds)
     labels: dict[str, str] = {
         str(category.id): category.label for category in config.information_categories
     }
@@ -580,12 +588,17 @@ def build_weekly_narrative_prompt(
             "- 記事の取捨選択・点数・掲載順は**すでに決まっている**。触れないこと。",
             "- URL は提示したものをそのまま使う（短縮・言い換えをしない）。",
             "",
-            f"■ 対象業界（読み手の立場）: {reader}",
+            "■ 読み手",
+            "- 業界を問わない社内の非専門メンバー（特定業界向けの号ではない）。",
             "",
             "■ 今週のポイント",
-            f"- {POINT_OF_WEEK_MIN_SENTENCES}〜{POINT_OF_WEEK_MAX_SENTENCES}文で"
-            "当週全体を総括する（1要素＝1文。句点で終える）。",
-            f"- {reader}の読み手にとって何が要点かという視点で書く。",
+            f"- {POINT_OF_WEEK_MIN_SENTENCES}〜{POINT_OF_WEEK_MAX_SENTENCES}件で"
+            "当週全体を総括する。",
+            "- heading: その要点を**1文**で言い切る見出し（句点で終える）。"
+            "箇条書きの1行として単独で読める形にする。",
+            "- detail: その見出しを補う**1段落**。見出しの言い換えではなく、"
+            "何が起きたか・なぜ今週の要点なのかを述べる"
+            "（読み手は見出しを見て、気になった項目だけを開く）。",
             "- 個々の記事の羅列ではなく、今週まとめて何が起きたのかを述べる。",
             "",
             "■ 記事ごとの示唆",
@@ -595,23 +608,13 @@ def build_weekly_narrative_prompt(
             "- 断定できないことは断定しない（「〜の可能性がある」等）。",
             "",
             *DIAGRAM_PROMPT_LINES,
-            "- 週刊の図解は**メール本文には載らず、Web の閲覧ページで開いたときだけ**"
-            "出る（メールは要旨だけの体裁を保つため）。",
+            "- 週刊の図解は**閲覧ページで記事を開いたときだけ**出る"
+            "（一覧は要旨だけの体裁を保つため）。",
             "",
             "■ 対象記事（掲載順）",
             *_weekly_article_lines(records, labels),
         ]
     )
-
-
-def _industry_label(thresholds: Any) -> str:
-    """対象業界の提示（複数なら「A・B」）。
-
-    ⚠️ 本番の生成は**業界ごとに1回**（`NarrativeBuilder.build_weekly()` が
-    業界を渡す）。この形が使われるのは、業界を指定せずにプロンプトだけを
-    組み立てたときだけ。
-    """
-    return "・".join(thresholds.industries)
 
 
 def _weekly_article_lines(

@@ -266,11 +266,7 @@ def _classification(config: IntelligenceConfig) -> str:
 
 
 def _weekly_narrative(config: IntelligenceConfig) -> str:
-    return build_weekly_narrative_prompt(
-        SAMPLE_WEEKLY_RECORDS,
-        config,
-        industry=config.tunable_thresholds.industries[0],
-    )
+    return build_weekly_narrative_prompt(SAMPLE_WEEKLY_RECORDS, config)
 
 
 def _monthly_narrative(config: IntelligenceConfig) -> str:
@@ -383,8 +379,8 @@ PROMPT_DOCS: tuple[PromptDoc, ...] = (
         title="PROMPT-2（週次 narrative） — 今週のポイント・記事ごとの示唆",
         prompt_name=WEEKLY_NARRATIVE_PROMPT_NAME,
         version=WEEKLY_NARRATIVE_PROMPT_VERSION,
-        updated="2026-08-17",
-        stage="filter の内部（**対象業界ごとに1往復**）",
+        updated="2026-08-18",
+        stage="filter の内部（**period ごとに1往復**）",
         spec_refs="仕様書 §9.2-2・§9.2-4 ／ 設計書 §7.3",
         source=(
             "`backend/src/application/usecases/narrative.py` の "
@@ -392,14 +388,9 @@ PROMPT_DOCS: tuple[PromptDoc, ...] = (
         ),
         variables=(
             (
-                "`{{target_industry}}`",
-                "`config.tunable_thresholds.target_industries` の**1つ**"
-                "（週刊は業界ごとに1通。T-46 Step 4）",
-            ),
-            (
                 "`{{POINT_OF_WEEK_SENTENCES}}`",
                 "`narrative.POINT_OF_WEEK_MIN/MAX_SENTENCES`"
-                "（仕様書 §9.2-2 の 3〜4文）",
+                "（仕様書 §9.2-2 の 3〜4件）",
             ),
             (
                 "`{{ARTICLES}}`",
@@ -409,8 +400,13 @@ PROMPT_DOCS: tuple[PromptDoc, ...] = (
         ),
         bodies=(("", _weekly_narrative),),
         notes=(
-            "掲載順・上限（`weekly.max_industry_topics` / `max_common_topics`）は"
-            "レンダラ（T-24）が持ちます。ここでは**当週シートの全行**に示唆を書かせます。",
+            "掲載順・上限（`weekly` の掲載件数）はレンダラ（T-24）が持ちます。"
+            "ここでは**当週シートの全行**に示唆を書かせます。",
+            "⚠️ **業界ごとの生成は廃止しました**（T-52 Step 1）。週刊は業界を"
+            "問わない週次ダイジェスト1本なので、読み手を業界で分けず、"
+            "往復も period ごとに1回です。",
+            "⚠️ **今週のポイントは「見出し1文＋詳細1段落」の組**で書かせます"
+            "（閲覧ページの箇条書き＋クリック展開の材料。T-52 Step 1）。",
         ),
     ),
     PromptDoc(

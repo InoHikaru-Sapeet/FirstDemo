@@ -35,7 +35,6 @@ from enterprise.entities.config import IntelligenceConfig
 from enterprise.entities.json_document import DocumentParseError
 from enterprise.entities.narrative import (
     MonthlyNarrativeDocument,
-    WeeklyIndustryNarrative,
     WeeklyNarrativeDocument,
     dump_narrative,
 )
@@ -205,12 +204,6 @@ class FakeRenderer:
         self.calls.append(kwargs)
         if self._error:
             raise self._error
-        # 週刊は業界ごとに1通（正規名に業界が入る＝T-46 Step 4）。
-        industry = kwargs.get("industry")
-        if industry:
-            return FakeRenderedHtml(
-                path=self._path.with_name(f"{industry}_{self._path.name}")
-            )
         return FakeRenderedHtml(path=self._path)
 
 
@@ -479,13 +472,14 @@ async def test_the_render_reads_the_files_instead_of_the_filter_result(
     assert test.weekly.calls[0]["articles"] == [{"タイトル": "xlsx から読み戻した記事"}]
 
 
-async def test_one_html_is_rendered_per_target_industry(
+async def test_one_weekly_html_is_rendered_whatever_the_target_industries_are(
     store: ArtifactStore, jobs: JobStore, config: IntelligenceConfig
 ) -> None:
-    """T-46 Step 4：業界の数だけ週刊 HTML が出て、生成物として記録される。
+    """T-52 Step 1：**週刊は1通**（業界版の廃止）。
 
-    T-46 Step 4 の申し送り「render ループは呼び出し側の責務。**T-26 でも同じ形に
-    すること**」をここで固定する。
+    T-46 Step 4 は「業界の数だけ HTML を出す」ループを呼び出し側（ここ）に
+    置いていた。業界版が無くなったので、対象業界が何件あっても1通しか出ない
+    ——**ループが残っていないこと**をここで固定する。
     """
     config.tunable_thresholds.target_industries = ["不動産", "金融"]
     test = harness(store, jobs, config)
@@ -493,28 +487,17 @@ async def test_one_html_is_rendered_per_target_industry(
         store.narrative_path(WEEKLY_PERIOD),
         dump_narrative(
             WeeklyNarrativeDocument(
-                period=WEEKLY_PERIOD,
-                industries={
-                    "不動産": WeeklyIndustryNarrative(
-                        point_of_week_sentences=["不動産版の総括。"]
-                    ),
-                    "金融": WeeklyIndustryNarrative(
-                        point_of_week_sentences=["金融版の総括。"]
-                    ),
-                },
+                period=WEEKLY_PERIOD, point_of_week_sentences=["今週の総括。"]
             )
         ),
     )
 
     job = await run_weekly(test, resume_from=ResumePoint.RENDER)
 
-    assert [call["industry"] for call in test.weekly.calls] == ["不動産", "金融"]
-    assert [call["narrative"].point_of_week for call in test.weekly.calls] == [
-        "不動産版の総括。",
-        "金融版の総括。",
-    ]
-    assert sum("不動産_weekly.html" in path for path in job.artifacts) == 1
-    assert sum("金融_weekly.html" in path for path in job.artifacts) == 1
+    assert len(test.weekly.calls) == 1
+    assert "industry" not in test.weekly.calls[0]
+    assert test.weekly.calls[0]["narrative"].point_of_week == "今週の総括。"
+    assert sum("weekly.html" in path for path in job.artifacts) == 1
 
 
 async def test_every_artifact_is_recorded_on_the_job(
@@ -529,7 +512,7 @@ async def test_every_artifact_is_recorded_on_the_job(
         store.weekly_report_path(),
         store.validation_path(WEEKLY_PERIOD),
         store.narrative_path(WEEKLY_PERIOD),
-        store.root / f"{TARGET_INDUSTRY}_weekly.html",
+        store.root / "weekly.html",
     ):
         assert str(path) in job.artifacts
 

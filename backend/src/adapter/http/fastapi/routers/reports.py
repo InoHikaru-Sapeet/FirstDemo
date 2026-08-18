@@ -323,7 +323,7 @@ async def get_report_articles(
     # ⚠️ **config を読むのは選別のため**だけ（返す項目には出さない。
     # モジュール docstring）。
     config = _load_config_for_selection(db, settings, parsed)
-    narrative = _weekly_narrative(store, parsed, target)
+    narrative = _weekly_narrative(store, parsed)
     selection = select_articles(
         ReportStore(store).read_weekly(parsed.text), config, industry=target
     )
@@ -394,13 +394,13 @@ def _industries_in(store: ArtifactStore, period: str) -> list[str]:
     ]
 
 
-def _weekly_narrative(
-    store: ArtifactStore, period: Period, industry: str
-) -> WeeklyNarrative:
-    """`narrative_{period}.json` のその業界ぶん。**無ければ空**。
+def _weekly_narrative(store: ArtifactStore, period: Period) -> WeeklyNarrative:
+    """`narrative_{period}.json`（その週ぶん）。**無ければ空**。
 
     ⚠️ **落とさない**（render は無いと落とすが、こちらは閲覧）。生成テキストが
     無い号でも記事の一覧は読めるほうがよく、示唆の有無はカードごとに分かる。
+
+    ⚠️ **業界の指定は無くなった**（T-52。週刊は業界版を廃止して1本）。
     """
     path = store.narrative_path(period.text)
     if not store.exists(path):
@@ -409,12 +409,7 @@ def _weekly_narrative(
     document = parse_narrative(store.read_text(path), period=period)
     if not isinstance(document, WeeklyNarrativeDocument):  # pragma: no cover
         return WeeklyNarrative()
-    if industry not in document.industries:
-        logger.warning(
-            "生成テキストに %s 版がありません（示唆なしで返します）", industry
-        )
-        return WeeklyNarrative()
-    return to_weekly_narrative(document, industry)
+    return to_weekly_narrative(document)
 
 
 def _card(

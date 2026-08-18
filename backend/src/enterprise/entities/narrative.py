@@ -33,13 +33,33 @@ T-24 / T-25 のレンダラが受け取るのは `\\n\\n` 区切りの文字列�
 
 ---
 
-**⚠️ 週次は業界ごとに持つ**（T-46 Step 4）
+**⚠️ 週次は業界で分けない**（2026-08-18 の T-52）
 
-週刊は対象業界ごとに1通出す（`weekly_..._{industry}_{period}.html`）ので、
-今週のポイントも示唆も業界版ごとに別の文章になる。ファイルは
-`industries: {業界名: {...}}` の形で持ち、レンダラへ渡すときに業界を1つ選ぶ
-（`to_weekly_narrative(document, industry)`）。**月次は業界別ではない**
-（月刊ビリーフは1通）。
+T-46 Step 4 では週刊が業界ごとに1通だったので、この文書も
+`industries: {業界名: {...}}` の入れ子で持っていた。**業界版を廃止**して業界を
+問わない週次ダイジェスト1本になったので、**入れ子をほどいて単一構造へ戻した**
+（フィールドの名前と意味は入れ子の中にあったときのまま＝拡張のみ・破壊しない）。
+
+⚠️ **旧い形のファイル（`industries` を持つもの）は `extra="forbid"` で落ちる。**
+成果物なので移行はしない——`--from render` で前の実行の narrative を使い回すと
+落ちるので、その場合は `--from filter` からやり直す（T-46 Step 4 と同じ扱い）。
+
+---
+
+**⚠️ 今週のポイントは「見出し＋詳細」で持つ**（T-52 Step 1）
+
+§9.2-2 は「当週の総括3〜4文」で、これまでは文を並べて連結していた。閲覧ページで
+**箇条書きにして各項目をクリックで展開する**ため、**文（＝見出し）ごとに詳細1段落**を
+足した（`point_of_week_details`）。
+
+- `point_of_week_sentences`: 見出しになる文（**従来のフィールドのまま**。連結した
+  `point_of_week` も従来どおり出る＝HTML 側は無変更で描ける）
+- `point_of_week_details`: **見出しの文そのものを鍵**にした詳細1段落。示唆が記事URL を
+  鍵にしているのと同じ形で、**鍵が無い見出し＝詳細なし**（展開しても何も出ないのではなく、
+  展開する口自体を出さない判断は表示側）
+
+⚠️ **索引で対応づけない。** 生成が1件欠けたときに、索引だと**別の見出しへ詳細が
+ずれて付く**（内容が入れ替わっても誰も気づけない）。鍵なら欠けたぶんだけ落ちる。
 
 ---
 
@@ -58,7 +78,7 @@ T-24 / T-25 のレンダラが受け取るのは `\\n\\n` 区切りの文字列�
 「AI が作って narrative に落ちるもの」なので、置き場もここ。**描画は決定的
 Python**（レンダラ）で、render に AI は足していない（§1.1）。
 
-- 週次: `WeeklyIndustryNarrative.diagrams`（**鍵は示唆と同じ記事URL**）
+- 週次: `WeeklyNarrativeDocument.diagrams`（**鍵は示唆と同じ記事URL**）
 - 月次: `MonthlyNarrativeDocument.case_diagrams`（**鍵は月次8列の列1「No」を
   文字列にしたもの**）
 
@@ -143,58 +163,69 @@ class _NarrativeDocument(BaseModel):
         return parse_period(self.period)
 
 
-class WeeklyIndustryNarrative(BaseModel):
-    """**1業界ぶん**の週刊の生成テキスト（仕様書 §9.2-2・§9.2-4）。
+class PointOfWeekItem(BaseModel):
+    """今週のポイント1項目（見出し＋詳細）。読み出し側の受け渡し用（T-52 Step 1）。
 
-    週刊は業界ごとに1通出す（`weekly_..._{industry}_{period}.html`）ので、
-    今週のポイントも示唆も**業界版ごとに別の文章**になる（T-46 Step 4）。
+    ⚠️ **これはファイルのスキーマではない**（ファイルは
+    `point_of_week_sentences` と `point_of_week_details` の2つで持つ）。
+    「見出しと詳細を組にして順番に取り出す」形が閲覧ページ（Step 2）と
+    プロンプトの両方で要るので、組み立てる場所を1つにしてある。
+    """
+
+    model_config = _STRICT
+
+    heading: str
+    detail: str | None = None
+
+
+class WeeklyNarrativeDocument(_NarrativeDocument):
+    """週刊（週次ダイジェスト）の生成テキスト（仕様書 §9.2-2・§9.2-4）。
+
+    ⚠️ **業界の入れ子は無い**（T-52。業界版を廃止したので1本）。フィールドの名前と
+    意味は T-46 Step 4 の `WeeklyIndustryNarrative` にあったときのまま。
 
     Attributes:
-        point_of_week_sentences: 今週のポイント（当週の総括3〜4文）。
-            空＝生成していない（採用記事が0件だった実行）
+        period: 対象週（`2026-Www`）
+        point_of_week_sentences: 今週のポイント（当週の総括3〜4文。**各文が
+            箇条書きの見出しになる**）。空＝生成していない（採用0件だった実行）
+        point_of_week_details: 見出しの文 → 詳細1段落（T-52 Step 1）。
+            **鍵が無い見出しには詳細が無い**（展開する口を出さないのは表示側の判断）
         insights: 記事URL → 示唆ボックスの1段落。**鍵は当週シート列22 の値**
         diagrams: 記事URL → 図解（T-49）。**鍵は示唆と同じ**。記事ごとに
             0〜1個で、鍵が無い記事には図解が無い（それが正常）
     """
 
-    model_config = _STRICT
-
     point_of_week_sentences: list[_NonEmptyText] = Field(default_factory=list)
+    point_of_week_details: dict[_NonEmptyText, _NonEmptyText] = Field(
+        default_factory=dict
+    )
     insights: dict[_NonEmptyText, _NonEmptyText] = Field(default_factory=dict)
     diagrams: dict[_NonEmptyText, Diagram] = Field(default_factory=dict)
 
     @property
     def point_of_week(self) -> str | None:
-        """T-24 の `WeeklyNarrative.point_of_week` へそのまま渡せる形。"""
+        """T-24 の `WeeklyNarrative.point_of_week` へそのまま渡せる形。
+
+        ⚠️ **連結するのは見出しの文だけ**（詳細は入れない）。HTML は今までどおり
+        総括の段落として描き、詳細は閲覧ページの展開の中でだけ読める（図解が
+        Web だけに出るのと同じ扱い）。
+        """
         joined = SENTENCE_JOINER.join(self.point_of_week_sentences).strip()
         return joined or None
 
+    @property
+    def point_of_week_items(self) -> list[PointOfWeekItem]:
+        """見出しと詳細を**文の順**で組にする（箇条書きの材料。T-52 Step 1）。
 
-class WeeklyNarrativeDocument(_NarrativeDocument):
-    """週刊メルマガの生成テキスト（**業界ごと**。T-46 Step 4）。
-
-    ⚠️ **業界名を鍵にした辞書で持つ**（`config.tunable_thresholds.weekly.
-    target_industries` の値）。1つの週の中間xlsx から業界数ぶんの HTML が出るので、
-    生成テキストもその数だけ要る。**鍵が無い業界は「生成していない」**——空の
-    生成テキストで描くと `point_of_week_required=true` の週刊は T-24 が意図どおり
-    落ちる（ここで黙って埋めない）。
-
-    Attributes:
-        period: 対象週（`2026-Www`）
-        industries: 業界名 → その業界版の生成テキスト
-    """
-
-    industries: dict[_NonEmptyText, WeeklyIndustryNarrative] = Field(
-        default_factory=dict
-    )
-
-    def for_industry(self, industry: str) -> WeeklyIndustryNarrative:
-        """その業界版の生成テキスト（無ければ**空**）。
-
-        空を返して落とさないのは、判断（必須かどうか）を config を見る側
-        （T-24 の `point_of_week_required`）に一本化しておくため。
+        詳細が無い見出しは `detail=None`（**見出しは落とさない**——総括の1文として
+        意味を持っているので、詳細が書かれなかっただけで消すのは行き過ぎ）。
         """
-        return self.industries.get(industry.strip()) or WeeklyIndustryNarrative()
+        return [
+            PointOfWeekItem(
+                heading=sentence, detail=self.point_of_week_details.get(sentence)
+            )
+            for sentence in self.point_of_week_sentences
+        ]
 
 
 class MonthlyNarrativeDocument(_NarrativeDocument):
@@ -364,7 +395,7 @@ __all__ = [
     "WEEKLY_NARRATIVE_ADAPTER",
     "MonthlyNarrativeDocument",
     "NarrativeDocument",
-    "WeeklyIndustryNarrative",
+    "PointOfWeekItem",
     "WeeklyNarrativeDocument",
     "case_diagram_key",
     "diagram_by_key",

@@ -4,8 +4,9 @@
 
 重点:
 
-- **往復は週次＝業界ごとに1回・月次＝1回**（記事ごと・章ごとには往復しない
-  ＝T-15 のオーバーヘッド。業界ごとになるのは週刊が業界ごとに1通だから＝T-46）
+- **往復は週次＝1回・月次＝1回**（記事ごと・章ごとには往復しない＝T-15 の
+  オーバーヘッド。⚠️ T-46 Step 4 の「業界ごとに1回」は T-52 で1回へ戻った）
+- **今週のポイントは「見出し＋詳細」を1要素で受ける**（索引で対応づけない＝T-52）
 - **宛先は `Literal` で閉じる**（示唆の URL・導入文の章ラベルを言い換えられない）
 - **段落数・文の数は構造で固定**（別フィールド／要素数の下限・上限）
 - **T-24 / T-25 のレンダラへ無変更で渡せる**（実際に HTML を組み立てて確かめる）
@@ -128,15 +129,28 @@ def case(*, no: int = 1, chapter: str = CHAPTER_1, url: str = URL_A) -> MonthlyC
 SENTENCES = [
     "今週はAIエージェントの実務投入が相次いだ。",
     "契約や審査など定型度の高い業務から広がっている。",
-    "不動産では現場の運用設計が論点になる。",
+    "現場の運用設計が論点になっている。",
 ]
 
 
 def weekly_payload(
-    *, urls: list[str] | None = None, sentences: list[str] | None = None
+    *,
+    urls: list[str] | None = None,
+    sentences: list[str] | None = None,
+    details: list[str] | None = None,
 ) -> dict[str, Any]:
+    """週次の AI 出力。
+
+    ⚠️ **今週のポイントは見出し＋詳細の組**（T-52 Step 1）。詳細を省いた形は
+    スキーマが受け付けない（`detail` は必須）。
+    """
+    headings = sentences if sentences is not None else SENTENCES
+    bodies = details if details is not None else [f"{h}の詳細。" for h in headings]
     return {
-        "point_of_week_sentences": sentences if sentences is not None else SENTENCES,
+        "point_of_week": [
+            {"heading": heading, "detail": detail}
+            for heading, detail in zip(headings, bodies, strict=True)
+        ],
         "insights": [
             {"url": url, "insight": f"{url} を自社ではこう捉える。"}
             for url in (urls if urls is not None else [URL_A])
@@ -225,30 +239,42 @@ async def test_all_articles_are_covered_in_one_round_trip(
         [record(url=URL_A), record(title="別の記事", url=URL_B)], period=WEEKLY_PERIOD
     )
 
-    assert client.calls == 1  # 対象業界が1件の config
-    assert set(document.for_industry(INDUSTRY).insights) == {URL_A, URL_B}
+    assert client.calls == 1
+    assert set(document.insights) == {URL_A, URL_B}
     assert client.versions == [WEEKLY_NARRATIVE_PROMPT_VERSION]
 
 
-async def test_each_target_industry_gets_its_own_round_trip(
+async def test_the_round_trip_does_not_multiply_with_the_target_industries(
     config: IntelligenceConfig,
 ) -> None:
-    """T-46 Step 4：週刊は業界ごとに1通なので、生成テキストも業界ごとに作る。
+    """T-52 Step 1：**業界ごとの生成を廃止**した（週刊は業界を問わない1本）。
 
-    ⚠️ 往復は業界の数だけ増える（1回数分）。**記事ごとの往復は増やさない**。
+    T-46 Step 4 では対象業界の数だけ往復していた（1回数分）。業界版が無くなった
+    以上、業界を増やしても週次の実行時間は伸びない。
     """
     config.tunable_thresholds.target_industries = ["不動産", "金融"]
-    client = ScriptedAIClient(weekly_payload(), weekly_payload())
+    client = ScriptedAIClient(weekly_payload())
 
-    document = await builder(config, client).build_weekly(
-        [record()], period=WEEKLY_PERIOD
-    )
+    await builder(config, client).build_weekly([record()], period=WEEKLY_PERIOD)
 
-    assert client.calls == 2
-    assert set(document.industries) == {"不動産", "金融"}
-    # 読み手の立場は混ぜない（プロンプトはその業界版として書かせる）。
-    assert "■ 対象業界（読み手の立場）: 不動産" in client.prompts[0]
-    assert "■ 対象業界（読み手の立場）: 金融" in client.prompts[1]
+    assert client.calls == 1
+
+
+async def test_the_weekly_prompt_does_not_address_a_single_industry(
+    config: IntelligenceConfig,
+) -> None:
+    """⚠️ 対象業界を読み手の立場としてプロンプトへ載せない（T-52 Step 1）。
+
+    載せると、業界版を廃止したはずの号に特定業界向けの文章が混ざる。
+    """
+    config.tunable_thresholds.target_industries = ["不動産", "金融"]
+    client = ScriptedAIClient(weekly_payload())
+
+    await builder(config, client).build_weekly([record()], period=WEEKLY_PERIOD)
+
+    prompt = client.prompts[0]
+    assert "読み手の立場" not in prompt
+    assert "業界を問わない" in prompt
 
 
 async def test_the_point_of_week_is_assembled_from_the_sentences(
@@ -260,10 +286,33 @@ async def test_the_point_of_week_is_assembled_from_the_sentences(
         [record()], period=WEEKLY_PERIOD
     )
 
-    generated = document.for_industry(INDUSTRY)
-    assert generated.point_of_week_sentences == SENTENCES
-    assert generated.point_of_week == "".join(SENTENCES)
+    assert document.point_of_week_sentences == SENTENCES
+    assert document.point_of_week == "".join(SENTENCES)
     assert document.period == WEEKLY_PERIOD.text
+
+
+async def test_each_point_of_week_heading_carries_its_own_detail(
+    config: IntelligenceConfig,
+) -> None:
+    """T-52 Step 1：見出しごとに詳細1段落（箇条書き＋クリック展開の材料）。
+
+    ⚠️ **鍵は見出しの文そのもの**（索引ではない）。索引で対応づけると、生成が
+    1件欠けたときに別の見出しへ詳細がずれて付く。
+    """
+    details = [f"{index}番目の詳細。" for index, _ in enumerate(SENTENCES)]
+    client = ScriptedAIClient(weekly_payload(details=details))
+
+    document = await builder(config, client).build_weekly(
+        [record()], period=WEEKLY_PERIOD
+    )
+
+    assert [
+        (item.heading, item.detail) for item in document.point_of_week_items
+    ] == list(zip(SENTENCES, details, strict=True))
+    # 連結した本文（HTML が描くもの）に詳細は混ざらない。
+    assert document.point_of_week == "".join(SENTENCES)
+    for detail in details:
+        assert detail not in (document.point_of_week or "")
 
 
 async def test_the_insight_key_is_the_url_as_it_appears_in_the_sheet(
@@ -277,7 +326,7 @@ async def test_the_insight_key_is_the_url_as_it_appears_in_the_sheet(
         [record(url=url)], period=WEEKLY_PERIOD
     )
 
-    assert list(document.for_industry(INDUSTRY).insights) == [url]
+    assert list(document.insights) == [url]
 
 
 async def test_no_adopted_articles_means_no_ai_call(
@@ -290,8 +339,8 @@ async def test_no_adopted_articles_means_no_ai_call(
         document = await builder(config, client).build_weekly([], period=WEEKLY_PERIOD)
 
     assert client.calls == 0
-    assert document.industries == {}
-    assert document.for_industry(INDUSTRY).point_of_week is None
+    assert document.point_of_week is None
+    assert document.point_of_week_items == []
     assert any("対象になる記事がありません" in r.message for r in caplog.records)
 
 
@@ -312,13 +361,11 @@ async def test_a_missing_insight_is_warned_about_but_does_not_fail(
             period=WEEKLY_PERIOD,
         )
 
-    assert set(document.for_industry(INDUSTRY).insights) == {URL_A}
+    assert set(document.insights) == {URL_A}
     assert any("示唆が足りません" in r.message for r in caplog.records)
 
 
-async def test_the_prompt_carries_the_target_industry_and_every_url(
-    config: IntelligenceConfig,
-) -> None:
+async def test_the_prompt_carries_every_url(config: IntelligenceConfig) -> None:
     client = ScriptedAIClient(weekly_payload(urls=[URL_A, URL_B]))
 
     await builder(config, client).build_weekly(
@@ -326,8 +373,6 @@ async def test_the_prompt_carries_the_target_industry_and_every_url(
     )
 
     prompt = client.prompts[0]
-    for industry in config.tunable_thresholds.industries:
-        assert industry in prompt
     assert URL_A in prompt and URL_B in prompt
     assert "自社ではどう捉えるか" in prompt
 
@@ -355,7 +400,25 @@ def test_the_point_of_week_sentence_count_is_fixed_by_the_schema(count: int) -> 
     with pytest.raises(DocumentParseError):
         parse_json_document(
             resolve_output_adapter(schema),
-            json.dumps(weekly_payload(sentences=["文。"] * count)),
+            json.dumps(weekly_payload(sentences=[f"{i}文。" for i in range(count)])),
+            label="AI 出力",
+        )
+
+
+def test_a_point_of_week_heading_without_a_detail_is_rejected() -> None:
+    """T-52 Step 1：詳細は任意ではない（見出しだけの項目を作らせない）。
+
+    ⚠️ 図解（`null` が正常）と違い、詳細は**展開したときに読むもの**なので、
+    無い項目が混ざると「開けるのに空」になる。
+    """
+    schema = build_weekly_narrative_schema([URL_A])
+    payload = weekly_payload()
+    del payload["point_of_week"][0]["detail"]
+
+    with pytest.raises(DocumentParseError):
+        parse_json_document(
+            resolve_output_adapter(schema),
+            json.dumps(payload, ensure_ascii=False),
             label="AI 出力",
         )
 
@@ -474,8 +537,7 @@ async def test_the_weekly_document_feeds_the_renderer_as_is(
         period=WEEKLY_PERIOD.text,
         articles=[record()],
         config=config,
-        narrative=to_weekly_narrative(document, INDUSTRY),
-        industry=INDUSTRY,
+        narrative=to_weekly_narrative(document),
     )
 
     assert "今週のポイント" in markup
@@ -551,7 +613,7 @@ async def test_a_weekly_diagram_rides_along_with_the_insight(
     )
 
     assert client.calls == 1
-    assert document.for_industry(INDUSTRY).diagrams[URL_A].type == "flow"
+    assert document.diagrams[URL_A].type == "flow"
 
 
 async def test_no_weekly_diagram_is_a_normal_result(
@@ -565,7 +627,7 @@ async def test_no_weekly_diagram_is_a_normal_result(
             [record()], period=WEEKLY_PERIOD
         )
 
-    assert document.for_industry(INDUSTRY).diagrams == {}
+    assert document.diagrams == {}
     assert not [r for r in caplog.records if "図解" in r.message]
 
 

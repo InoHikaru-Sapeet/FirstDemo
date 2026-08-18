@@ -239,13 +239,18 @@ class WeeklyNarrative:
     Attributes:
         point_of_week: 今週のポイント（当週の総括3〜4文。§9.2-2）。
             `\\n\\n` を含めば複数段落になる
+        points: 今週のポイントの**項目（見出し, 詳細）**（T-52 Step 1）。
+            ⚠️ **この層は描かない**——箇条書き＋クリック展開は閲覧ページの
+            見せ方で、HTML は連結した `point_of_week` を段落として描く
+            （図解と同じ「Web だけに出る」項目）
         insights: 記事URL → 示唆ボックスの1段落（§9.2-4）。**鍵は URL**
             （§12.1 の非空必須項目で、記事を一意に指せる唯一の列）
         diagrams: 記事URL → 図解（T-49）。**鍵は示唆と同じ**。
-            ⚠️ **メール版は描かない**（下の注記）
+            ⚠️ **この層は描かない**（下の注記）
     """
 
     point_of_week: str | None = None
+    points: tuple[tuple[str, str | None], ...] = ()
     insights: Mapping[str, str] = field(default_factory=dict)
     diagrams: Mapping[str, Diagram] = field(default_factory=dict)
 

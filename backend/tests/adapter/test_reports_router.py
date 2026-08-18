@@ -210,19 +210,15 @@ def write_narrative(
     *,
     insights: dict[str, str] | None = None,
     diagrams: dict[str, dict[str, Any]] | None = None,
-    industries: tuple[str, ...] = ("不動産",),
+    details: dict[str, str] | None = None,
 ) -> None:
-    """`narrative_{period}.json`（T-44 の形）を置く。"""
+    """`narrative_{period}.json`（T-44 の形。**業界の入れ子は無い**＝T-52）。"""
     document = {
         "period": WEEKLY_PERIOD,
-        "industries": {
-            industry: {
-                "point_of_week_sentences": ["今週の総括。"],
-                "insights": dict(insights or {}),
-                "diagrams": dict(diagrams or {}),
-            }
-            for industry in industries
-        },
+        "point_of_week_sentences": ["今週の総括。"],
+        "point_of_week_details": dict(details or {}),
+        "insights": dict(insights or {}),
+        "diagrams": dict(diagrams or {}),
     }
     harness.store.write_text(
         harness.store.narrative_path(WEEKLY_PERIOD),
@@ -622,7 +618,7 @@ def test_the_industry_edition_can_be_chosen(harness: Harness) -> None:
     write_weekly_sheet(harness, rows=1)
     write_weekly_html(harness, "不動産")
     write_weekly_html(harness, "金融")
-    write_narrative(harness, industries=("不動産", "金融"))
+    write_narrative(harness)
 
     response = harness.client.get(
         f"/reports/{WEEKLY_PERIOD}/articles", params={"industry": "金融"}
