@@ -820,9 +820,15 @@ def _parse_weekly(period: str) -> Period:
 
 
 def _mail_safe(markup: str, *, period: str) -> str:
-    """§7.1 の禁止構文が無いことを確かめる（書き出す前に落とす）。"""
+    """出してはいけない構文が無いことを確かめる（書き出す前に落とす）。
+
+    ⚠️ **通すのは安全性の検査だけ**（`assert_safe_html()`。T-52 Step 3）。メール
+    互換性の制約（`<style>` / flex / grid / 外部CSS）は廃止したので通さない——
+    ただし**検査そのものは凍結して残してある**（`assert_mail_safe()`）。将来
+    メール配信が復活したら、出力先ごとのレンダラからそちらを通す。
+    """
     try:
-        return m.assert_mail_safe(markup)
+        return m.assert_safe_html(markup)
     except m.MailHtmlError as exc:
         raise WeeklyRenderError(f"{period} の週刊HTML: {exc}") from exc
 

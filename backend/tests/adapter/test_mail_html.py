@@ -4,6 +4,9 @@
 
 - **§7.1 の禁止事項が出力に混ざらない**（`<style>` / 外部CSS / flex / grid / JS）。
   `forbidden_constructs()` がその受け入れ条件で、**誤検知しない**ことも固定する
+- ⚠️ **検査は2つに割れている**（T-52 Step 3）：**安全性**（`assert_safe_html()`。
+  レンダラが今も通す）と**メール互換性**（`assert_mail_safe()`。**凍結**＝
+  呼ばれていないが、将来メール配信が復活したときに使えるよう生かしておく）
 - **外部由来テキストのエスケープ**（記事タイトル・要約は crawl が拾ってきた文字列）
 - **`href` のスキーム検査**（`javascript:` をリンクにしない）
 - カテゴリ色マップ：**実測3色は逐語**、補完4色は要ブランド確認として別定数
@@ -105,9 +108,73 @@ def test_each_forbidden_construct_is_detected(name: str, markup: str) -> None:
 
 
 def test_assert_mail_safe_refuses_to_pass_a_forbidden_document_through() -> None:
-    """壊れたメールHTML を配信するより、書き出す前に落とす。"""
+    """壊れたメールHTML を配信するより、書き出す前に落とす。
+
+    ⚠️ **この関門は凍結中**（T-52 Step 3。現在どのレンダラも通していない）。
+    将来メール配信が復活したときに**そのまま使える状態**であることを、この
+    テストが保つ（凍結＝呼ばれていない、であって壊れている、ではない）。
+    """
     with pytest.raises(MailHtmlError, match="§7.1"):
         assert_mail_safe('<td style="display:flex">x</td>')
+
+
+# --- 検査の2分割（T-52 Step 3）------------------------------------------------
+
+
+def test_the_split_covers_the_original_set_exactly() -> None:
+    """⚠️ 割った2つの和が元の集合と一致すること（取りこぼし・重複なし）。
+
+    片方へ移し忘れた項目があると、**どちらの関門も見ていない構文**ができる。
+    """
+    assert (
+        mail_html.UNSAFE_CONSTRUCTS + mail_html.MAIL_ONLY_CONSTRUCTS
+        == mail_html.FORBIDDEN_CONSTRUCTS
+    )
+    unsafe = {name for name, _ in mail_html.UNSAFE_CONSTRUCTS}
+    mail_only = {name for name, _ in mail_html.MAIL_ONLY_CONSTRUCTS}
+    assert unsafe & mail_only == set()
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        "<script>alert(1)</script>",
+        '<a href="javascript:alert(1)">x</a>',
+        '<td onclick="f()">x</td>',
+    ],
+)
+def test_the_safety_check_still_refuses_unsafe_markup(markup: str) -> None:
+    """⚠️ **安全性の検査は媒体に関係なく残る**（T-52 Step 3）。
+
+    記事タイトル・要約・ソース名・図解の語は crawl が外部サイトから拾ってきた
+    文字列で（T-16）、途中の工程は誰も無害化していない。メール配信をやめても
+    エスケープの取りこぼしを書き出す前に落とす関門は要る。
+    """
+    assert mail_html.unsafe_constructs(markup) != []
+    with pytest.raises(MailHtmlError):
+        mail_html.assert_safe_html(markup)
+
+
+@pytest.mark.parametrize(
+    "markup",
+    [
+        "<style>p{color:red}</style>",
+        '<link rel="stylesheet" href="a.css">',
+        '<div style="display:flex">x</div>',
+        '<div style="display:grid">x</div>',
+    ],
+)
+def test_the_safety_check_lets_mail_only_constraints_through(markup: str) -> None:
+    """⚠️ **メール互換性の制約は関門ではなくなった**（T-52 Step 3）。
+
+    メール版 HTML の体裁制約を廃止したので（§1「備考：成果物の再定義」）、
+    `<style>` や flex を含む出力を**落としてはいけない**——落とすと、体裁の幅を
+    広げようとした変更が「なぜか失敗するレンダラ」として現れる。
+    """
+    assert mail_html.unsafe_constructs(markup) == []
+    assert mail_html.assert_safe_html(markup) is markup
+    # ⚠️ 凍結した側では今も検出される（将来の復活のために生きている）。
+    assert forbidden_constructs(markup) != []
 
 
 def test_the_lint_does_not_fire_on_legitimate_inline_styles() -> None:

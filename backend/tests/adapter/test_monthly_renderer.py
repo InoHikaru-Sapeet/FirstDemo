@@ -901,6 +901,11 @@ def test_the_rendered_html_matches_the_golden_file(
 
 
 def test_the_golden_file_itself_satisfies_the_mail_html_constraints() -> None:
+    """⚠️ 凍結した制約（メール互換性）をまだ満たしていることの記録（T-52 Step 3）。
+
+    理由は週刊レンダラの同名テストと同じ。**体裁を広げる変更でここが落ちたら、
+    消してよい**（守ることが目的ではない）。
+    """
     assert mail_html.forbidden_constructs(GOLDEN_PATH.read_text(encoding="utf-8")) == []
 
 

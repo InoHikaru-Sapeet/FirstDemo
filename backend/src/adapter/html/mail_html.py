@@ -405,13 +405,22 @@ def document(*, title: object, body: str, background: str) -> str:
 
 # --- 生成結果の検査（§7.1 の禁止事項）----------------------------------------
 
-FORBIDDEN_CONSTRUCTS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("<style> タグ", re.compile(r"</?style\b", re.IGNORECASE)),
+# --- 出力の検査（T-23）--------------------------------------------------------
+#
+# ⚠️ **2026-08-18（T-52 Step 3）に2つへ割った。** もともと §7.1 の禁止事項として
+# 1つのタプルに混ざっていたが、中身は**性質の違う2種類**だった:
+#
+# | 種類 | 何のための制約か | メール配信を廃止したら |
+# |---|---|---|
+# | **安全性** | crawl 由来の外部文字列を HTML へ入れる経路を塞ぐ（T-23） | **残る** |
+# | **メール互換性** | メールクライアントが解釈できない構文を出さない（§7.1） | 凍結 |
+#
+# メール版 HTML の体裁制約は廃止した（§1「備考：成果物の再定義」）が、
+# **安全性の検査は媒体に関係なく必要**——記事タイトル・要約・ソース名・図解の語は
+# 外部サイトから拾ってきたテキストで（T-16）、途中の工程は誰も無害化していない。
+
+UNSAFE_CONSTRUCTS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("<script> タグ", re.compile(r"</?script\b", re.IGNORECASE)),
-    ("外部CSS（<link>）", re.compile(r"<link\b", re.IGNORECASE)),
-    ("外部CSS（@import）", re.compile(r"@import\b", re.IGNORECASE)),
-    ("flex レイアウト", re.compile(r"display\s*:\s*(inline-)?flex", re.IGNORECASE)),
-    ("grid レイアウト", re.compile(r"display\s*:\s*(inline-)?grid", re.IGNORECASE)),
     (
         "javascript: の URL",
         re.compile(r"""(?:href|src)\s*=\s*["']?\s*javascript:""", re.IGNORECASE),
@@ -419,11 +428,51 @@ FORBIDDEN_CONSTRUCTS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # 属性の中だけを見る（`>` を跨がない）ので、本文テキストでは反応しない。
     ("イベントハンドラ属性", re.compile(r"<[^>]*\son[a-z]+\s*=", re.IGNORECASE)),
 )
-"""§7.1 の禁止事項。**このタプルがレンダラの受け入れ条件**（T-23 完了条件）。"""
+"""**媒体に関係なく出してはいけない構文**（T-23 の安全側の責務）。
+
+⚠️ **レンダラは今もこれを通す**（`assert_safe_html()`）。エスケープの取りこぼしを
+書き出す前に落とすための関門で、メール配信の有無とは関係しない。
+"""
+
+MAIL_ONLY_CONSTRUCTS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("<style> タグ", re.compile(r"</?style\b", re.IGNORECASE)),
+    ("外部CSS（<link>）", re.compile(r"<link\b", re.IGNORECASE)),
+    ("外部CSS（@import）", re.compile(r"@import\b", re.IGNORECASE)),
+    ("flex レイアウト", re.compile(r"display\s*:\s*(inline-)?flex", re.IGNORECASE)),
+    ("grid レイアウト", re.compile(r"display\s*:\s*(inline-)?grid", re.IGNORECASE)),
+)
+"""**メール互換性のための制約**（§7.1）。⚠️ **2026-08-18 に凍結**（T-52 Step 3）。
+
+メール配信は仕様書 §1.3 でスコープ外のままで、実際には配られていない。Web 版が
+唯一の閲覧形式になった以上、この制約を守り続ける理由は無い
+（§1「備考：成果物の再定義」）。
+
+⚠️ **消さずに残してある。** 将来メール配信が復活したときに、**出力先ごとの
+レンダラを1つ足して `assert_mail_safe()` を通す**だけで済むようにするため。
+検査の中身（正規表現・誤検知しないこと）はテストで生きたまま保つ
+（凍結＝呼ばれていない、であって壊れている、ではない）。
+"""
+
+FORBIDDEN_CONSTRUCTS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    *UNSAFE_CONSTRUCTS,
+    *MAIL_ONLY_CONSTRUCTS,
+)
+"""§7.1 の禁止事項ぜんぶ（安全性 ＋ メール互換性）。
+
+**メール版レンダラの受け入れ条件**（凍結中＝現在どのレンダラも通していない）。
+"""
+
+
+def unsafe_constructs(markup: str) -> list[str]:
+    """**媒体に関係なく**出してはいけない構文が含まれていれば、その名前を返す。"""
+    return [name for name, pattern in UNSAFE_CONSTRUCTS if pattern.search(markup)]
 
 
 def forbidden_constructs(markup: str) -> list[str]:
-    """生成物に §7.1 の禁止構文が含まれていれば、その名前を返す。
+    """生成物に §7.1 の禁止構文（安全性 ＋ メール互換性）が含まれていれば名前を返す。
+
+    ⚠️ **メール互換性の側は凍結中**（`MAIL_ONLY_CONSTRUCTS`）。現在のレンダラは
+    `unsafe_constructs()` だけを通す。
 
     Returns:
         見つかった禁止構文の名前（空なら問題なし）
@@ -431,11 +480,28 @@ def forbidden_constructs(markup: str) -> list[str]:
     return [name for name, pattern in FORBIDDEN_CONSTRUCTS if pattern.search(markup)]
 
 
-def assert_mail_safe(markup: str) -> str:
-    """禁止構文が無いことを確かめて、そのまま返す。
+def assert_safe_html(markup: str) -> str:
+    """安全性の検査だけを通して、そのまま返す（T-52 Step 3）。
 
-    レンダラの最後に通す（**生成物を書き出す前に落とす**。壊れたメールHTML を
-    配信するより、ジョブを失敗させて気づく方がよい）。
+    レンダラの最後に通す（**生成物を書き出す前に落とす**）。エスケープの
+    取りこぼしが配信物・閲覧物へ回るより、ジョブを失敗させて気づく方がよい。
+
+    Raises:
+        MailHtmlError: `<script>` / `javascript:` の URL / イベントハンドラ属性が
+            含まれる場合
+    """
+    if found := unsafe_constructs(markup):
+        raise MailHtmlError("出してはいけない構文が含まれています: " + "、".join(found))
+    return markup
+
+
+def assert_mail_safe(markup: str) -> str:
+    """§7.1 の禁止構文（安全性 ＋ **メール互換性**）が無いことを確かめる。
+
+    ⚠️ **2026-08-18 の T-52 Step 3 で凍結した**。メール版 HTML の体裁制約を
+    廃止したので、**現在のレンダラはこれを呼ばない**（呼ぶのは
+    `assert_safe_html()`）。将来メール配信が復活したときに、出力先ごとの
+    レンダラから通す口として残してある（§1「備考：成果物の再定義」）。
 
     Raises:
         MailHtmlError: 禁止構文が含まれる場合
@@ -456,10 +522,13 @@ __all__ = [
     "FONT_FAMILY",
     "FORBIDDEN_CONSTRUCTS",
     "LANGUAGE",
+    "MAIL_ONLY_CONSTRUCTS",
     "TABLE_LAYOUT_ATTRS",
     "VIEWPORT_META",
+    "UNSAFE_CONSTRUCTS",
     "MailHtmlError",
     "assert_mail_safe",
+    "assert_safe_html",
     "attributes",
     "block",
     "cell",
@@ -478,4 +547,5 @@ __all__ = [
     "styles",
     "table",
     "truncate_fullwidth",
+    "unsafe_constructs",
 ]

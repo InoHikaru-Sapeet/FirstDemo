@@ -75,7 +75,7 @@
   固定。`enterprise.entities.diagram`）。この層は**受け取った型に応じて決まった
   形で描くだけ**で、**AI は呼ばない**（§1.1 は不変）
 - 描くのは `table` ＋ inline style だけ（§7.1）。**画像は作らない**——`flow` の
-  矢印も `→` の文字で、`assert_mail_safe()` をそのまま通る
+  矢印も `→` の文字（画像を作らない）
 - **図解が無い事例には何も出さない**（0〜1個で、無いのが正常）
 
 ⚠️ **置き場所は「解説の後・出典の前」。** 本文より前に置くと、①事実 を読む前に
@@ -1463,8 +1463,12 @@ def _warn_on_composition(
 
 
 def _mail_safe(markup: str, *, period: str) -> str:
+    """出してはいけない構文が無いことを確かめる（書き出す前に落とす）。
+
+    ⚠️ **通すのは安全性の検査だけ**（T-52 Step 3。理由は週刊レンダラの同名関数）。
+    """
     try:
-        return m.assert_mail_safe(markup)
+        return m.assert_safe_html(markup)
     except m.MailHtmlError as exc:
         raise MonthlyRenderError(f"{period} の月刊HTML: {exc}") from exc
 

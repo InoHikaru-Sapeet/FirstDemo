@@ -956,7 +956,15 @@ def test_the_rendered_html_matches_the_golden_file(
 
 
 def test_the_golden_file_itself_satisfies_the_mail_html_constraints() -> None:
-    """ゴールデンを更新したときに §7.1 を割らないための歯止め。"""
+    """ゴールデンを更新したときに §7.1 を割らないための歯止め。
+
+    ⚠️ **メール互換性の制約は関門ではなくなった**（T-52 Step 3。レンダラが通すのは
+    `assert_safe_html()` だけ）。それでもこの1本を残すのは、**今の出力がまだ
+    §7.1 を満たしている**という事実を記録しておくため——将来メール配信が復活する
+    ときの見積もり（「レンダラを1つ足すだけで済むのか」）がここで読める。
+    ⚠️ **体裁を広げる変更でここが落ちたら、消してよい**（凍結した制約を守ることが
+    目的ではない）。
+    """
     assert mail_html.forbidden_constructs(GOLDEN_PATH.read_text(encoding="utf-8")) == []
 
 
